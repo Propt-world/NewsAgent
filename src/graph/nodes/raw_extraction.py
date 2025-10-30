@@ -1,56 +1,101 @@
-from src.models.MainWorkflowState import MainWorkflowState
-from bs4 import BeautifulSoup
-import requests
+import traceback
 from pprint import pprint
+from requests_html import HTMLSession, MaxRetries
+from newspaper import Article
+from lxml.html import tostring
+from src.models.MainWorkflowState import MainWorkflowState
+from src.models.ArticleModel import ArticleModel
 
 def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Fetch raw textual content from the page at the provided URL and update the workflow state.
+    Fetches, renders JavaScript, and extracts clean article TEXT and HTML.
 
-    - Validates that a `source_url` is present.
-    - Uses `requests` with a timeout and a basic User-Agent to reduce blocks.
-    - Parses HTML with BeautifulSoup and extracts visible text.
-    - Returns a new `MainWorkflowState` instance with `raw_extraction_result` set.
-
-    Parameters:
-        state: The current workflow state containing at least `source_url`.
-
-    Returns:
-        An updated `MainWorkflowState` with `raw_extraction_result` populated on success,
-        or with an error message on failure. The original state is preserved via copy.
+    - Uses `requests_html` to load the page and render client-side JavaScript.
+    - Uses `newspaper3k` to parse the rendered HTML and find the *main*
+      article text, title, authors, and publish date.
+    - Populates the state with the clean text (for summarization),
+      the clean HTML (for link extraction), and a partial 'news_article'.
     """
 
     url = state.source_url
+    pprint(f"[NODE: RAW EXTRACTION] Fetching and rendering: {url}")
 
-    # Guard: ensure URL is provided before attempting a request.
-    if not url or not isinstance(url, str) or not url.strip():
-        return state.model_copy(update={
-            "raw_extraction_result": "No source_url provided."
-        })
+    # Initialize an HTML Session (this manages the headless browser)
+    session = HTMLSession()
 
-    pprint(f"[DEBUG][RAW EXTRACTION] Fetching content from: {url}")  # Prefer a configured logger in production.
     try:
-        response = requests.get(
+        # 1. Get the page and render JavaScript
+        response = session.get(
             url,
-            timeout=25,
+            timeout=30,  # Increased timeout for JS rendering
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                               " AppleWebKit/537.36 (KHTML, like Gecko)"
-                               " Chrome/124.0.0.0 Safari/537.36"
-            },
+                              " AppleWebKit/537.36 (KHTML, like Gecko)"
+                              " Chrome/124.0.0.0 Safari/537.36"
+            }
         )
+
+        # Raise an exception for bad status codes (4xx, 5xx)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        text_content = soup.get_text(separator=" ", strip=True)
+        # 2. This is the crucial step: execute the JavaScript on the page.
+        # `scrolldown=1` helps trigger lazy-loaded content.
+        # `timeout=20` gives the browser 20s to finish rendering.
+        response.html.render(scrolldown=1, timeout=20, sleep=1)
+        pprint(f"[NODE: RAW EXTRACTION] Page rendered successfully.")
 
-        # Return a copy of the state with the extracted content.
+        # 3. Use newspaper3k to parse the *rendered* HTML
+        article = Article(url)
+        article.set_html(response.html.html) # Pass the rendered HTML
+        article.parse()
+
+        # 4. Check if newspaper3k found content
+        if not article.text:
+            pprint(f"[NODE: RAW EXTRACTION] newspaper3k found no content for: {url}")
+            return state.model_copy(update={
+                "error_message": "Failed to extract main article content (newspaper3k found no text)."
+            })
+
+        # 5. Pre-populate the ArticleModel
+        # This is a huge optimization. We let newspaper handle the simple
+        # extractions so the LLM can focus on the hard parts.
+
+        author_str = ", ".join(article.authors) if article.authors else None
+        date_str = article.publish_date.isoformat() if article.publish_date else None
+
+        initial_article = ArticleModel(
+            title=article.title,
+            content=article.text, # This is the *clean* text
+            published_date=date_str,
+            author=author_str
+        )
+
+        # 6. Get the clean HTML snippet (for link extraction)
+        # article.top_node is the LXML element of the main article.
+        # tostring() converts it back into an HTML string *with* links.
+        clean_html = ""
+        if article.top_node is not None:
+            clean_html = tostring(article.top_node, encoding='unicode')
+
+        pprint(f"[NODE: RAW EXTRACTION] Successfully extracted: {article.title}")
+
+        # 7. Return a copy of the state with the new data
         return state.model_copy(update={
-            "raw_extraction_result": text_content
+            "cleaned_article_text": article.text,    # For summary & validation
+            "cleaned_article_html": clean_html,      # For link extraction
+            "news_article": initial_article          # The partial model
         })
 
-    except requests.RequestException as e:
-        # Return a copy of the state embedding the error context for downstream handling.
+    except MaxRetries:
+        pprint(f"[NODE: RAW EXTRACTION] Max retries exceeded for: {url}")
         return state.model_copy(update={
-            "raw_extraction_result": f"Error fetching content from {url}: {e}"
+            "error_message": f"Error rendering {url}: Max retries exceeded (likely a JS-heavy page)."
         })
+    except Exception as e:
+        pprint(f"[NODE: RAW EXTRACTION] Error fetching/parsing {url}: {e}")
+        traceback.print_exc() # Print the full error stack trace
+        return state.model_copy(update={
+            "error_message": f"Error in raw_extraction: {e}"
+        })
+    finally:
+        session.close() # Always close the session to free up browser resources

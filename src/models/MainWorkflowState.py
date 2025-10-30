@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict
 from src.models.ArticleModel import ArticleModel
-from src.models.ValidationResultModel import ValidationResultModel  # <-- IMPORT
+from src.models.ValidationResultModel import ValidationResultModel
 from pydantic import BaseModel, Field
 
 class MainWorkflowState(BaseModel):
@@ -13,8 +13,6 @@ class MainWorkflowState(BaseModel):
 
     # --- Fields for Looping & Validation ---
     validation_count: int = 0
-
-    # REPLACED the old string field with our new structured model
     validation_result: Optional[ValidationResultModel] = None
 
     # --- Fields for Other Nodes ---

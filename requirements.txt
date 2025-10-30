@@ -9,6 +9,8 @@ langgraph
 langgraph-checkpoint
 langgraph-prebuilt
 langgraph-sdk
+lxml
+newspaper3k
 numpy
 openai
 opik
@@ -17,5 +19,6 @@ pydantic-settings
 pydantic_core
 python-dotenv
 requests
+requests-html
 SQLAlchemy
 uvicorn

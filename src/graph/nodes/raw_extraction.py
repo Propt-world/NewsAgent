@@ -1,7 +1,7 @@
 import traceback
 from pprint import pprint
 from requests_html import HTMLSession, MaxRetries
-from newspaper import Article
+from newspaper import Article, Config
 from lxml.html import tostring
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
@@ -11,7 +11,7 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     Fetches, renders JavaScript, and extracts clean article TEXT and HTML.
 
     - Uses `requests_html` to load the page and render client-side JavaScript.
-    - Uses `newspaper3k` to parse the rendered HTML and find the *main*
+    - Uses `newspaper4k` to parse the rendered HTML and find the *main*
       article text, title, authors, and publish date.
     - Populates the state with the clean text (for summarization),
       the clean HTML (for link extraction), and a partial 'news_article'.
@@ -22,6 +22,12 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
 
     # Initialize an HTML Session (this manages the headless browser)
     session = HTMLSession()
+
+    # --- NEWSPAPER4K CONFIGURATION ---
+    # You can configure newspaper4k if needed.
+    # For now, the default config is fine.
+    # config = Config()
+    # config.browser_user_agent = '...'
 
     try:
         # 1. Get the page and render JavaScript
@@ -35,31 +41,26 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             }
         )
 
-        # Raise an exception for bad status codes (4xx, 5xx)
         response.raise_for_status()
 
-        # 2. This is the crucial step: execute the JavaScript on the page.
-        # `scrolldown=1` helps trigger lazy-loaded content.
-        # `timeout=20` gives the browser 20s to finish rendering.
+        # 2. Render JavaScript
         response.html.render(scrolldown=1, timeout=20, sleep=1)
         pprint(f"[NODE: RAW EXTRACTION] Page rendered successfully.")
 
-        # 3. Use newspaper3k to parse the *rendered* HTML
+        # 3. Use newspaper4k to parse the *rendered* HTML
+        # Pass the config if you created one: article = Article(url, config=config)
         article = Article(url)
         article.set_html(response.html.html) # Pass the rendered HTML
         article.parse()
 
-        # 4. Check if newspaper3k found content
+        # 4. Check if newspaper4k found content
         if not article.text:
-            pprint(f"[NODE: RAW EXTRACTION] newspaper3k found no content for: {url}")
+            pprint(f"[NODE: RAW EXTRACTION] newspaper4k found no content for: {url}")
             return state.model_copy(update={
-                "error_message": "Failed to extract main article content (newspaper3k found no text)."
+                "error_message": "Failed to extract main article content (newspaper4k found no text)."
             })
 
-        # 5. Pre-populate the ArticleModel
-        # This is a huge optimization. We let newspaper handle the simple
-        # extractions so the LLM can focus on the hard parts.
-
+        # 5. Pre-populate the ArticleModel (no changes here)
         author_str = ", ".join(article.authors) if article.authors else None
         date_str = article.publish_date.isoformat() if article.publish_date else None
 
@@ -70,9 +71,7 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             author=author_str
         )
 
-        # 6. Get the clean HTML snippet (for link extraction)
-        # article.top_node is the LXML element of the main article.
-        # tostring() converts it back into an HTML string *with* links.
+        # 6. Get the clean HTML snippet (no changes here)
         clean_html = ""
         if article.top_node is not None:
             clean_html = tostring(article.top_node, encoding='unicode')

@@ -15,9 +15,15 @@ class ArticleModel(BaseModel):
     published_date: Optional[str] = None
     author: Optional[str] = None # Note: author can also be List[str]
 
-    # These are populated by later nodes.
-    category: Optional[str] = None
-    sub_category: Optional[str] = None
+    # categorization
+    category: List[str] = Field(
+        default_factory=list,
+        description="A list of up to 3 main categories."
+    )
+    sub_category: List[str] = Field(
+        default_factory=list,
+        description="A list of relevant sub-categories."
+    )
 
     # Use default_factory to ensure this is always a list,
     # which is easier to append to than an Optional.

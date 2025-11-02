@@ -4,12 +4,13 @@ langchain
 langchain-community
 langchain-core
 langchain-openai
+langchain-tavily
 langchain-text-splitters
 langgraph
 langgraph-checkpoint
 langgraph-prebuilt
 langgraph-sdk
-langchain-tavily
+langserve
 lxml
 newspaper4k
 numpy

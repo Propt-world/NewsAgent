@@ -71,7 +71,6 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
 
         return state.model_copy(update={
             "news_article": updated_article,
-            "validation_count": new_validation_count,
             "validation_result": None # Clear old feedback
         })
 

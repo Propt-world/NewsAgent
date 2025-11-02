@@ -2,7 +2,8 @@ from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 from src.models.ArticleModel import ArticleModel
 from src.models.ValidationResultModel import ValidationResultModel
-from src.models.SummaryAttemptModel import SummaryAttemptModel # <-- IMPORT
+from src.models.SummaryAttemptModel import SummaryAttemptModel
+from src.models.SearchQueryModel import SearchQueryModel
 
 class MainWorkflowState(BaseModel):
     source_url: str
@@ -11,16 +12,19 @@ class MainWorkflowState(BaseModel):
     news_article: Optional[ArticleModel] = None
 
     # --- Fields for Looping & Validation ---
-    validation_count: int = 0 # This will be set by len(summary_attempts)
+    validation_count: int = 0
 
-    # This holds the *latest* result for the conditional edge
+    # --- Fields for Validation ---
     validation_result: Optional[ValidationResultModel] = None
 
-    # --- NEW: This list will store all attempts ---
+    # --- Fields for Summary Generation ---
     summary_attempts: List[SummaryAttemptModel] = Field(default_factory=list)
 
     # --- Fields for Other Nodes ---
     other_sources: List[Dict] = Field(default_factory=list)
+
+    # --- Fields for Search Query Generation ---
+    search_query_data: Optional[SearchQueryModel] = None
 
     # --- Global Error & Config Fields ---
     max_retries: int = 3

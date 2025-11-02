@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 from langchain_openai import ChatOpenAI
 from opik.integrations.langchain import OpikTracer
+from langchain_tavily import TavilySearch
 from opik import Opik
 import opik
 from dotenv import load_dotenv
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
     OPENAI_URL: str = os.getenv('OPENAI_URL')
     OPIK_API_KEY: str = os.getenv('OPIK_API_KEY')
     OPIK_WORKSPACE: str = os.getenv('OPIK_WORKSPACE')
+    TAVILY_API_KEY: str = os.getenv('TAVILY_API_KEY')
 
     # Model Configuration
     MODEL_NAME: str = os.getenv('MODEL_NAME')
@@ -54,10 +56,19 @@ class Settings(BaseSettings):
             base_url=self.OPENAI_URL
         )
 
+    def get_tavily_tool(self, max_results: int = 5) -> TavilySearch:
+        if not self.TAVILY_API_KEY:
+            raise ValueError("TAVILY_API_KEY is not set")
+
+        return TavilySearch(
+            api_key=self.TAVILY_API_KEY,
+            max_results=max_results
+        )
+
     class Config:
         env_file = ".env"
         case_sensitive = True
         env_file_encoding = 'utf-8'
-        extra = "ignore"  # Ignore extra environment variables
+        extra = "ignore"
 
 settings = Settings()

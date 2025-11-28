@@ -12,6 +12,7 @@ langgraph-prebuilt
 langgraph-sdk
 langserve
 lxml
+lxml-html-clean
 newspaper4k
 numpy
 openai

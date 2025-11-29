@@ -32,3 +32,7 @@ class AgentPromptsModel(BaseModel):
     # --- SEO ---
     seo_system: str
     seo_user: str
+
+    # --- Translation ---
+    translation_system: str
+    translation_user: str

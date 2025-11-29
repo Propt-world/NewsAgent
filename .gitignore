@@ -212,9 +212,9 @@ logs/
 *.log
 
 # Database files
-*.db
-*.sqlite
-*.sqlite3
+#*.db
+#*.sqlite
+#*.sqlite3
 
 # Cache directories
 .cache/

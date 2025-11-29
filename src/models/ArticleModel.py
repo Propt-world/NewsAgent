@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from src.models.EmbeddedLinkModel import EmbeddedLinkModel
 from src.models.SeoMetadataModel import SeoMetadataModel
 
+
 class ArticleModel(BaseModel):
     # An article must have a title and content.
     # If these can't be extracted, the node should fail.
@@ -34,3 +35,8 @@ class ArticleModel(BaseModel):
 
     # SEO Data
     seo: Optional[SeoMetadataModel] = None
+
+    # Translation Data
+    title_ar: Optional[str] = None
+    summary_ar: Optional[str] = None
+    content_ar: Optional[str] = None

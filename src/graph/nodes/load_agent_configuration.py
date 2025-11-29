@@ -35,8 +35,12 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
         "search_system",
         "search_user",
         "categorization_system",
-        "categorization_user"
-    ]
+        "categorization_user",
+        "seo_system",
+        "seo_user",
+        "translation_system",
+        "translation_user"
+        ]
 
     try:
         # 1. Establish Database Connection

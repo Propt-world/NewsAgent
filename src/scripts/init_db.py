@@ -221,7 +221,7 @@ You MUST choose from the following predefined "Knowledge Base":
         "description": "User prompt for categorization."
     },
 
-# --- 7. SEO GENERATION ---
+    # --- 7. SEO GENERATION ---
     {
         "name": "seo_system",
         "content": """You are an expert SEO Meta Data Extractor.
@@ -252,7 +252,37 @@ Do NOT invent information. Optimized for Search Engines.""",
 {content_snippet}""",
         "input_variables": ["title", "summary", "content_snippet"],
         "description": "User prompt for SEO metadata."
-    }
+    },
+
+    # --- 8. ARABIC TRANSLATION ---
+    {
+        "name": "translation_system",
+        "content": """You are a professional news translator fluent in English and Modern Standard Arabic (MSA).
+Your task is to translate real estate news articles from English to Arabic.
+
+RULES:
+1. Maintain a professional, journalistic tone (similar to Al Arabiya / Asharq Business).
+2. Translate specific real estate terminology accurately (e.g., "Off-plan", "Freehold", "ROI").
+3. Do not summarize; provide a faithful, full translation of the content.
+4. Ensure the Arabic text flows naturally and is grammatically correct.""",
+        "input_variables": [],
+        "description": "System instruction for Arabic translation."
+    },
+    {
+        "name": "translation_user",
+        "content": """Please translate the following article details into Arabic:
+
+---TITLE---
+{title}
+
+---SUMMARY---
+{summary}
+
+---FULL CONTENT---
+{content}""",
+        "input_variables": ["title", "summary", "content"],
+        "description": "User prompt for translating the full article."
+    },
 ]
 
 def init_db():

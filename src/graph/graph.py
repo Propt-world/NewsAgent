@@ -12,6 +12,7 @@ from src.graph.nodes.check_embedded_links import check_embedded_links
 from src.graph.nodes.find_other_sources import find_other_sources
 from src.graph.nodes.categorize_article import categorize_article
 from src.graph.nodes.generate_seo import generate_seo
+from src.graph.nodes.translate_article import translate_article
 from src.graph.nodes.notify_webhook import notify_webhook
 
 # --- Import Conditional Edge Function ---
@@ -53,6 +54,7 @@ class MainWorkflow:
         builder.add_node("find_other_sources", find_other_sources)
         builder.add_node("categorize_article", categorize_article)
         builder.add_node("generate_seo", generate_seo)
+        builder.add_node("translate_article", translate_article)
         builder.add_node("notify_webhook", notify_webhook)
 
         # 2. Set the entry point
@@ -79,7 +81,8 @@ class MainWorkflow:
         builder.add_edge("check_embedded_links", "find_other_sources")
         builder.add_edge("find_other_sources", "categorize_article")
         builder.add_edge("categorize_article", "generate_seo")
-        builder.add_edge("generate_seo", "notify_webhook")
+        builder.add_edge("generate_seo", "translate_article")
+        builder.add_edge("translate_article", "notify_webhook")
 
         # 6. Set the final node
         builder.add_edge("notify_webhook", END)

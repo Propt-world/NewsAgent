@@ -21,6 +21,7 @@ pydantic
 pydantic-settings
 pydantic_core
 python-dotenv
+redis
 requests
 requests-html
 SQLAlchemy

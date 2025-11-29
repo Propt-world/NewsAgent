@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # --- 1. The Message Broker ---
+  redis:
+    image: redis:alpine
+    container_name: newsagent_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- 2. The API (Producer) ---
+  api:
+    build: .
+    container_name: newsagent_api
+    command: uvicorn src.main:api --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the code for live reloading during development
+      - .:/app
+    environment:
+      # Network: Use the service name 'redis' instead of localhost
+      - REDIS_URL=redis://redis:6379/0
+      # Pass through keys from your local machine
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # --- 3. The Worker (Consumer) ---
+  worker:
+    build: .
+    container_name: newsagent_worker
+    # Run the worker script we created earlier
+    command: python src/worker.py
+    volumes:
+      - .:/app
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:

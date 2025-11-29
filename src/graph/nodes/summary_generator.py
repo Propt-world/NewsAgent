@@ -12,7 +12,7 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
 
     - If it's a retry (validation_result exists), it incorporates
       the feedback into a new prompt.
-    - Increments the 'validation_count' loop counter.
+    - Note: validation_count is incremented in validate_summary node.
     """
     pprint(f"[NODE: SUMMARY GENERATOR] Starting summary generation (Attempt #{state.validation_count + 1})...")
 
@@ -66,8 +66,7 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
             "summary": summary_text
         })
 
-        new_validation_count = state.validation_count + 1
-        pprint(f"[NODE: SUMMARY GENERATOR] Summary generated (Attempt {new_validation_count}).")
+        pprint("[NODE: SUMMARY GENERATOR] Summary generated successfully.")
 
         return state.model_copy(update={
             "news_article": updated_article,

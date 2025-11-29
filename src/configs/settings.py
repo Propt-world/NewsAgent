@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     PORT: int = 8000
     RELOAD: bool = True
 
+    # Redis Configuration
+    # Default to localhost for dev, but configurable via .env
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    REDIS_QUEUE_NAME: str = os.getenv("REDIS_QUEUE_NAME", "newsagent_jobs")
+
     # LangGraph Settings
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY')
     OPENAI_URL: str = os.getenv('OPENAI_URL')
@@ -30,6 +35,12 @@ class Settings(BaseSettings):
     # Model Configuration
     MODEL_NAME: str = os.getenv('MODEL_NAME')
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE'))
+
+    # Webhook Configuration
+    # The URL where the agent will POST the final JSON
+    WEBHOOK_URL: Optional[str] = os.getenv('WEBHOOK_URL')
+    # Optional secret to validate the request comes from this agent
+    WEBHOOK_SECRET: Optional[str] = os.getenv('WEBHOOK_SECRET')
 
     # Opik Settings
     def get_opik_client(self):
@@ -64,6 +75,9 @@ class Settings(BaseSettings):
             api_key=self.TAVILY_API_KEY,
             max_results=max_results
         )
+
+    # Database Settings
+    DATABASE_URL: str = os.getenv('DATABASE_URL')
 
     class Config:
         env_file = ".env"

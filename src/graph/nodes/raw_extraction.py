@@ -71,6 +71,17 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             author=author_str
         )
 
+        # --- CAPTURE IMAGE ---
+        top_image_url = article.top_image
+
+        initial_article = ArticleModel(
+            title=article.title,
+            content=article.text,
+            published_date=date_str,
+            author=author_str,
+            top_image=top_image_url
+        )
+
         # 6. Get the clean HTML snippet (no changes here)
         clean_html = ""
         if article.top_node is not None:

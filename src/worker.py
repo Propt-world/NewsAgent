@@ -7,6 +7,24 @@ from pprint import pprint
 from src.configs.settings import settings
 from src.graph.graph import MainWorkflow
 from src.models.MainWorkflowState import MainWorkflowState
+from src.utils.email_utils import send_error_email
+
+def update_job_status(r, job_id, status, result=None, error=None):
+    """
+    Helper to update Redis Job Status hash key (job:{job_id}).
+    Allows external monitoring tools to check 'processing', 'completed', or 'failed'.
+    """
+    try:
+        mapping = {"status": status}
+        if result:
+            mapping["result"] = json.dumps(result) # Store result as string for simple retrieval
+        if error:
+            mapping["error"] = str(error)
+
+        r.hset(f"job:{job_id}", mapping=mapping)
+        pprint(f"[REDIS] Job {job_id} -> {status}")
+    except Exception as e:
+        print(f"[ERROR] Failed to update Redis status: {e}")
 
 def run_worker():
     """
@@ -45,6 +63,9 @@ def run_worker():
 
             pprint(f"[JOB {job_id}] Processing: {source_url}")
 
+            # --- NEW: Update Status to Processing ---
+            update_job_status(r, job_id, "processing")
+
             # 4. Initialize State
             # Note: prompts are loaded automatically by Node 0
             initial_state = MainWorkflowState(
@@ -52,19 +73,71 @@ def run_worker():
                 max_retries=max_retries
             )
 
-            # 5. Execute Graph
-            # The graph handles everything, including the webhook at the end.
-            app_graph.invoke(initial_state)
+            # 5. Execute Graph with Error Handling
+            try:
+                # The invoke method returns the final state (usually a dict)
+                # The graph handles everything, including the webhook at the end.
+                final_state = app_graph.invoke(initial_state)
 
-            pprint(f"[JOB {job_id}] Finished successfully.")
+                # Check for logical errors captured within the graph nodes
+                # (e.g., newspaper4k failed, OpenAI rate limit, etc.)
+                error_message = final_state.get("error_message")
+
+                if error_message:
+                    # --- LOGICAL FAILURE ---
+                    print(f"[JOB {job_id}] ❌ Logic Failed: {error_message}")
+
+                    # Update Redis Status
+                    update_job_status(r, job_id, "failed", error=error_message)
+
+                    # Push to Dead Letter Queue (DLQ) for reprocessing later
+                    job_data["error"] = error_message
+                    r.lpush(settings.REDIS_DLQ_NAME, json.dumps(job_data))
+
+                    # Send Email
+                    send_error_email(
+                        job_id=job_id,
+                        source_url=source_url,
+                        error_details=error_message
+                    )
+                else:
+                    # --- SUCCESS ---
+                    pprint(f"[JOB {job_id}] ✅ Finished successfully.")
+
+                    # Store result in Redis status (optional, but good for debugging)
+                    article_data = final_state.get("news_article").dict()
+                    update_job_status(r, job_id, "completed", result=article_data)
+
+            except Exception as execution_error:
+                # --- CRASH FAILURE ---
+                # Catch critical crashes (e.g., code bugs, memory errors, graph config errors)
+                error_msg_str = str(execution_error)
+                print(f"[JOB {job_id}] 💥 CRITICAL EXECUTION ERROR: {error_msg_str}")
+                traceback.print_exc()
+
+                # Update Redis Status
+                update_job_status(r, job_id, "crashed", error=error_msg_str)
+
+                # Push to Dead Letter Queue (DLQ)
+                job_data["error"] = error_msg_str
+                job_data["traceback"] = traceback.format_exc()
+                r.lpush(settings.REDIS_DLQ_NAME, json.dumps(job_data))
+
+                # Send Email with Traceback
+                send_error_email(
+                    job_id=job_id,
+                    source_url=source_url,
+                    error_details=error_msg_str,
+                    traceback_info=traceback.format_exc()
+                )
 
         except redis.exceptions.ConnectionError:
             print("[ERROR] Lost connection to Redis. Retrying in 5s...")
             time.sleep(5)
         except Exception as e:
-            print(f"[ERROR] Worker crashed on job: {e}")
+            # Catch-all for Redis extraction or JSON parsing errors
+            print(f"[ERROR] Worker loop error: {e}")
             traceback.print_exc()
-            # In a real system, you might push this job to a "dead-letter queue" here
 
 if __name__ == "__main__":
     run_worker()

@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, JSON
+from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from src.db.enums import PromptStatus
@@ -29,6 +29,24 @@ class PromptTemplate(Base):
 
     # Semantic versioning (e.g. "v1.0")
     version = Column(String, nullable=False)
+
+    # Auto-timestamp
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class EmailRecipient(Base):
+    __tablename__ = "email_recipients"
+
+    # UUID Primary Key
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    # Email address
+    email = Column(String, nullable=False, unique=True)
+
+    # Name of the recipient
+    name = Column(String, nullable=True)
+
+    # Whether the recipient is active
+    is_active = Column(Boolean, default=True)
 
     # Auto-timestamp
     created_at = Column(DateTime(timezone=True), server_default=func.now())

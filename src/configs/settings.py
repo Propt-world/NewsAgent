@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # Default to localhost for dev, but configurable via .env
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_QUEUE_NAME: str = os.getenv("REDIS_QUEUE_NAME", "newsagent_jobs")
+    # Dead Letter Queue Configuration
+    REDIS_DLQ_NAME: str = os.getenv("REDIS_DLQ_NAME", "newsagent_dlq")
 
     # LangGraph Settings
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY')
@@ -35,6 +37,12 @@ class Settings(BaseSettings):
     # Model Configuration
     MODEL_NAME: str = os.getenv('MODEL_NAME')
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE'))
+
+    # --- Email / SMTP Configuration ---
+    SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", 587))
+    SMTP_EMAIL: str = os.getenv("SMTP_EMAIL", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 
     # Webhook Configuration
     # The URL where the agent will POST the final JSON

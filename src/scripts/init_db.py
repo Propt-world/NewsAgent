@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 # 1. Setup path to import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from src.db.models import Base, PromptTemplate
+from src.db.models import Base, PromptTemplate, EmailRecipient
 from src.db.enums import PromptStatus
 from src.configs.settings import settings  # <--- Using your centralized settings
 
@@ -318,6 +318,24 @@ def init_db():
             print(f"  [+] Added Active Prompt: {data['name']}")
         else:
             print(f"  [~] Skipped (Already Active): {data['name']}")
+
+    # --- NEW: Seed Email Recipients ---
+    print("--- Seeding Email Recipients ---")
+    # You can change this default email or add more here
+    default_email = "admin@example.com"
+
+    exists_recipient = session.query(EmailRecipient).filter_by(email=default_email).first()
+
+    if not exists_recipient:
+        recipient = EmailRecipient(
+            email=default_email,
+            name="System Admin",
+            is_active=True
+        )
+        session.add(recipient)
+        print(f"  [+] Added Default Recipient: {default_email}")
+    else:
+        print(f"  [~] Skipped Recipient (Already Exists): {default_email}")
 
     session.commit()
     session.close()

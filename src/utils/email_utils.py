@@ -1,28 +1,24 @@
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from pymongo import MongoClient
 
 from src.configs.settings import settings
-from src.db.models import EmailRecipient
 
 def get_active_recipients():
     """
-    Connects to the DB and fetches a list of active email addresses.
+    Connects to MongoDB and fetches a list of active email addresses.
     """
     try:
-        engine = create_engine(settings.DATABASE_URL)
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        client = MongoClient(settings.DATABASE_URL)
+        db = client[settings.MONGO_DB_NAME]
+        collection = db["email_recipients"]
 
         # Fetch only active emails
-        results = session.query(EmailRecipient).filter(
-            EmailRecipient.is_active == True
-        ).all()
+        results = collection.find({"is_active": True})
 
-        emails = [r.email for r in results]
-        session.close()
+        emails = [r["email"] for r in results]
+        client.close()
         return emails
 
     except Exception as e:
@@ -41,7 +37,7 @@ def send_error_email(job_id: str, source_url: str, error_details: str, traceback
     recipients = get_active_recipients()
 
     if not recipients:
-        print(f"[EMAIL] No active recipients found in database table 'email_recipients'. Skipping.")
+        print(f"[EMAIL] No active recipients found in database collection 'email_recipients'. Skipping.")
         return
 
     subject = f"❌ NewsAgent Failure: Job {job_id}"

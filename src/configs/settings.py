@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Dead Letter Queue Configuration
     REDIS_DLQ_NAME: str = os.getenv("REDIS_DLQ_NAME", "newsagent_dlq")
 
+    # MongoDB Settings
+    # Default to local mongodb
+    DATABASE_URL: str = os.getenv('DATABASE_URL', "mongodb://localhost:27017")
+    MONGO_DB_NAME: str = os.getenv('MONGO_DB_NAME', "newsagent")
+
     # LangGraph Settings
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY')
     OPENAI_URL: str = os.getenv('OPENAI_URL')
@@ -83,9 +88,6 @@ class Settings(BaseSettings):
             api_key=self.TAVILY_API_KEY,
             max_results=max_results
         )
-
-    # Database Settings
-    DATABASE_URL: str = os.getenv('DATABASE_URL')
 
     class Config:
         env_file = ".env"

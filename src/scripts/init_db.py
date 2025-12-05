@@ -1,19 +1,16 @@
 import sys
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from pymongo import MongoClient, ASCENDING
+from datetime import datetime, timezone
+import uuid
 
-# 1. Setup path to import from src
+# Setup path to import from src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from src.db.models import Base, PromptTemplate, EmailRecipient
 from src.db.enums import PromptStatus
-from src.configs.settings import settings  # <--- Using your centralized settings
+from src.configs.settings import settings
 
 # --- PROMPT DEFINITIONS ---
-# I have combined the 'KNOWLEDGE_BASE' into the categorization prompt
-# so you can edit categories directly in the database.
-
 INITIAL_DATA = [
     # --- 1. CONTENT EXTRACTION ---
     {
@@ -172,7 +169,6 @@ list of 3-5 diverse, high-quality search queries.
     },
 
     # --- 6. CATEGORIZATION ---
-    # Note: I have embedded your KNOWLEDGE_BASE directly here.
     {
         "name": "categorization_system",
         "content": """You are an expert "Article Classifier" for a real estate news service.
@@ -286,60 +282,118 @@ RULES:
 ]
 
 def init_db():
-    print(f"--- Connecting to: {settings.DATABASE_URL} ---")
+    print(f"--- Connecting to MongoDB at: {settings.DATABASE_URL} ---")
 
-    engine = create_engine(settings.DATABASE_URL)
+    try:
+        client = MongoClient(settings.DATABASE_URL)
+        db = client[settings.MONGO_DB_NAME]
 
-    # Create Tables
-    Base.metadata.create_all(engine)
-    print("Tables verified/created.")
+        # ==========================================
+        # 1. PROMPTS COLLECTION
+        # ==========================================
+        print("--- Setting up Prompts ---")
+        prompts_col = db["prompts"]
+        prompts_col.create_index([("name", ASCENDING)], unique=False)
 
-    Session = sessionmaker(bind=engine)
-    session = Session()
+        for data in INITIAL_DATA:
+            existing = prompts_col.find_one({
+                "name": data["name"],
+                "status": PromptStatus.ACTIVE
+            })
+            if not existing:
+                new_prompt = {
+                    "_id": str(uuid.uuid4()),
+                    "name": data["name"],
+                    "content": data["content"],
+                    "description": data["description"],
+                    "input_variables": data["input_variables"],
+                    "version": "v1.0",
+                    "status": PromptStatus.ACTIVE,
+                    "created_at": datetime.now(timezone.utc)
+                }
+                prompts_col.insert_one(new_prompt)
+                print(f"  [+] Added Active Prompt: {data['name']}")
+            else:
+                print(f"  [~] Skipped (Already Active): {data['name']}")
 
-    print("--- Seeding Prompts ---")
-    for data in INITIAL_DATA:
-        # Check by name AND status to avoid duplicates
-        exists = session.query(PromptTemplate).filter_by(
-            name=data["name"],
-            status=PromptStatus.ACTIVE
-        ).first()
+        # ==========================================
+        # 2. EMAIL RECIPIENTS COLLECTION
+        # ==========================================
+        print("--- Setting up Email Recipients ---")
+        recipients_col = db["email_recipients"]
+        recipients_col.create_index([("email", ASCENDING)], unique=True)
 
-        if not exists:
-            prompt = PromptTemplate(
-                name=data["name"],
-                content=data["content"],
-                description=data["description"],
-                input_variables=data["input_variables"],
-                version="v1.0",
-                status=PromptStatus.ACTIVE
-            )
-            session.add(prompt)
-            print(f"  [+] Added Active Prompt: {data['name']}")
-        else:
-            print(f"  [~] Skipped (Already Active): {data['name']}")
+        # List of recipients to seed
+        recipients_to_add = [
+            {"email": "admin@example.com", "name": "System Admin"},
+            {"email": "khizer.saleem@11prop.com", "name": "Khizer Saleem Malik"},
+            {"email": "hammad@11prop.com", "name": "Syed Hammad Shah"},
+            {"email": "anfal@11prop.com", "name": "Anfal Gul"},
+            {"email": "hassaan@11prop.com", "name": "Hassaan Sajid"},
+            {"email": "maliha.khan@11prop.com", "name": "Maliha Khan"}
+        ]
 
-    # --- NEW: Seed Email Recipients ---
-    print("--- Seeding Email Recipients ---")
-    # You can change this default email or add more here
-    default_email = "admin@example.com"
+        for recipient_data in recipients_to_add:
+            email = recipient_data["email"]
+            name = recipient_data["name"]
 
-    exists_recipient = session.query(EmailRecipient).filter_by(email=default_email).first()
+            if not recipients_col.find_one({"email": email}):
+                recipients_col.insert_one({
+                    "_id": str(uuid.uuid4()),
+                    "email": email,
+                    "name": name,
+                    "is_active": True,
+                    "created_at": datetime.now(timezone.utc)
+                })
+                print(f"  [+] Added Recipient: {email} ({name})")
+            else:
+                print(f"  [~] Skipped Recipient (Already Exists): {email}")
 
-    if not exists_recipient:
-        recipient = EmailRecipient(
-            email=default_email,
-            name="System Admin",
-            is_active=True
-        )
-        session.add(recipient)
-        print(f"  [+] Added Default Recipient: {default_email}")
-    else:
-        print(f"  [~] Skipped Recipient (Already Exists): {default_email}")
+        # ==========================================
+        # 3. SCHEDULER: SOURCES COLLECTION
+        # ==========================================
+        print("--- Setting up Scheduler Sources ---")
+        sources_col = db["sources"]
+        # Index on 'is_active' because the scheduler queries specifically for active sources every loop
+        sources_col.create_index([("is_active", ASCENDING)])
 
-    session.commit()
-    session.close()
-    print("--- Initialization Complete ---")
+        # Seed a sample source so the scheduler does something immediately
+        sample_url = "https://www.bbc.com/news/business" # Example
+        if not sources_col.find_one({"listing_url": sample_url}):
+            sources_col.insert_one({
+                "_id": str(uuid.uuid4()),
+                "name": "BBC Business (Sample)",
+                "listing_url": sample_url,
+                "url_pattern": "/news/", # Only keep links containing /news/
+                "fetch_interval_minutes": 60,
+                "is_active": True,
+                "last_run_at": None,
+                "created_at": datetime.now(timezone.utc)
+            })
+            print(f"  [+] Added Sample Source: BBC Business")
+
+        # ==========================================
+        # 4. SCHEDULER: PROCESSED ARTICLES
+        # ==========================================
+        print("--- Setting up Processed Articles Archive ---")
+        articles_col = db["processed_articles"]
+
+        # CRITICAL PERFORMANCE INDEX
+        # This ensures that `find({"url": ...})` is instant, even with millions of records.
+        # unique=True also acts as a database-level constraint against duplicates.
+        articles_col.create_index([("url", ASCENDING)], unique=True)
+
+        # Index for the Dashboard (to sort by date efficiently)
+        articles_col.create_index([("discovered_at", -1)])
+
+        # Index for Status Filtering
+        articles_col.create_index([("status", ASCENDING)])
+
+        print("--- Initialization Complete ---")
+        client.close()
+
+    except Exception as e:
+        print(f"[FATAL] Database initialization failed: {e}")
 
 if __name__ == "__main__":
     init_db()

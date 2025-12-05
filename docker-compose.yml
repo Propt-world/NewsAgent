@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # --- 1. The Message Broker ---
+  # --- 1. The Message Broker (Redis) ---
   redis:
     image: redis:alpine
     container_name: newsagent_redis
@@ -15,7 +15,22 @@ services:
       timeout: 3s
       retries: 5
 
-  # --- 2. The API (Producer) ---
+  # --- 2. The Database (MongoDB) ---
+  mongo:
+    image: mongo:latest
+    container_name: newsagent_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    # Optional: Basic healthcheck
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- 3. The API (Producer) ---
   api:
     build: .
     container_name: newsagent_api
@@ -23,41 +38,94 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Mount the code for live reloading during development
       - .:/app
     environment:
-      # Network: Use the service name 'redis' instead of localhost
+      # Network: Service names are hostnames
       - REDIS_URL=redis://redis:6379/0
+      # Use the container name 'mongo' for the connection
+      - DATABASE_URL=mongodb://mongo:27017
+      - MONGO_DB_NAME=newsagent
+
       # Pass through keys from your local machine
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+
+      # Email Settings
+      - SMTP_SERVER=${SMTP_SERVER}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_EMAIL=${SMTP_EMAIL}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
 
-  # --- 3. The Worker (Consumer) ---
+  # --- 4. The Worker (Consumer) ---
   worker:
     build: .
     container_name: newsagent_worker
-    # Run the worker script we created earlier
     command: python src/worker.py
     volumes:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=mongodb://mongo:27017
+      - MONGO_DB_NAME=newsagent
+
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+
+      # Email Settings
+      - SMTP_SERVER=${SMTP_SERVER}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_EMAIL=${SMTP_EMAIL}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
+
+  # --- 5. The Scheduler Service ---
+  scheduler:
+    build: .
+    container_name: newsagent_scheduler
+    # Runs the new scheduler/main.py
+    command: uvicorn src.scheduler.main:app --host 0.0.0.0 --port 8001 --reload
+    ports:
+      - "8001:8001"
+    volumes:
+      - .:/app
+    environment:
+      # Connects to the same DB to store sources/archives
+      - DATABASE_URL=mongodb://mongo:27017
+      - MONGO_DB_NAME=newsagent
+      # Needs to know where the main API is to submit jobs
+      - MAIN_API_URL=http://api:8000
+
+      # Email Settings for Failure Notifications
+      - SMTP_SERVER=${SMTP_SERVER}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_EMAIL=${SMTP_EMAIL}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+    env_file:
+      - .env
+    depends_on:
+      mongo:
+        condition: service_healthy
+      api:
+        # Scheduler needs API to be up to submit jobs
+        condition: service_started
 
 volumes:
   redis_data:
+  mongo_data:

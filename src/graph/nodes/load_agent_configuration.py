@@ -1,12 +1,9 @@
 import traceback
 from pprint import pprint
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
+from pymongo import MongoClient
+from src.db.enums import PromptStatus
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.AgentPromptsModel import AgentPromptsModel
-from src.db.models import PromptTemplate
-from src.db.enums import PromptStatus
 from src.configs.settings import settings
 
 def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
@@ -14,7 +11,7 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
     Node: LOAD AGENT CONFIGURATION
 
     Responsibilities:
-    1. Connects to the database.
+    1. Connects to MongoDB.
     2. Fetches the 'ACTIVE' version of every prompt required by the system.
     3. Validates that no required prompts are missing using AgentPromptsModel.
     4. Populates 'state.active_prompts' so downstream nodes can use them.
@@ -44,24 +41,23 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
 
     try:
         # 1. Establish Database Connection
-        # Note: For high-throughput, consider creating the engine globally in settings
-        engine = create_engine(settings.DATABASE_URL)
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        client = MongoClient(settings.DATABASE_URL)
+        db = client[settings.MONGO_DB_NAME]
+        collection = db["prompts"]
 
         # 2. Query for Active Prompts
-        # We fetch all rows where the name is in our list AND the status is 'active'
-        results = session.query(PromptTemplate).filter(
-            PromptTemplate.name.in_(REQUIRED_PROMPTS),
-            PromptTemplate.status == PromptStatus.ACTIVE
-        ).all()
+        # fetch all prompts where name is in REQUIRED_PROMPTS and status is ACTIVE
+        results = collection.find({
+            "name": {"$in": REQUIRED_PROMPTS},
+            "status": PromptStatus.ACTIVE
+        })
 
-        session.close()
-
-        # 3. Convert List of Rows to Dictionary
+        # 3. Convert List of Docs to Dictionary
         raw_prompts_dict = {}
-        for row in results:
-            raw_prompts_dict[row.name] = row.content
+        for doc in results:
+            raw_prompts_dict[doc["name"]] = doc["content"]
+
+        client.close()
 
         # 4. Strict Validation (The "Guard Rail")
         # By trying to instantiate the Pydantic model, we automatically check:

@@ -9,9 +9,7 @@ ENV PYTHONPATH=/app
 WORKDIR /app
 
 # 1. Install System Dependencies
-# These are NOT Python packages. These are Linux libraries required by
-# 'lxml' and 'newspaper4k' to compile correctly.
-# 'langgraph' does not need these, but 'newspaper4k' does.
+# Added dependencies for Chromium (required by requests-html / pyppeteer)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -19,11 +17,31 @@ RUN apt-get update && apt-get install -y \
     libxslt-dev \
     libjpeg-dev \
     zlib1g-dev \
+    # Chromium dependencies
+    libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxcb1 \
+    libxkbcommon0 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install Python Dependencies
-# This single line installs EVERYTHING in your requirements.txt
-# (beautifulsoup4, fastapi, langgraph, redis, etc.)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

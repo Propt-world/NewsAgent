@@ -1,5 +1,7 @@
+apscheduler
 beautifulsoup4
 fastapi
+httpx
 langchain
 langchain-community
 langchain-core
@@ -24,5 +26,5 @@ python-dotenv
 redis
 requests
 requests-html
-SQLAlchemy
+pymongo
 uvicorn

@@ -7,10 +7,13 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from typing import List, Optional, Dict, Any
 from pprint import pprint
+from fastapi import Body
+from pymongo import MongoClient
 
 # Project Imports
 from src.configs.settings import settings
 from src.models.InvokeRequest import InvokeRequest
+from src.db.models import PromptTemplate, Category, EmailRecipient
 from src.graph.graph import MainWorkflow
 # Note: User moved this file to src/
 from src.draw_workflow_graph import generate_workflow_graph
@@ -31,6 +34,11 @@ def get_redis_client():
         return redis.Redis(connection_pool=redis_pool)
     except redis.exceptions.ConnectionError:
         raise HTTPException(status_code=503, detail="Redis service unavailable")
+
+def get_mongo_db():
+    client = MongoClient(settings.DATABASE_URL)
+    return client[settings.MONGO_DB_NAME]
+
 
 def decode_job_data(raw_data: bytes) -> Dict[str, Any]:
     """Helper to decode bytes from Redis to JSON dict."""
@@ -321,6 +329,140 @@ async def submit_job(request: InvokeRequest):
     except Exception as e:
         pprint(f"[API] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# 5. ADMINISTRATION ENDPOINTS
+# ==========================================
+
+# --- A. PROMPTS ---
+
+@api.get("/admin/prompts", response_model=List[Dict])
+async def list_prompts():
+    """List all available prompts."""
+    db = get_mongo_db()
+    prompts = list(db["prompts"].find())
+    # Convert _id to string for JSON serialization
+    for p in prompts:
+        p["_id"] = str(p["_id"])
+    return prompts
+
+@api.get("/admin/prompts/{prompt_id}")
+async def get_prompt(prompt_id: str):
+    """Get a specific prompt by ID."""
+    db = get_mongo_db()
+    prompt = db["prompts"].find_one({"_id": prompt_id})
+    if not prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    prompt["_id"] = str(prompt["_id"])
+    return prompt
+
+@api.put("/admin/prompts/{prompt_id}")
+async def update_prompt(prompt_id: str, prompt_data: Dict[str, Any] = Body(...)):
+    """Update a prompt's content or status."""
+    db = get_mongo_db()
+    # Prevent updating immutable fields
+    if "_id" in prompt_data: del prompt_data["_id"]
+    if "created_at" in prompt_data: del prompt_data["created_at"]
+
+    result = db["prompts"].update_one(
+        {"_id": prompt_id},
+        {"$set": prompt_data}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    return {"status": "updated", "id": prompt_id}
+
+# --- B. CATEGORIES ---
+
+@api.get("/admin/categories", response_model=List[Dict])
+async def list_categories():
+    """List all article categories."""
+    db = get_mongo_db()
+    cats = list(db["categories"].find())
+    for c in cats:
+        c["_id"] = str(c["_id"])
+    return cats
+
+@api.post("/admin/categories", status_code=201)
+async def add_category(category: Category):
+    """Add a new category."""
+    db = get_mongo_db()
+    cat_dict = category.dict(by_alias=True)
+    # Check duplicate name
+    if db["categories"].find_one({"name": cat_dict["name"]}):
+        raise HTTPException(status_code=400, detail="Category already exists")
+
+    db["categories"].insert_one(cat_dict)
+    return {"status": "created", "id": cat_dict["_id"]}
+
+@api.put("/admin/categories/{cat_id}")
+async def update_category(cat_id: str, updates: Dict[str, Any] = Body(...)):
+    """Update a category (e.g. add sub-categories)."""
+    db = get_mongo_db()
+    if "_id" in updates: del updates["_id"]
+
+    result = db["categories"].update_one(
+        {"_id": cat_id},
+        {"$set": updates}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"status": "updated", "id": cat_id}
+
+@api.delete("/admin/categories/{cat_id}")
+async def delete_category(cat_id: str):
+    """Delete a category."""
+    db = get_mongo_db()
+    result = db["categories"].delete_one({"_id": cat_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"status": "deleted", "id": cat_id}
+
+# --- C. EMAIL RECIPIENTS ---
+
+@api.get("/admin/email-recipients", response_model=List[Dict])
+async def list_email_recipients():
+    """List all email recipients for error alerts."""
+    db = get_mongo_db()
+    recipients = list(db["email_recipients"].find())
+    for r in recipients:
+        r["_id"] = str(r["_id"])
+    return recipients
+
+@api.post("/admin/email-recipients", status_code=201)
+async def add_email_recipient(recipient: EmailRecipient):
+    """Add a new email recipient."""
+    db = get_mongo_db()
+    rec_dict = recipient.dict(by_alias=True)
+
+    if db["email_recipients"].find_one({"email": rec_dict["email"]}):
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    db["email_recipients"].insert_one(rec_dict)
+    return {"status": "created", "id": rec_dict["_id"]}
+
+@api.put("/admin/email-recipients/{rec_id}")
+async def update_email_recipient(rec_id: str, updates: Dict[str, Any] = Body(...)):
+    """Update an email recipient (e.g. deactivate)."""
+    db = get_mongo_db()
+    if "_id" in updates: del updates["_id"]
+
+    result = db["email_recipients"].update_one(
+        {"_id": rec_id},
+        {"$set": updates}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+    return {"status": "updated", "id": rec_id}
+
+@api.delete("/admin/email-recipients/{rec_id}")
+async def delete_email_recipient(rec_id: str):
+    """Delete an email recipient."""
+    db = get_mongo_db()
+    result = db["email_recipients"].delete_one({"_id": rec_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+    return {"status": "deleted", "id": rec_id}
 
 if __name__ == "__main__":
     print(f"\n--- NewsAgent API v3.2 running on http://{settings.HOST}:{settings.PORT} ---")

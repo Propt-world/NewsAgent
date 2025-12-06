@@ -281,6 +281,25 @@ RULES:
     },
 ]
 
+# --- CATEGORIES (NEW) ---
+INITIAL_CATEGORIES = [
+    {"name": "Market & Economy", "sub_categories": ["GCC Market Overview", "UAE Market", "Saudi Market", "Qatar Market", "Oman Market", "Bahrain Market", "Kuwait Market", "Real Estate Indices", "Economic Trends & Data", "Market Comparisons"]},
+    {"name": "Residential", "sub_categories": ["Apartments", "Villas & Townhouses", "Off-Plan Projects", "Rental Market", "Luxury Homes", "Affordable Housing", "Community Developments", "Serviced Residences"]},
+    {"name": "Commercial", "sub_categories": ["Office Spaces", "Retail Spaces", "Warehousing & Industrial", "Co-Working Hubs", "Mixed-Use Projects", "Logistics Parks", "Free Zones Developments"]},
+    {"name": "Hospitality", "sub_categories": ["Hotel Developments", "Resort Projects", "Branded Residences", "Serviced Apartments", "Tourism Real Estate", "Hospitality Investments"]},
+    {"name": "Development", "sub_categories": ["Mega Projects", "Masterplans", "Urban Planning", "Infrastructure Projects", "Mixed-Use Developments", "Public Sector Developments"]},
+    {"name": "Developers", "sub_categories": ["UAE: Emaar", "Aldar", "Damac", "Nakheel", "Sobha", "Binghatti", "Meraas", "Ellington", "Danube", "Azizi", "Dubai Properties", "KSA: Roshn", "Red Sea Global", "Dar Al Arkan", "Jeddah Central Development", "PIF Projects", "Qatar: UDC", "Barwa", "Qatari Diar", "Oman & Bahrain: Omran", "Diyar Al Muharraq"]},
+    {"name": "Investment", "sub_categories": ["REITs", "Institutional Investment", "Capital Flows", "Private Equity", "Foreign Investment", "Mortgage Trends", "ROI Insights", "Real Estate Funds"]},
+    {"name": "Finance", "sub_categories": ["Property Financing", "Mortgage Rates", "Valuations", "Interest Rate Updates", "Developer Payment Plans", "Bank & Lender News"]},
+    {"name": "PropTech", "sub_categories": ["Smart Property Solutions", "Real Estate Data & AI", "Automation Tools", "CRM & Software Platforms", "Blockchain in Real Estate", "Virtual Tours (AR/VR)", "Digital Twins", "Online Marketplaces"]},
+    {"name": "Construction", "sub_categories": ["Contractors", "Building Materials", "Infrastructure Works", "Engineering Firms", "Project Management", "Construction Updates", "Safety Standards", "Construction Technology"]},
+    {"name": "Architecture & Design", "sub_categories": ["Urban Architecture", "Sustainable Building Design", "Masterplanning", "Façade Innovation", "Architectural Firms", "Landmark Projects"]},
+    {"name": "Sustainability", "sub_categories": ["Green Buildings", "ESG in Real Estate", "Smart Cities", "Renewable Energy Integration", "Carbon Neutral Projects", "Environmental Standards", "Sustainable Infrastructure"]},
+    {"name": "Policy & Regulations", "sub_categories": ["Ownership Laws", "Freehold & Leasehold Rules", "Golden Visa Regulations", "Property Taxation", "RERA & DLD Policies", "Zoning & Development Laws", "Government Real Estate Initiatives"]},
+    {"name": "People", "sub_categories": ["Developers & CEOs", "Government Officials", "Real Estate Analysts", "Architects & Planners", "Top Brokers", "Industry Thought Leaders"]}
+]
+
+
 def init_db():
     print(f"--- Connecting to MongoDB at: {settings.DATABASE_URL} ---")
 
@@ -350,30 +369,39 @@ def init_db():
                 print(f"  [~] Skipped Recipient (Already Exists): {email}")
 
         # ==========================================
-        # 3. SCHEDULER: SOURCES COLLECTION
+        # 3. CATEGORIES COLLECTION (NEW)
+        # ==========================================
+        print("--- Setting up Categories ---")
+        categories_col = db["categories"]
+        categories_col.create_index([("name", ASCENDING)], unique=True)
+
+        for cat_data in INITIAL_CATEGORIES:
+            existing = categories_col.find_one({"name": cat_data["name"]})
+            if not existing:
+                new_cat = {
+                    "_id": str(uuid.uuid4()),
+                    "name": cat_data["name"],
+                    "sub_categories": cat_data["sub_categories"],
+                    "created_at": datetime.now(timezone.utc)
+                }
+                categories_col.insert_one(new_cat)
+                print(f"  [+] Added Category: {cat_data['name']}")
+            else:
+                print(f"  [~] Skipped Category: {cat_data['name']}")
+
+        # ==========================================
+        # 4. SCHEDULER: SOURCES COLLECTION
         # ==========================================
         print("--- Setting up Scheduler Sources ---")
         sources_col = db["sources"]
         # Index on 'is_active' because the scheduler queries specifically for active sources every loop
         sources_col.create_index([("is_active", ASCENDING)])
-
-        # Seed a sample source so the scheduler does something immediately
-        sample_url = "https://www.bbc.com/news/business" # Example
-        if not sources_col.find_one({"listing_url": sample_url}):
-            sources_col.insert_one({
-                "_id": str(uuid.uuid4()),
-                "name": "BBC Business (Sample)",
-                "listing_url": sample_url,
-                "url_pattern": "/news/", # Only keep links containing /news/
-                "fetch_interval_minutes": 60,
-                "is_active": True,
-                "last_run_at": None,
-                "created_at": datetime.now(timezone.utc)
-            })
-            print(f"  [+] Added Sample Source: BBC Business")
+        # Index on 'listing_url' for uniqueness checks when adding sources
+        sources_col.create_index([("listing_url", ASCENDING)], unique=True)
+        print("  [+] Sources collection ready (empty - add sources via API)")
 
         # ==========================================
-        # 4. SCHEDULER: PROCESSED ARTICLES
+        # 5. SCHEDULER: PROCESSED ARTICLES
         # ==========================================
         print("--- Setting up Processed Articles Archive ---")
         articles_col = db["processed_articles"]
@@ -394,6 +422,7 @@ def init_db():
 
     except Exception as e:
         print(f"[FATAL] Database initialization failed: {e}")
+
 
 if __name__ == "__main__":
     init_db()

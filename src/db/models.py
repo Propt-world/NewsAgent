@@ -4,8 +4,6 @@ from typing import List, Optional, Any
 from pydantic import BaseModel, Field
 from src.db.enums import PromptStatus
 
-# Since MongoDB is schema-less, we use Pydantic for application-side schema validation.
-
 class PromptTemplate(BaseModel):
     """
     Represents a Prompt document in MongoDB.
@@ -32,6 +30,20 @@ class EmailRecipient(BaseModel):
     email: str
     name: Optional[str] = None
     is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        populate_by_name = True
+
+class Category(BaseModel):
+    """
+    Represents a News Category.
+    Collection: 'categories'
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="_id")
+    name: str  # e.g. "Market & Economy"
+    description: Optional[str] = None
+    sub_categories: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:

@@ -21,8 +21,16 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     pprint(f"[NODE: RAW EXTRACTION] Fetching and rendering: {url}")
 
     # Initialize an HTML Session (this manages the headless browser)
-    session = HTMLSession()
-
+    # FIX: Initialize HTML Session with Docker-compatible browser arguments
+    session = HTMLSession(
+        browser_args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-setuid-sandbox"
+        ]
+    )
     # --- NEWSPAPER4K CONFIGURATION ---
     # You can configure newspaper4k if needed.
     # For now, the default config is fine.
@@ -44,7 +52,7 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
         response.raise_for_status()
 
         # 2. Render JavaScript
-        response.html.render(scrolldown=1, timeout=20, sleep=1)
+        response.html.render(scrolldown=2, timeout=30, sleep=1)
         pprint(f"[NODE: RAW EXTRACTION] Page rendered successfully.")
 
         # 3. Use newspaper4k to parse the *rendered* HTML
@@ -108,4 +116,8 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             "error_message": f"Error in raw_extraction: {e}"
         })
     finally:
-        session.close() # Always close the session to free up browser resources
+        # FIX: Ensure session is closed to prevent zombie processes
+        try:
+            session.close()
+        except:
+            pass

@@ -37,7 +37,18 @@ async def fetch_listing_page(url: str, render_js: bool = True) -> str:
     Fetches the HTML of a listing page.
     Uses requests-html to optionally render JavaScript (for lazy loaded links).
     """
-    session = AsyncHTMLSession()
+    # FIX: Add these arguments to prevent crashes in Docker
+    # --no-sandbox: Required for running as root in Docker
+    # --disable-dev-shm-usage: Prevents crashing when /dev/shm is small (Docker default is 64MB)
+    session = AsyncHTMLSession(
+        browser_args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-setuid-sandbox"
+        ]
+    )
     try:
         response = await session.get(url, timeout=30)
 

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # Optional secret to validate the request comes from this agent
     WEBHOOK_SECRET: Optional[str] = os.getenv('WEBHOOK_SECRET')
 
+    # Scheduler Configuration
+    # Main API URL for submitting jobs (used by scheduler service)
+    MAIN_API_URL: str = os.getenv('MAIN_API_URL', 'http://localhost:8000')
+    # Source ID for manually submitted articles (not from scheduled sources)
+    SUBMISSION_SOURCE_ID: str = os.getenv('SUBMISSION_SOURCE_ID', 'newsagent_scheduled_source')
+
     # Opik Settings
     def get_opik_client(self):
         if not self.OPIK_API_KEY:

@@ -86,7 +86,7 @@ async def check_single_source(source: dict):
                     continue # Skip if already exists
 
                 # B. Call Main API to start extraction
-                api_url = f"http://api:8000/submit-job"
+                api_url = f"{settings.MAIN_API_URL}/submit-job"
 
                 payload = {
                     "source_url": link,
@@ -192,7 +192,7 @@ async def store_result(payload: Dict[str, Any]):
         print("[WEBHOOK] URL not in scheduler DB. Creating new record.")
         articles_col.insert_one({
             "_id": str(uuid.uuid4()),
-            "source_id": "manual_submission",
+            "source_id": settings.SUBMISSION_SOURCE_ID,
             "url": url,
             "status": "processed",
             "discovered_at": datetime.now(timezone.utc),

@@ -1,8 +1,11 @@
 import re
+import asyncio
 from typing import Set, List
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from requests_html import AsyncHTMLSession
+from pyppeteer.errors import NetworkError, PageError
+import requests
 
 # --- BLOCKLIST CONFIGURATION ---
 
@@ -39,23 +42,28 @@ async def fetch_listing_page(url: str, render_js: bool = True) -> str:
         response = await session.get(url, timeout=30)
 
         if render_js:
-            # Render the page:
-            # - scrolldown: Triggers lazy loading events
-            # - sleep: Waits for content to load after scroll
-            # - timeout: Max time to wait for render
             try:
-                await response.html.arender(scrolldown=2, sleep=1, timeout=20)
+                # Render with safeguards
+                # scrolldown=12 is usually enough to trigger lazy load without overwhelming memory
+                await response.html.arender(scrolldown=2, sleep=1, timeout=15)
+            except (NetworkError, PageError, asyncio.TimeoutError) as e:
+                print(f"[LINK DISCOVERY] Render failed for {url} (Using static HTML): {e}")
+                # We do NOT raise here. We just return the static HTML we already downloaded.
             except Exception as e:
-                print(f"[LINK DISCOVERY] Render warning for {url}: {e}")
-                # We continue even if render fails/timeouts, using whatever HTML we got
+                print(f"[LINK DISCOVERY] Unexpected render error: {e}")
 
         return response.html.html
 
+    except requests.exceptions.ConnectionError as e:
+        print(f"[LINK DISCOVERY] Connection Error for {url}: {e}")
+        raise e  # Re-raise so scheduler can log/email this specific failure
     except Exception as e:
-        # Re-raise to be caught by the scheduler's error handler
         raise e
     finally:
-        await session.close()
+        try:
+            await session.close()
+        except:
+            pass
 
 def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set[str]:
     """

@@ -1,5 +1,7 @@
 apscheduler
+asyncio
 beautifulsoup4
+debugpy
 fastapi
 httpx
 langchain
@@ -22,9 +24,10 @@ opik
 pydantic
 pydantic-settings
 pydantic_core
+pyppeteer
+pymongo
 python-dotenv
 redis
 requests
 requests-html
-pymongo
 uvicorn

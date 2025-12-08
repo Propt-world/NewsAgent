@@ -20,7 +20,7 @@ class SourceConfig(BaseModel):
 
     is_active: bool = True
     last_run_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         populate_by_name = True
@@ -34,10 +34,10 @@ class ProcessedArticle(BaseModel):
     source_id: str
     url: str
 
-    # Status: 'discovered', 'queued', 'completed', 'failed'
+    # Status: 'discovered', 'queued', 'completed', 'failed', 'processed'
     status: str = "discovered"
 
-    discovered_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     processed_at: Optional[datetime] = None
 
     # The final output from the AI Worker (Summary, Translation, SEO, etc.)

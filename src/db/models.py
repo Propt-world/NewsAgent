@@ -1,8 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field
 from src.db.enums import PromptStatus
+
+# Since MongoDB is schema-less, we use Pydantic for application-side schema validation.
 
 class PromptTemplate(BaseModel):
     """
@@ -16,7 +18,7 @@ class PromptTemplate(BaseModel):
     description: Optional[str] = None
     input_variables: List[str] = Field(default_factory=list)
     version: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         populate_by_name = True
@@ -30,7 +32,7 @@ class EmailRecipient(BaseModel):
     email: str
     name: Optional[str] = None
     is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         populate_by_name = True
@@ -44,7 +46,7 @@ class Category(BaseModel):
     name: str  # e.g. "Market & Economy"
     description: Optional[str] = None
     sub_categories: List[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         populate_by_name = True

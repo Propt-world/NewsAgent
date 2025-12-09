@@ -46,7 +46,8 @@ async def fetch_listing_page(url: str, render_js: bool = True) -> str:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-software-rasterizer",
-            "--disable-setuid-sandbox"
+            "--disable-setuid-sandbox",
+            "--single-process"
         ]
     )
     try:

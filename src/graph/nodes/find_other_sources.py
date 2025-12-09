@@ -13,8 +13,6 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
     """
     Generates multiple, high-quality search queries and then
     executes them to find corroborating sources for the article.
-
-    Saves both the search results and the generated queries to the state.
     """
     pprint("[NODE: FIND OTHER SOURCES] Starting multi-query search...")
 
@@ -30,13 +28,11 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
         summary = state.news_article.summary
         publish_date = state.news_article.published_date or "Not available"
 
-        # --- STAGE 1: GENERATE QUERIES ---
+        # --- STAGE 1: GENERATE QUERIES (Same as before) ---
         pprint("[NODE: FIND OTHER SOURCES] Generating search queries...")
 
-        # Get LLM with structured output for our Query model
         query_gen_model = settings.get_model().with_structured_output(SearchQueryModel)
 
-        # Format the prompt
         prompt = PromptTemplate.from_template(USER_PROMPT)
         formatted_prompt = prompt.format(
             title=title,
@@ -49,33 +45,38 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
             ("user", formatted_prompt)
         ]
 
-        # Call the LLM to get our list of queries
         query_response: SearchQueryModel = query_gen_model.invoke(messages)
         search_queries = query_response.queries
 
         pprint(f"[NODE: FIND OTHER SOURCES] Generated {len(search_queries)} queries.")
-        if query_response.keywords:
-            pprint(f"[NODE: FIND OTHER SOURCES] Keywords: {query_response.keywords}")
 
-        # --- STAGE 2: EXECUTE SEARCHES ---
+        # --- STAGE 2: EXECUTE SEARCHES (Updated for TavilyClient) ---
 
-        # Get the Tavily tool, configured for 3 results per query
-        # This will use your corrected get_tavily_tool method
-        tavily_tool = settings.get_tavily_tool(max_results=3)
+        # 1. Get the Client
+        tavily_client = settings.get_tavily_client()
 
         all_results: List[Dict[str, Any]] = []
-        seen_urls: Set[str] = {state.source_url} # De-duplicate, ignore original
+        seen_urls: Set[str] = {state.source_url}
 
         for query in search_queries:
             pprint(f"[NODE: FIND OTHER SOURCES] Executing query: {query}")
             try:
-                # Use .invoke() which now correctly uses TavilySearch
-                results = tavily_tool.invoke(query)
+                # 2. Use .search() directly
+                # returns: {'query': '...', 'results': [{'url': '...', 'content': '...'}, ...]}
+                response = tavily_client.search(
+                    query=query,
+                    search_depth="basic",
+                    max_results=5
+                )
+
+                results = response.get("results", [])
 
                 for res in results:
-                    if res.get('url') not in seen_urls:
+                    url = res.get('url')
+                    if url and url not in seen_urls:
                         all_results.append(res)
-                        seen_urls.add(res.get('url'))
+                        seen_urls.add(url)
+
             except Exception as e:
                 pprint(f"[NODE: FIND OTHER SOURCES] Error on query '{query}': {e}")
 
@@ -84,7 +85,7 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
         # 5. Update the state
         return state.model_copy(update={
             "other_sources": all_results,
-            "search_query_data": query_response  # <-- Save the queries as requested
+            "search_query_data": query_response
         })
 
     except Exception as e:

@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     zlib1g-dev \
     # Chromium dependencies
+    chromium \
     libglib2.0-0 \
     libnss3 \
     libnspr4 \

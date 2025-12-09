@@ -28,7 +28,8 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-software-rasterizer",
-            "--disable-setuid-sandbox"
+            "--disable-setuid-sandbox",
+            "--single-process"
         ]
     )
     # --- NEWSPAPER4K CONFIGURATION ---
@@ -58,7 +59,7 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
         # 3. Use newspaper4k to parse the *rendered* HTML
         # Pass the config if you created one: article = Article(url, config=config)
         article = Article(url)
-        article.set_html(response.html.html) # Pass the rendered HTML
+        article.download(input_html=response.html.html) # Pass the rendered HTML
         article.parse()
 
         # 4. Check if newspaper4k found content

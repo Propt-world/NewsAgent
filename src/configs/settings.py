@@ -3,7 +3,8 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 from langchain_openai import ChatOpenAI
 from opik.integrations.langchain import OpikTracer
-from langchain_tavily import TavilySearch
+#from langchain_tavily import TavilySearch, TavilySearchResults
+from tavily import TavilyClient
 from opik import Opik
 import opik
 from dotenv import load_dotenv
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv('DATABASE_URL', "mongodb://localhost:27017")
     MONGO_DB_NAME: str = os.getenv('MONGO_DB_NAME', "newsagent")
 
-    # LangGraph Settings
+    # Keys and URLs
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY')
     OPENAI_URL: str = os.getenv('OPENAI_URL')
     OPIK_API_KEY: str = os.getenv('OPIK_API_KEY')
@@ -82,17 +83,15 @@ class Settings(BaseSettings):
         return ChatOpenAI(
             model=self.MODEL_NAME,
             temperature=self.MODEL_TEMPERATURE,
-            openai_api_key=self.OPENAI_API_KEY,
-            base_url=self.OPENAI_URL
+            openai_api_key=self.OPENAI_API_KEY
         )
 
-    def get_tavily_tool(self, max_results: int = 5) -> TavilySearch:
+    def get_tavily_client(self) -> TavilyClient:
         if not self.TAVILY_API_KEY:
             raise ValueError("TAVILY_API_KEY is not set")
 
-        return TavilySearch(
+        return TavilyClient(
             api_key=self.TAVILY_API_KEY,
-            max_results=max_results
         )
 
     class Config:

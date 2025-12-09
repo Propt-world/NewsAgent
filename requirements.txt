@@ -30,4 +30,5 @@ python-dotenv
 redis
 requests
 requests-html
+tavily
 uvicorn

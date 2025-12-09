@@ -99,6 +99,7 @@ services:
       - 8.8.8.8
       - 8.8.4.4
     environment:
+      - PYPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=mongodb://mongo:27017
       - MONGO_DB_NAME=newsagent
@@ -138,6 +139,7 @@ services:
       - 8.8.8.8
       - 8.8.4.4
     environment:
+      - PYPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
       # Connects to the same DB to store sources/archives
       - DATABASE_URL=mongodb://mongo:27017
       - MONGO_DB_NAME=newsagent

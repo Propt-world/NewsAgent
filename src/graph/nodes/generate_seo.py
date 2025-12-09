@@ -3,7 +3,8 @@ import json
 from datetime import datetime
 from pprint import pprint
 from src.models.MainWorkflowState import MainWorkflowState
-from src.models.SeoMetadataModel import SeoMetadataModel
+# Import both models
+from src.models.SeoMetadataModel import SeoMetadataModel, SeoLLMOutput
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
 
@@ -20,7 +21,9 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
 
         # 1. Get Prompts & Model
         prompts = state.active_prompts
-        model = settings.get_model().with_structured_output(SeoMetadataModel)
+
+        # --- FIX: Use the LLM-specific model (Strict Schema) ---
+        model = settings.get_model().with_structured_output(SeoLLMOutput)
 
         # 2. Format Prompt
         user_prompt_template = PromptTemplate.from_template(prompts.seo_user)
@@ -35,14 +38,11 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
             ("user", formatted_prompt)
         ]
 
-        # 3. Invoke LLM
-        seo_result: SeoMetadataModel = model.invoke(messages)
+        # 3. Invoke LLM (Returns SeoLLMOutput)
+        llm_result: SeoLLMOutput = model.invoke(messages)
 
         # 4. Construct JSON-LD Programmatically
-        # This ensures the hardcoded PROPT details are always correct
-        # and we don't rely on the LLM to format JSON perfectly.
-
-        # Default dates if missing
+        # (This block remains exactly the same as your original code)
         pub_date = state.news_article.published_date or datetime.now().isoformat()
         mod_date = datetime.now().isoformat()
         image_url = state.news_article.top_image or ""
@@ -54,8 +54,8 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
                 "@type": "WebPage",
                 "@id": state.source_url
             },
-            "headline": seo_result.meta_title,
-            "description": seo_result.meta_description,
+            "headline": llm_result.meta_title,
+            "description": llm_result.meta_description,
             "image": image_url,
             "author": {
                 "@type": "Organization",
@@ -74,14 +74,19 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
             "dateModified": mod_date
         }
 
-        # 5. Inject JSON-LD back into the model
-        seo_result.json_ld_schema = json_ld
+        # 5. --- FIX: Convert to Full Model ---
+        # Create the full SeoMetadataModel by unpacking the LLM result
+        # and adding the calculated JSON-LD
+        final_seo_model = SeoMetadataModel(
+            **llm_result.model_dump(),
+            json_ld_schema=json_ld
+        )
 
-        pprint(f"[NODE: SEO] Generated Slug: {seo_result.slug}")
+        pprint(f"[NODE: SEO] Generated Slug: {final_seo_model.slug}")
 
         # 6. Update State
         updated_article = state.news_article.model_copy(update={
-            "seo": seo_result
+            "seo": final_seo_model
         })
 
         return state.model_copy(update={

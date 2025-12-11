@@ -3,6 +3,7 @@ import uuid
 import json
 import redis
 import os
+import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from typing import List, Optional, Dict, Any
@@ -17,7 +18,18 @@ from src.db.models import PromptTemplate, Category, EmailRecipient
 from src.graph.graph import MainWorkflow
 # Note: User moved this file to src/
 from src.draw_workflow_graph import generate_workflow_graph
-from src.utils.log_viewer import get_container_logs, format_logs_html
+from src.utils.log_viewer import get_application_logs, format_logs_html, setup_log_handler
+
+# Initialize logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# Setup in-memory log handler for /logs endpoint
+setup_log_handler()
 
 api = FastAPI(
     title="NewsAgent Server",
@@ -92,25 +104,17 @@ async def health_check():
 @api.get("/logs", response_class=HTMLResponse)
 async def view_logs(
     lines: int = Query(100, ge=10, le=5000, description="Number of log lines to retrieve"),
-    grep: Optional[str] = Query(None, description="Filter logs by keyword"),
-    since: Optional[str] = Query(None, description="Time duration (e.g., '1h', '30m', '1d')")
+    grep: Optional[str] = Query(None, description="Filter logs by keyword")
 ):
     """
-    View container logs in a formatted HTML page.
+    View application logs in a formatted HTML page.
     Useful for debugging without SSH access to the VM.
     """
-    container_name = "newsagent_api"
-    logs = get_container_logs(
-        container_name=container_name,
-        lines=lines,
-        grep_filter=grep,
-        since=since
-    )
+    logs = get_application_logs(lines=lines, grep_filter=grep)
     
     html = format_logs_html(
         logs=logs,
         service_name="NewsAPI Service",
-        container_name=container_name,
         lines=lines,
         grep_filter=grep
     )

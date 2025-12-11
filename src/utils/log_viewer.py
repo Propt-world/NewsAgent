@@ -1,62 +1,103 @@
 """
-Log Viewer Utility for Docker Containers
-Provides functions to read and format container logs for web display.
+Log Viewer Utility for Application Logs
+Provides functions to capture and format application logs for web display.
 """
-import subprocess
-from typing import Optional, List
+import logging
+import sys
+import io
+from typing import Optional, List, Deque
 from datetime import datetime
+from collections import deque
+import threading
 
+# In-memory log storage
+class InMemoryLogHandler(logging.Handler):
+    """Custom logging handler that stores logs in memory."""
+    
+    def __init__(self, maxlen=5000):
+        super().__init__()
+        self.log_buffer: Deque[str] = deque(maxlen=maxlen)
+        self.lock = threading.Lock()
+        
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            with self.lock:
+                self.log_buffer.append(msg)
+        except Exception:
+            self.handleError(record)
+    
+    def get_logs(self, lines: int = 100, grep_filter: Optional[str] = None) -> str:
+        """Retrieve logs from the buffer."""
+        with self.lock:
+            # Get last N lines
+            log_lines = list(self.log_buffer)[-lines:]
+            
+            # Apply grep filter if provided
+            if grep_filter:
+                log_lines = [
+                    line for line in log_lines
+                    if grep_filter.lower() in line.lower()
+                ]
+            
+            return '\n'.join(log_lines) if log_lines else "No logs available"
+    
+    def clear(self):
+        """Clear the log buffer."""
+        with self.lock:
+            self.log_buffer.clear()
 
-def get_container_logs(
-    container_name: str,
-    lines: int = 100,
-    grep_filter: Optional[str] = None,
-    since: Optional[str] = None
-) -> str:
+# Global log handler instance
+_log_handler = None
+
+def setup_log_handler(logger_name: str = None):
     """
-    Fetch logs from a Docker container.
+    Set up the in-memory log handler for capturing application logs.
+    Call this once during application startup.
     
     Args:
-        container_name: Name of the Docker container
+        logger_name: Name of the logger to attach to (None for root logger)
+    """
+    global _log_handler
+    
+    if _log_handler is None:
+        _log_handler = InMemoryLogHandler(maxlen=5000)
+        
+        # Format logs with timestamp and level
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        _log_handler.setFormatter(formatter)
+        
+        # Attach to logger
+        logger = logging.getLogger(logger_name)
+        logger.addHandler(_log_handler)
+        logger.setLevel(logging.DEBUG)
+    
+    return _log_handler
+
+def get_application_logs(
+    lines: int = 100,
+    grep_filter: Optional[str] = None
+) -> str:
+    """
+    Fetch logs from the in-memory log handler.
+    
+    Args:
         lines: Number of lines to retrieve (default: 100)
         grep_filter: Optional string to filter logs
-        since: Optional time duration (e.g., "1h", "30m", "1d")
     
     Returns:
         String containing the logs
     """
+    global _log_handler
+    
+    if _log_handler is None:
+        return "Log handler not initialized. Logs are not being captured."
+    
     try:
-        # Build docker logs command
-        cmd = ["docker", "logs", container_name, "--tail", str(lines)]
-        
-        if since:
-            cmd.extend(["--since", since])
-        
-        # Execute command
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        # Combine stdout and stderr
-        logs = result.stdout + result.stderr
-        
-        # Apply grep filter if provided
-        if grep_filter and logs:
-            filtered_lines = [
-                line for line in logs.split('\n')
-                if grep_filter.lower() in line.lower()
-            ]
-            logs = '\n'.join(filtered_lines)
-        
-        return logs if logs else "No logs available"
-        
-    except subprocess.TimeoutExpired:
-        return "Error: Log retrieval timed out"
-    except FileNotFoundError:
-        return "Error: Docker command not found. Are you running in a Docker environment?"
+        return _log_handler.get_logs(lines=lines, grep_filter=grep_filter)
     except Exception as e:
         return f"Error retrieving logs: {str(e)}"
 
@@ -64,7 +105,6 @@ def get_container_logs(
 def format_logs_html(
     logs: str,
     service_name: str,
-    container_name: str,
     lines: int,
     grep_filter: Optional[str] = None
 ) -> str:
@@ -74,7 +114,6 @@ def format_logs_html(
     Args:
         logs: Raw log content
         service_name: Name of the service (e.g., "NewsAPI", "Scheduler")
-        container_name: Docker container name
         lines: Number of lines displayed
         grep_filter: Filter applied (if any)
     
@@ -136,6 +175,7 @@ def format_logs_html(
                 text-decoration: none;
                 border-radius: 4px;
                 margin-right: 10px;
+                margin-bottom: 5px;
                 font-size: 14px;
                 transition: background 0.3s;
             }}
@@ -205,8 +245,7 @@ def format_logs_html(
     <body>
         <div class="header">
             <h1>📋 {service_name} Logs</h1>
-            <p><strong>Container:</strong> {container_name}</p>
-            <p><strong>Lines:</strong> {lines}</p>
+            <p><strong>Lines Shown:</strong> {lines}</p>
             {filter_info}
             <p><strong>Last Updated:</strong> {timestamp}</p>
         </div>
@@ -216,8 +255,7 @@ def format_logs_html(
             <a href="?lines=100">Last 100</a>
             <a href="?lines=500">Last 500</a>
             <a href="?lines=1000">Last 1000</a>
-            <a href="?since=1h">Last Hour</a>
-            <a href="?since=24h">Last 24h</a>
+            <a href="?lines=5000">All (5000)</a>
         </div>
         
         <div class="log-container">

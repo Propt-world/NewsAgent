@@ -4,7 +4,7 @@ import json
 import redis
 import os
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from typing import List, Optional, Dict, Any
 from pprint import pprint
 from fastapi import Body
@@ -17,6 +17,7 @@ from src.db.models import PromptTemplate, Category, EmailRecipient
 from src.graph.graph import MainWorkflow
 # Note: User moved this file to src/
 from src.draw_workflow_graph import generate_workflow_graph
+from src.utils.log_viewer import get_container_logs, format_logs_html
 
 api = FastAPI(
     title="NewsAgent Server",
@@ -86,6 +87,35 @@ async def health_check():
         raise HTTPException(status_code=503, detail=health_status)
 
     return health_status
+
+# --- 1.5. LOGS VIEWER ENDPOINT ---
+@api.get("/logs", response_class=HTMLResponse)
+async def view_logs(
+    lines: int = Query(100, ge=10, le=5000, description="Number of log lines to retrieve"),
+    grep: Optional[str] = Query(None, description="Filter logs by keyword"),
+    since: Optional[str] = Query(None, description="Time duration (e.g., '1h', '30m', '1d')")
+):
+    """
+    View container logs in a formatted HTML page.
+    Useful for debugging without SSH access to the VM.
+    """
+    container_name = "newsagent_api"
+    logs = get_container_logs(
+        container_name=container_name,
+        lines=lines,
+        grep_filter=grep,
+        since=since
+    )
+    
+    html = format_logs_html(
+        logs=logs,
+        service_name="NewsAPI Service",
+        container_name=container_name,
+        lines=lines,
+        grep_filter=grep
+    )
+    
+    return HTMLResponse(content=html)
 
 # --- 2. QUEUE MANAGEMENT ENDPOINTS ---
 

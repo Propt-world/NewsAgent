@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
+from fastapi.responses import HTMLResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo import MongoClient
@@ -17,6 +18,7 @@ from src.configs.settings import settings
 from src.scheduler.models import SourceConfig, ProcessedArticle
 from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
+from src.utils.log_viewer import get_container_logs, format_logs_html
 
 # --- DATABASE SETUP ---
 client = MongoClient(settings.DATABASE_URL)
@@ -188,6 +190,35 @@ async def store_result(payload: Dict[str, Any]):
         })
 
     return {"status": "ok", "message": "Result stored"}
+
+# --- 1.5. LOGS VIEWER ENDPOINT ---
+@app.get("/logs", response_class=HTMLResponse)
+async def view_logs(
+    lines: int = Query(100, ge=10, le=5000, description="Number of log lines to retrieve"),
+    grep: Optional[str] = Query(None, description="Filter logs by keyword"),
+    since: Optional[str] = Query(None, description="Time duration (e.g., '1h', '30m', '1d')")
+):
+    """
+    View container logs in a formatted HTML page.
+    Useful for debugging without SSH access to the VM.
+    """
+    container_name = "newsagent_scheduler"
+    logs = get_container_logs(
+        container_name=container_name,
+        lines=lines,
+        grep_filter=grep,
+        since=since
+    )
+    
+    html = format_logs_html(
+        logs=logs,
+        service_name="Scheduler Service",
+        container_name=container_name,
+        lines=lines,
+        grep_filter=grep
+    )
+    
+    return HTMLResponse(content=html)
 
 # --- 2. SOURCE MANAGEMENT ENDPOINTS ---
 

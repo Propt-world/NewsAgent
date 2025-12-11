@@ -20,6 +20,7 @@ from src.scheduler.models import SourceConfig, ProcessedArticle
 from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
 from src.utils.log_viewer import get_application_logs, format_logs_html, setup_log_handler
+from src.middleware.request_logger import RequestLoggingMiddleware
 
 # Initialize logging
 logging.basicConfig(
@@ -168,6 +169,11 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan)
+
+# Add request logging middleware
+app.add_middleware(RequestLoggingMiddleware)
+
+logger.info("🗓️ Scheduler Service starting up...")
 
 # --- 1. WEBHOOK ENDPOINT ---
 @app.post("/webhook/store-result")

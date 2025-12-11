@@ -19,6 +19,7 @@ from src.graph.graph import MainWorkflow
 # Note: User moved this file to src/
 from src.draw_workflow_graph import generate_workflow_graph
 from src.utils.log_viewer import get_application_logs, format_logs_html, setup_log_handler
+from src.middleware.request_logger import RequestLoggingMiddleware
 
 # Initialize logging
 logging.basicConfig(
@@ -36,6 +37,11 @@ api = FastAPI(
     version="3.2",
     description="Redis-Backed Async News Agent with Observability & Queue Management"
 )
+
+# Add request logging middleware
+api.add_middleware(RequestLoggingMiddleware)
+
+logger.info("🚀 NewsAgent API starting up...")
 
 # Initialize Redis Connection Pool
 # Creating a global pool is best practice for FastAPI

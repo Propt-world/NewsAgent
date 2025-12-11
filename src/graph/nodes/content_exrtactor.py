@@ -1,6 +1,6 @@
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
-from src.prompts.ContentExtractorPrompt import ContentExtractor, schema
+from src.prompts.ContentExtractorPrompt import schema
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
 from pprint import pprint
@@ -17,7 +17,8 @@ def content_extractor(state: MainWorkflowState) -> MainWorkflowState:
 
     try:
         # Initialize the prompt template
-        prompt = PromptTemplate.from_template(ContentExtractor)
+        prompts = state.active_prompts
+        prompt = PromptTemplate.from_template(prompts.content_extractor)
 
         # Get the raw extraction result from the workflow state
         raw_extraction_result = state.raw_extraction_result

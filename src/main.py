@@ -29,8 +29,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+print("DEBUG: Logging initialized. Importing project modules...", flush=True)
+
 # Setup in-memory log handler for /logs endpoint
+print("DEBUG: Setting up log handler...", flush=True)
 setup_log_handler()
+print("DEBUG: Log handler setup done.", flush=True)
 
 api = FastAPI(
     title="NewsAgent Server",
@@ -39,13 +43,16 @@ api = FastAPI(
 )
 
 # Add request logging middleware
-api.add_middleware(RequestLoggingMiddleware)
+# api.add_middleware(RequestLoggingMiddleware)
 
-logger.info("🚀 NewsAgent API starting up...")
+# logger.info("🚀 NewsAgent API starting up...")
+print("DEBUG: Past logger.info", flush=True)
 
 # Initialize Redis Connection Pool
 # Creating a global pool is best practice for FastAPI
+print("DEBUG: Creating Redis Pool...", flush=True)
 redis_pool = redis.ConnectionPool.from_url(settings.REDIS_URL)
+print("DEBUG: Redis Pool Created.", flush=True)
 
 # --- HELPER FUNCTIONS ---
 def get_redis_client():
@@ -83,10 +90,13 @@ async def health_check():
 
     # A. Check Redis
     try:
+        print("DEBUG: Checking Redis...", flush=True)
         r = get_redis_client()
         if r.ping():
             health_status["redis"] = "connected"
+        print("DEBUG: Redis connected.", flush=True)
     except Exception as e:
+        print(f"DEBUG: Redis failed: {e}", flush=True)
         health_status["redis"] = f"disconnected: {str(e)}"
         health_status["status"] = "unhealthy"
         # If critical infra is down, return 503
@@ -94,10 +104,12 @@ async def health_check():
 
     # B. Check Graph Logic
     try:
+        print("DEBUG: Checking Graph Logic...", flush=True)
         # We try to compile the graph. If there's a syntax error or
         # missing node in the definition, this throws an error.
         builder = MainWorkflow()
         builder.create_workflow()
+        print("DEBUG: Graph Logic operational.", flush=True)
         health_status["graph_logic"] = "operational"
     except Exception as e:
         health_status["graph_logic"] = f"failed: {str(e)}"

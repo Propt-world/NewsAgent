@@ -35,11 +35,11 @@ def run_worker():
     try:
         r = redis.from_url(settings.REDIS_URL)
         r.ping() # Check connection
-        print(f"--- 👷 NewsAgent Worker Started ---")
-        print(f"--- Listening on Queue: {settings.REDIS_QUEUE_NAME} ---")
-        print(f"--- Redis URL: {settings.REDIS_URL} ---")
+        print(f"--- 👷 NewsAgent Worker Started ---", flush=True)
+        print(f"--- Listening on Queue: {settings.REDIS_QUEUE_NAME} ---", flush=True)
+        print(f"--- Redis URL: {settings.REDIS_URL} ---", flush=True)
     except Exception as e:
-        print(f"[FATAL] Could not connect to Redis: {e}")
+        print(f"[FATAL] Could not connect to Redis: {e}", flush=True)
         return
 
     # 2. Build the Graph ONCE (Optimization)
@@ -140,4 +140,12 @@ def run_worker():
             traceback.print_exc()
 
 if __name__ == "__main__":
-    run_worker()
+    try:
+        run_worker()
+    except KeyboardInterrupt:
+        print("Worker stopped by user.", flush=True)
+    except Exception as e:
+        print(f"CRITICAL WORKER CRASH: {e}", flush=True)
+        traceback.print_exc()
+    finally:
+        print("Worker Exiting...", flush=True)

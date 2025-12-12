@@ -8,7 +8,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -46,13 +46,13 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
-    restart: "no"  # Only run once, don't restart on failure
+    restart: "no" # Only run once, don't restart on failure
 
   # --- 3. The API (Producer) ---
   api:
     build: .
     container_name: newsagent_api
-    command: uvicorn src.main:api --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn src.main:api --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
@@ -130,7 +130,7 @@ services:
     build: .
     container_name: newsagent_scheduler
     # Runs the new scheduler/main.py
-    command: uvicorn src.scheduler.main:app --host 0.0.0.0 --port 8001 --reload
+    command: uvicorn src.scheduler.main:app --host 0.0.0.0 --port 8001
     ports:
       - "8001:8001"
     volumes:

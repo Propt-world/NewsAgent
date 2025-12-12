@@ -31,16 +31,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Setup in-memory log handler for /logs endpoint
+# Setup in-memory log handler for /logs endpoint
 setup_log_handler()
 
 # --- DATABASE SETUP ---
-client = MongoClient(settings.DATABASE_URL)
-db = client[settings.MONGO_DB_NAME]
-sources_col = db["sources"]
-articles_col = db["processed_articles"]
+# Initialized in lifespan to avoid module-level blocking
+client = None
+db = None
+sources_col = None
+articles_col = None
 
 # --- SCHEDULER SETUP ---
-scheduler = AsyncIOScheduler()
+# Initialized in lifespan
+scheduler = None
 
 # Semaphore to limit concurrent browser instances
 CONCURRENCY_LIMIT = asyncio.Semaphore(3)
@@ -139,6 +142,12 @@ async def run_scheduler_cycle():
     Main Loop: Finds active sources that are due for a check.
     """
     print("[SCHEDULER] ⏰ Cycle starting...")
+    global sources_col, articles_col
+    ensure_mongo_connected()
+    if sources_col is None:
+        print("[SCHEDULER] ❌ Mongo not connected, skipping cycle.")
+        return
+
     active_sources = sources_col.find({"is_active": True})
 
     current_time = datetime.now(timezone.utc)
@@ -160,20 +169,48 @@ async def run_scheduler_cycle():
 
 # --- FASTAPI APP ---
 
+def ensure_mongo_connected():
+    """Lazily connect to Mongo to avoid startup hangs."""
+    global client, db, sources_col, articles_col
+    if client is None:
+        try:
+            print(f"DEBUG: Connecting to Mongo URL: {settings.DATABASE_URL}", flush=True)
+            # Use connect=False just in case
+            client = MongoClient(settings.DATABASE_URL, serverSelectionTimeoutMS=5000, connect=False)
+            db = client[settings.MONGO_DB_NAME]
+            sources_col = db["sources"]
+            articles_col = db["processed_articles"]
+            print("DEBUG: Mongo Connected Lazily.", flush=True)
+        except Exception as e:
+            print(f"DEBUG: Mongo Lazy Init Error: {e}", flush=True)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
+    # --- SCHEDULER SETUP ---
+    global scheduler
+    print("DEBUG: Init AsyncIOScheduler in Lifespan...", flush=True)
+    # Force UTC to avoid tzlocal hang
+    scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    print("DEBUG: Scheduler Init Done.", flush=True)
+    
+    # Use UTC explicitly for trigger
+    scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1, timezone=timezone.utc))
     scheduler.start()
-    print("--- 🗓️ Scheduler Service Started ---")
+    print("--- 🗓️ Scheduler Service Started ---", flush=True)
     yield
-    scheduler.shutdown()
+    try:
+        scheduler.shutdown()
+    except Exception:
+        pass
+    if client:
+        client.close()
 
 app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan)
 
 # Add request logging middleware
-app.add_middleware(RequestLoggingMiddleware)
+# app.add_middleware(RequestLoggingMiddleware)
 
-logger.info("🗓️ Scheduler Service starting up...")
+# logger.info("🗓️ Scheduler Service starting up...")
 
 # --- 1. WEBHOOK ENDPOINT ---
 @app.post("/webhook/store-result")
@@ -184,6 +221,7 @@ async def store_result(payload: Dict[str, Any]):
     if not url or not data:
         raise HTTPException(status_code=400, detail="Invalid Payload")
 
+    ensure_mongo_connected()
     print(f"[WEBHOOK] 📥 Received result for: {url}")
 
     result = articles_col.update_one(
@@ -234,6 +272,7 @@ async def view_logs(
 
 @app.post("/sources", status_code=201)
 async def add_source(source: SourceConfig):
+    ensure_mongo_connected()
     source_dict = source.dict(by_alias=True)
     if "created_at" in source_dict and source_dict["created_at"].tzinfo is None:
         source_dict["created_at"] = source_dict["created_at"].replace(tzinfo=timezone.utc)
@@ -246,10 +285,12 @@ async def add_source(source: SourceConfig):
 
 @app.get("/sources")
 async def list_sources():
+    ensure_mongo_connected()
     return list(sources_col.find())
 
 @app.get("/sources/{source_id}")
 async def get_source(source_id: str):
+    ensure_mongo_connected()
     source = sources_col.find_one({"_id": source_id})
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -257,6 +298,7 @@ async def get_source(source_id: str):
 
 @app.patch("/sources/{source_id}")
 async def update_source(source_id: str, updates: Dict[str, Any] = Body(...)):
+    ensure_mongo_connected()
     if "_id" in updates:
         del updates["_id"]
 
@@ -272,6 +314,7 @@ async def update_source(source_id: str, updates: Dict[str, Any] = Body(...)):
 
 @app.post("/sources/{source_id}/toggle")
 async def toggle_source_status(source_id: str):
+    ensure_mongo_connected()
     source = sources_col.find_one({"_id": source_id})
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -287,6 +330,7 @@ async def toggle_source_status(source_id: str):
 
 @app.delete("/sources/{source_id}")
 async def delete_source(source_id: str):
+    ensure_mongo_connected()
     result = sources_col.delete_one({"_id": source_id})
 
     if result.deleted_count == 0:
@@ -301,6 +345,7 @@ async def list_articles(
     skip: int = 0,
     status: Optional[str] = None
 ):
+    ensure_mongo_connected()
     query = {}
     if status:
         query["status"] = status
@@ -310,6 +355,7 @@ async def list_articles(
 
 @app.get("/articles/{article_id}")
 async def get_article(article_id: str):
+    ensure_mongo_connected()
     article = articles_col.find_one({"_id": article_id})
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -317,6 +363,7 @@ async def get_article(article_id: str):
 
 @app.patch("/articles/{article_id}/status")
 async def update_article_status(article_id: str, status_update: Dict[str, str] = Body(...)):
+    ensure_mongo_connected()
     new_status = status_update.get("status")
     allowed_statuses = ["processed", "approved", "rejected", "duplicated"]
 

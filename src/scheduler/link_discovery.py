@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from requests_html import AsyncHTMLSession
 from pyppeteer.errors import NetworkError, PageError
 import requests
+from src.utils.browser import get_async_html_session
 
 # --- BLOCKLIST CONFIGURATION ---
 
@@ -40,12 +41,16 @@ async def fetch_listing_page(url: str, render_js: bool = True) -> str:
     # FIX: Add these arguments to prevent crashes in Docker
     # --no-sandbox: Required for running as root in Docker
     # --disable-dev-shm-usage: Prevents crashing when /dev/shm is small (Docker default is 64MB)
-    session = AsyncHTMLSession(
-        browser_args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
+    session = get_async_html_session()
+    
+    try:
+        response = await session.get(url, timeout=30)
+
+        if render_js:
+            try:
+                # Render with safeguards
+                # scrolldown=12 is usually enough to trigger lazy load without overwhelming memory
+                await response.html.arender(scrolldown=2, sleep=1, timeout=15)
             "--disable-setuid-sandbox",
             "--single-process"
         ]

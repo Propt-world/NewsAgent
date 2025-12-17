@@ -5,6 +5,7 @@ from newspaper import Article, Config
 from lxml.html import tostring
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
+from src.utils.browser import get_html_session
 
 def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -22,16 +23,9 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
 
     # Initialize an HTML Session (this manages the headless browser)
     # FIX: Initialize HTML Session with Docker-compatible browser arguments
-    session = HTMLSession(
-        browser_args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-            "--disable-setuid-sandbox",
-            "--single-process"
-        ]
-    )
+    session = get_html_session()
+
+    
     # --- NEWSPAPER4K CONFIGURATION ---
     # You can configure newspaper4k if needed.
     # For now, the default config is fine.

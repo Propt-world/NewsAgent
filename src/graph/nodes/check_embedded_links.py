@@ -12,6 +12,7 @@ from src.models.MainWorkflowState import MainWorkflowState
 from src.models.EmbeddedLinkModel import EmbeddedLinkModel
 from src.models.RelevanceScoreModel import RelevanceScoreModel
 from src.configs.settings import settings
+from src.utils.browser import get_async_html_session
 # from src.prompts.RelevancePrompts import SYSTEM_PROMPT, USER_PROMPT
 
 # --- Helper Function to score one link ---
@@ -89,15 +90,7 @@ async def _run_all_link_checks(
 
     # 1. Initialize session normally (NOT in context manager)
     # These flags help stability in Docker even when using the bundled browser
-    session = AsyncHTMLSession(
-        browser_args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-            "--disable-setuid-sandbox"
-        ]
-    )
+    session = get_async_html_session()
 
     try:
         tasks = []

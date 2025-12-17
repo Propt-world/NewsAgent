@@ -6,7 +6,7 @@ from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
 
 # Import the prompts for this node
-from src.prompts.CategorizationPrompts import SYSTEM_PROMPT, USER_PROMPT
+# from src.prompts.CategorizationPrompts import SYSTEM_PROMPT, USER_PROMPT
 
 def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -23,6 +23,8 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
                 "error_message": "No article/summary found for categorization."
             })
 
+        prompts = state.active_prompts
+
         title = state.news_article.title
         summary = state.news_article.summary
         content_snippet = state.cleaned_article_text[:500]
@@ -32,7 +34,7 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
         structured_llm = model.with_structured_output(CategorizationModel)
 
         # 3. Format the prompt
-        prompt = PromptTemplate.from_template(USER_PROMPT)
+        prompt = PromptTemplate.from_template(prompts.categorization_user)
         formatted_prompt = prompt.format(
             title=title,
             summary=summary,
@@ -40,7 +42,7 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
         )
 
         messages = [
-            ("system", SYSTEM_PROMPT),
+            ("system", prompts.categorization_system),
             ("user", formatted_prompt)
         ]
 

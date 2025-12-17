@@ -7,7 +7,7 @@ from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
 
 # Import the prompts for this node
-from src.prompts.SearchQueryPrompts import SYSTEM_PROMPT, USER_PROMPT
+# from src.prompts.SearchQueryPrompts import SYSTEM_PROMPT, USER_PROMPT
 
 def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -24,6 +24,8 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
                 "error_message": "No article/summary found for web search."
             })
 
+        prompts = state.active_prompts
+
         title = state.news_article.title
         summary = state.news_article.summary
         publish_date = state.news_article.published_date or "Not available"
@@ -33,7 +35,7 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
 
         query_gen_model = settings.get_model().with_structured_output(SearchQueryModel)
 
-        prompt = PromptTemplate.from_template(USER_PROMPT)
+        prompt = PromptTemplate.from_template(prompts.search_user)
         formatted_prompt = prompt.format(
             title=title,
             summary=summary,
@@ -41,7 +43,7 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
         )
 
         messages = [
-            ("system", SYSTEM_PROMPT),
+            ("system", prompts.search_system),
             ("user", formatted_prompt)
         ]
 

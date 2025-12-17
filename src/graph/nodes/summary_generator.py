@@ -3,7 +3,7 @@ from pprint import pprint
 from src.models.MainWorkflowState import MainWorkflowState
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
-from src.prompts.SummaryPrompts import SYSTEM_PROMPT, INITIAL_USER_PROMPT, RETRY_USER_PROMPT
+#from src.prompts.SummaryPrompts import SYSTEM_PROMPT, INITIAL_USER_PROMPT, RETRY_USER_PROMPT
 
 def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -29,18 +29,21 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
                 "error_message": "Cannot generate summary: news_article model is missing."
             })
 
-        # 2. Get the LLM from your project's settings
+        # 2. Get Prompts from State
+        prompts = state.article_prompts
+
+        # 3. Get the LLM from your project's settings
         # We don't use .with_structured_output() here because
         # we just want a string summary, not a Pydantic model.
         model = settings.get_model()
 
-        # 3. Choose the correct prompt template (initial vs. retry)
+        # 4. Choose the correct prompt template (initial vs. retry)
         article_text = state.cleaned_article_text
 
         if state.validation_result and state.validation_result.feedback != "Validation not yet run.":
             pprint("[NODE: SUMMARY GENERATOR] This is a retry. Incorporating feedback.")
             feedback = state.validation_result.feedback
-            template = RETRY_USER_PROMPT
+            template = prompts.summary_retry_user
             prompt = PromptTemplate.from_template(template)
             formatted_prompt = prompt.format(
                 feedback=feedback,
@@ -48,20 +51,20 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
             )
         else:
             pprint("[NODE: SUMMARY GENERATOR] This is the first attempt.")
-            template = INITIAL_USER_PROMPT
+            template = prompts.summary_initial_user
             prompt = PromptTemplate.from_template(template)
             formatted_prompt = prompt.format(article_text=article_text)
 
-        # 4. Create the full message list and invoke the model
+        # 5. Create the full message list and invoke the model
         messages = [
-            ("system", SYSTEM_PROMPT),
+            ("system", prompts.summary_system),
             ("user", formatted_prompt)
         ]
 
         response = model.invoke(messages)
         summary_text = response.content # .content has the string output
 
-        # 5. Update the state
+        # 6. Update the state
         updated_article = state.news_article.model_copy(update={
             "summary": summary_text
         })

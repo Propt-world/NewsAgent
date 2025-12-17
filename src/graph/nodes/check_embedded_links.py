@@ -12,7 +12,7 @@ from src.models.MainWorkflowState import MainWorkflowState
 from src.models.EmbeddedLinkModel import EmbeddedLinkModel
 from src.models.RelevanceScoreModel import RelevanceScoreModel
 from src.configs.settings import settings
-from src.prompts.RelevancePrompts import SYSTEM_PROMPT, USER_PROMPT
+# from src.prompts.RelevancePrompts import SYSTEM_PROMPT, USER_PROMPT
 
 # --- Helper Function to score one link ---
 
@@ -20,7 +20,9 @@ async def _async_score_single_link(
     session: AsyncHTMLSession,
     link: EmbeddedLinkModel,
     summary: str,
-    llm: BaseChatModel
+    llm: BaseChatModel,
+    sys_prompt: str,
+    user_prompt: str
 ) -> EmbeddedLinkModel:
     """
     Async helper to fetch (static HTML) and score a single URL.
@@ -38,6 +40,7 @@ async def _async_score_single_link(
             }
         )
 
+
         # 2. Extract text using BeautifulSoup
         # We skip .arender() here for speed and stability
         soup = BeautifulSoup(response.text, "lxml")
@@ -49,7 +52,7 @@ async def _async_score_single_link(
         linked_text_snippet = linked_text[:1500]
 
         # 3. Format prompt and call LLM
-        prompt = PromptTemplate.from_template(USER_PROMPT)
+        prompt = PromptTemplate.from_template(user_prompt)
         formatted_prompt = prompt.format(
             summary=summary,
             link_context=link.context,
@@ -57,7 +60,7 @@ async def _async_score_single_link(
         )
 
         messages = [
-            ("system", SYSTEM_PROMPT),
+            ("system", sys_prompt),
             ("user", formatted_prompt)
         ]
 
@@ -132,9 +135,19 @@ def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
             pprint("[NODE: CHECK LINKS] No links to check.")
             return state
 
-        # 2. Run the async function
+        # 2. Get Prompts from State
+        prompts = state.active_prompts
+        sys_prompt = prompts.relevance_system
+        user_prompt = prompts.relevance_user
+
+        # 3. Run the async function
         # asyncio.run() handles the event loop for us
-        updated_links = asyncio.run(_run_all_link_checks(links, summary))
+        updated_links = asyncio.run(_run_all_link_checks(
+            links,
+            summary,
+            sys_prompt,
+            user_prompt
+        ))
 
         updated_article = state.news_article.model_copy(update={
             "embedded_links": updated_links

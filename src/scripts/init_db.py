@@ -344,7 +344,6 @@ def init_db():
 
         # List of recipients to seed
         recipients_to_add = [
-            {"email": "admin@example.com", "name": "System Admin"},
             {"email": "khizer.saleem@11prop.com", "name": "Khizer Saleem Malik"},
             {"email": "hammad@11prop.com", "name": "Syed Hammad Shah"},
             {"email": "anfal@11prop.com", "name": "Anfal Gul"},

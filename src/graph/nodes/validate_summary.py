@@ -5,7 +5,7 @@ from src.models.ValidationResultModel import ValidationResultModel
 from src.models.SummaryAttemptModel import SummaryAttemptModel
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
-from src.prompts.ValidationPrompts import SYSTEM_PROMPT, USER_PROMPT
+#from src.prompts.ValidationPrompts import SYSTEM_PROMPT, USER_PROMPT
 
 
 def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
@@ -30,27 +30,30 @@ def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
                 "error_message": "Cannot validate: summary is missing."
             })
 
-        # 2. Get the LLM
+        # 2. Get Prompts from State
+        prompts = state.article_prompts
+
+        # 3. Get the LLM
         model = settings.get_model()
         structured_llm = model.with_structured_output(ValidationResultModel)
 
-        # 3. Format the prompt
-        prompt = PromptTemplate.from_template(USER_PROMPT)
+        # 4. Format the prompt
+        prompt = PromptTemplate.from_template(prompts.validation_user)
         formatted_prompt = prompt.format(
             article_text=state.cleaned_article_text,
             summary_text=state.news_article.summary
         )
 
-        # 4. Invoke the model
+        # 5. Invoke the model
         messages = [
-            ("system", SYSTEM_PROMPT),
+            ("system", prompts.validation_system),
             ("user", formatted_prompt)
         ]
         pprint("[NODE: VALIDATE SUMMARY] Invoking critic LLM...")
         validation_response: ValidationResultModel = structured_llm.invoke(messages)
         pprint(validation_response.model_dump())
 
-        # --- 5. NEW: Record this attempt ---
+        # 6. Record this attempt
         current_summary = state.news_article.summary
         new_attempt = SummaryAttemptModel(
             summary=current_summary,
@@ -62,7 +65,7 @@ def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
 
         pprint(f"[NODE: VALIDATE SUMMARY] Attempt {len(updated_attempts_list)} recorded.")
 
-        # 6. Update the state
+        # 7. Update the state
         return state.model_copy(update={
             # Set the *latest* validation result for the conditional edge
             "validation_result": validation_response,

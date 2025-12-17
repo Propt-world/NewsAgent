@@ -30,7 +30,7 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
             })
 
         # 2. Get Prompts from State
-        prompts = state.article_prompts
+        prompts = state.active_prompts
 
         # 3. Get the LLM from your project's settings
         # We don't use .with_structured_output() here because

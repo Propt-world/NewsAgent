@@ -31,7 +31,7 @@ def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
             })
 
         # 2. Get Prompts from State
-        prompts = state.article_prompts
+        prompts = state.active_prompts
 
         # 3. Get the LLM
         model = settings.get_model()

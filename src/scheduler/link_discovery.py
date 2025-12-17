@@ -36,11 +36,9 @@ TEXT_BLOCKLIST_PATTERNS = [
 async def fetch_listing_page(url: str, render_js: bool = True) -> str:
     """
     Fetches the HTML of a listing page.
-    Uses requests-html to optionally render JavaScript (for lazy loaded links).
+    Uses requests-html to optionally render JavaScript.
     """
-    # FIX: Add these arguments to prevent crashes in Docker
-    # --no-sandbox: Required for running as root in Docker
-    # --disable-dev-shm-usage: Prevents crashing when /dev/shm is small (Docker default is 64MB)
+    # Use the new centralized browser utility
     session = get_async_html_session()
     
     try:
@@ -49,23 +47,9 @@ async def fetch_listing_page(url: str, render_js: bool = True) -> str:
         if render_js:
             try:
                 # Render with safeguards
-                # scrolldown=12 is usually enough to trigger lazy load without overwhelming memory
-                await response.html.arender(scrolldown=2, sleep=1, timeout=15)
-            "--disable-setuid-sandbox",
-            "--single-process"
-        ]
-    )
-    try:
-        response = await session.get(url, timeout=30)
-
-        if render_js:
-            try:
-                # Render with safeguards
-                # scrolldown=12 is usually enough to trigger lazy load without overwhelming memory
                 await response.html.arender(scrolldown=2, sleep=1, timeout=15)
             except (NetworkError, PageError, asyncio.TimeoutError) as e:
                 print(f"[LINK DISCOVERY] Render failed for {url} (Using static HTML): {e}")
-                # We do NOT raise here. We just return the static HTML we already downloaded.
             except Exception as e:
                 print(f"[LINK DISCOVERY] Unexpected render error: {e}")
 
@@ -73,7 +57,7 @@ async def fetch_listing_page(url: str, render_js: bool = True) -> str:
 
     except requests.exceptions.ConnectionError as e:
         print(f"[LINK DISCOVERY] Connection Error for {url}: {e}")
-        raise e  # Re-raise so scheduler can log/email this specific failure
+        raise e
     except Exception as e:
         raise e
     finally:

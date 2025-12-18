@@ -21,14 +21,13 @@ newspaper4k
 numpy
 openai
 opik
+playwright
 pydantic
 pydantic-settings
 pydantic_core
-pyppeteer
 pymongo
 python-dotenv
 redis
 requests
-requests-html
 tavily
 uvicorn

@@ -1,118 +1,94 @@
 import traceback
 from pprint import pprint
-from requests_html import HTMLSession, MaxRetries
-from newspaper import Article, Config
+from newspaper import Article
 from lxml.html import tostring
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
-from src.utils.browser import get_html_session
+from src.utils.browser import get_sync_browser_context
 
 def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Fetches, renders JavaScript, and extracts clean article TEXT and HTML.
-
-    - Uses `requests_html` to load the page and render client-side JavaScript.
-    - Uses `newspaper4k` to parse the rendered HTML and find the *main*
-      article text, title, authors, and publish date.
-    - Populates the state with the clean text (for summarization),
-      the clean HTML (for link extraction), and a partial 'news_article'.
-    """
-
-    url = state.source_url
-    pprint(f"[NODE: RAW EXTRACTION] Fetching and rendering: {url}")
-
-    # Initialize an HTML Session (this manages the headless browser)
-    # FIX: Initialize HTML Session with Docker-compatible browser arguments
-    session = get_html_session()
-
+    Extracts article content using Playwright (Sync) and Newspaper4k.
     
-    # --- NEWSPAPER4K CONFIGURATION ---
-    # You can configure newspaper4k if needed.
-    # For now, the default config is fine.
-    # config = Config()
-    # config.browser_user_agent = '...'
+    Improvement over requests-html:
+    - Uses Playwright's robust engine which doesn't "leak" processes.
+    - Waits intelligently for the DOM to settle (domcontentloaded).
+    """
+    url = state.source_url
+    pprint(f"[NODE: RAW EXTRACTION] 🚀 Fetching with Playwright: {url}")
 
+    playwright = None
+    browser = None
+    
     try:
-        # 1. Get the page and render JavaScript
-        response = session.get(
-            url,
-            timeout=30,  # Increased timeout for JS rendering
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                              " AppleWebKit/537.36 (KHTML, like Gecko)"
-                              " Chrome/124.0.0.0 Safari/537.36"
-            }
-        )
+        # --- 1. BROWSER INITIALIZATION ---
+        # We start a fresh browser instance for this job.
+        # This guarantees clean state (no cookies/cache from previous jobs).
+        playwright, browser = get_sync_browser_context()
+        page = browser.new_page()
 
-        response.raise_for_status()
+        # --- 2. NAVIGATION & WAIT ---
+        try:
+            # We assume a 60s timeout. EC2 networks can sometimes be slow/throttled.
+            # wait_until='domcontentloaded' waits for the HTML to be parsed and DOM built.
+            page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            
+            # OPTIONAL: Wait a tiny bit extra (2s) for "hydration"
+            # (e.g., React apps that attach text after the initial HTML load).
+            page.wait_for_timeout(2000) 
+        except Exception as e:
+            # If navigation times out, we DON'T fail yet. 
+            # Often the text is already loaded, but some tracking pixel is stalling the page.
+            pprint(f"[NODE: RAW EXTRACTION] Navigation warning (attempting extract anyway): {e}")
 
-        # 2. Render JavaScript
-        response.html.render(scrolldown=2, timeout=30, sleep=1)
-        pprint(f"[NODE: RAW EXTRACTION] Page rendered successfully.")
-
-        # 3. Use newspaper4k to parse the *rendered* HTML
-        # Pass the config if you created one: article = Article(url, config=config)
+        # --- 3. EXTRACTION ---
+        # Get the full, rendered HTML from the browser
+        html_content = page.content()
+        
+        # --- 4. PARSING (Newspaper4k) ---
+        # We feed the rendered HTML into Newspaper4k.
+        # This allows us to use Newspaper's excellent logic on JS-heavy sites.
         article = Article(url)
-        article.download(input_html=response.html.html) # Pass the rendered HTML
+        article.download(input_html=html_content)
         article.parse()
 
-        # 4. Check if newspaper4k found content
-        if not article.text:
-            pprint(f"[NODE: RAW EXTRACTION] newspaper4k found no content for: {url}")
-            return state.model_copy(update={
-                "error_message": "Failed to extract main article content (newspaper4k found no text)."
+        # --- 5. QUALITY CHECK ---
+        # If the text is empty or trivially short, something went wrong.
+        if not article.text or len(article.text) < 50:
+             return state.model_copy(update={
+                "error_message": "Extracted content is empty or too short."
             })
 
-        # 5. Pre-populate the ArticleModel (no changes here)
-        author_str = ", ".join(article.authors) if article.authors else None
-        date_str = article.publish_date.isoformat() if article.publish_date else None
-
-        initial_article = ArticleModel(
-            title=article.title,
-            content=article.text, # This is the *clean* text
-            published_date=date_str,
-            author=author_str
-        )
-
-        # --- CAPTURE IMAGE ---
-        top_image_url = article.top_image
-
+        # --- 6. BUILD MODEL ---
+        # Create the data object for the rest of the workflow
         initial_article = ArticleModel(
             title=article.title,
             content=article.text,
-            published_date=date_str,
-            author=author_str,
-            top_image=top_image_url
+            published_date=article.publish_date.isoformat() if article.publish_date else None,
+            author=", ".join(article.authors) if article.authors else None,
+            top_image=article.top_image
         )
 
-        # 6. Get the clean HTML snippet (no changes here)
+        # We also keep the raw HTML of the main node for the 'extract_links' node
         clean_html = ""
         if article.top_node is not None:
             clean_html = tostring(article.top_node, encoding='unicode')
 
-        pprint(f"[NODE: RAW EXTRACTION] Successfully extracted: {article.title}")
-
-        # 7. Return a copy of the state with the new data
         return state.model_copy(update={
-            "cleaned_article_text": article.text,    # For summary & validation
-            "cleaned_article_html": clean_html,      # For link extraction
-            "news_article": initial_article          # The partial model
+            "cleaned_article_text": article.text,
+            "cleaned_article_html": clean_html,
+            "news_article": initial_article
         })
 
-    except MaxRetries:
-        pprint(f"[NODE: RAW EXTRACTION] Max retries exceeded for: {url}")
-        return state.model_copy(update={
-            "error_message": f"Error rendering {url}: Max retries exceeded (likely a JS-heavy page)."
-        })
     except Exception as e:
-        pprint(f"[NODE: RAW EXTRACTION] Error fetching/parsing {url}: {e}")
-        traceback.print_exc() # Print the full error stack trace
-        return state.model_copy(update={
-            "error_message": f"Error in raw_extraction: {e}"
-        })
+        # Catch-all for unexpected browser crashes
+        pprint(f"[NODE: RAW EXTRACTION] Critical Error: {e}")
+        traceback.print_exc()
+        return state.model_copy(update={"error_message": f"Playwright Error: {e}"})
+        
     finally:
-        # FIX: Ensure session is closed to prevent zombie processes
-        try:
-            session.close()
-        except:
-            pass
+        # --- 7. CLEANUP (CRITICAL) ---
+        # We MUST close the browser here. If we don't, the Chromium process
+        # will stay alive as a "zombie" and eat up your RAM.
+        if browser: browser.close()
+        if playwright: playwright.stop()

@@ -2,159 +2,124 @@ import asyncio
 import traceback
 from pprint import pprint
 from typing import List
-from requests_html import AsyncHTMLSession
 from bs4 import BeautifulSoup
-from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
 
-# Project imports
+# Project Imports
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.EmbeddedLinkModel import EmbeddedLinkModel
 from src.models.RelevanceScoreModel import RelevanceScoreModel
 from src.configs.settings import settings
-from src.utils.browser import get_async_html_session
-# from src.prompts.RelevancePrompts import SYSTEM_PROMPT, USER_PROMPT
 
-# --- Helper Function to score one link ---
+# Import the Semaphore and Launcher from our new browser manager
+from src.utils.browser import launch_async_browser, BROWSER_SEMAPHORE
 
-async def _async_score_single_link(
-    session: AsyncHTMLSession,
-    link: EmbeddedLinkModel,
+async def _process_links_batch(
+    links: List[EmbeddedLinkModel], # 1. We accept the FULL LIST to process in parallel
     summary: str,
-    llm: BaseChatModel,
     sys_prompt: str,
     user_prompt: str
-) -> EmbeddedLinkModel:
-    """
-    Async helper to fetch (static HTML) and score a single URL.
-    Handles errors gracefully.
-    """
-    try:
-        # 1. Fetch the static HTML
-        # We allow a short timeout to keep the pipeline moving
-        response = await session.get(
-            link.url,
-            timeout=15,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                              " AppleWebKit/537.36 (KHTML, like Gecko)"
-            }
-        )
-
-
-        # 2. Extract text using BeautifulSoup
-        # We skip .arender() here for speed and stability
-        soup = BeautifulSoup(response.text, "lxml")
-        linked_text = soup.get_text(separator=" ", strip=True)
-
-        if not linked_text:
-            return link.model_copy(update={"relevance_score": 0.0})
-
-        linked_text_snippet = linked_text[:1500]
-
-        # 3. Format prompt and call LLM
-        prompt = PromptTemplate.from_template(user_prompt)
-        formatted_prompt = prompt.format(
-            summary=summary,
-            link_context=link.context,
-            link_content=linked_text_snippet
-        )
-
-        messages = [
-            ("system", sys_prompt),
-            ("user", formatted_prompt)
-        ]
-
-        # Use ainvoke for non-blocking LLM calls
-        response_model: RelevanceScoreModel = await llm.ainvoke(messages)
-
-        return link.model_copy(update={
-            "relevance_score": response_model.score
-        })
-
-    except Exception as e:
-        # Log error if needed, but return 0.0 to keep the pipeline alive
-        # pprint(f"[NODE: CHECK LINKS] Error scoring {link.url}: {e}")
-        return link.model_copy(update={"relevance_score": 0.0})
-
-# --- Async Runner ---
-
-async def _run_all_link_checks(
-    links: List[EmbeddedLinkModel],
-    summary: str
 ) -> List[EmbeddedLinkModel]:
     """
-    Creates an async session and runs all link checks in parallel.
+    Orchestrates checking multiple links.
+    KEY STRATEGY: One Browser Instance, Multiple Tabs (Contexts).
     """
+    
+    # --- A. RESOURCE SETUP ---
+    # Launching a browser is expensive (CPU-wise). We do it ONCE for the whole batch.
+    p, browser = await launch_async_browser()
+    
+    # --- B. INITIALIZE LLM INTERNALY ---
+    # 2. The LLM is initialized HERE, so we don't need to pass it as an argument.
+    # It captures the settings and is ready to be used by the worker function below.
     llm = settings.get_model().with_structured_output(RelevanceScoreModel)
 
-    # 1. Initialize session normally (NOT in context manager)
-    # These flags help stability in Docker even when using the bundled browser
-    session = get_async_html_session()
+    # --- Inner Worker Function (Closure) ---
+    # Defined inside so it can access 'browser' and 'llm' without passing them as args
+    async def check_single_link(link: EmbeddedLinkModel):
+        
+        # --- C. CONCURRENCY CONTROL ---
+        # "Wait here until there are fewer than 8 active tabs"
+        async with BROWSER_SEMAPHORE: 
+            context = None
+            try:
+                # Create a lightweight "Context" (like a new Incognito window)
+                context = await browser.new_context()
+                page = await context.new_page()
+                
+                # Fast timeout (15s) - we don't need perfect rendering for relevance check
+                await page.goto(link.url, timeout=15000, wait_until="domcontentloaded")
+                
+                # Extract Text
+                html = await page.content()
+                soup = BeautifulSoup(html, "lxml")
+                text = soup.get_text(separator=" ", strip=True)[:1500]
+
+                # --- D. USE THE LLM ---
+                # We use the prompts passed in arguments and the LLM initialized above
+                prompt = PromptTemplate.from_template(user_prompt)
+                fmt_prompt = prompt.format(
+                    summary=summary,
+                    link_context=link.context,
+                    link_content=text
+                )
+                
+                # Async LLM call
+                res = await llm.ainvoke([("system", sys_prompt), ("user", fmt_prompt)])
+                
+                return link.model_copy(update={"relevance_score": res.score})
+
+            except Exception:
+                # If anything fails (timeout, 404), mark score as 0.0.
+                # Do NOT crash the whole batch for one bad link.
+                return link.model_copy(update={"relevance_score": 0.0})
+            finally:
+                # Close tab immediately to free up the Semaphore slot
+                if context: await context.close()
 
     try:
-        tasks = []
-        for link in links:
-            tasks.append(_async_score_single_link(session, link, summary, llm))
-
-        # Run all tasks concurrently
-        updated_links = await asyncio.gather(*tasks)
-        return updated_links
-
+        # --- E. EXECUTE PARALLEL BATCH ---
+        # Create a task for every link in the list
+        tasks = [check_single_link(link) for link in links]
+        
+        # asyncio.gather runs them all at once (respecting the Semaphore limit)
+        results = await asyncio.gather(*tasks)
+        return results
     finally:
-        # 2. Explicitly close the session to prevent resource leaks
-        # This fixes the "does not support context manager" TypeError
-        await session.close()
-
-# --- Main Graph Node ---
+        # --- F. CLEANUP ---
+        # Ensure the main browser process is killed.
+        if browser: await browser.close()
+        if p: await p.stop()
 
 def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Scores all embedded links for relevance in parallel.
+    Main node function.
     """
-    pprint("[NODE: CHECK LINKS] Starting parallel link scoring...")
+    pprint("[NODE: CHECK LINKS] Starting throttled link scoring...")
 
     try:
-        # 1. Guards
-        if not state.news_article or not state.news_article.summary:
-            return state.model_copy(update={
-                "error_message": "No article/summary found for link checking."
-            })
-
-        links = state.news_article.embedded_links
-        summary = state.news_article.summary
-
-        if not links:
-            pprint("[NODE: CHECK LINKS] No links to check.")
+        # Guards
+        if not state.news_article or not state.news_article.embedded_links:
             return state
 
-        # 2. Get Prompts from State
+        # Extract prompts from State
         prompts = state.active_prompts
-        sys_prompt = prompts.relevance_system
-        user_prompt = prompts.relevance_user
-
-        # 3. Run the async function
-        # asyncio.run() handles the event loop for us
-        updated_links = asyncio.run(_run_all_link_checks(
-            links,
-            summary,
-            sys_prompt,
-            user_prompt
+        
+        # Run the async batch processor
+        # We use asyncio.run because this Node is synchronous, but the browser logic is async
+        updated_links = asyncio.run(_process_links_batch(
+            state.news_article.embedded_links,
+            state.news_article.summary,
+            prompts.relevance_system,
+            prompts.relevance_user
         ))
 
         updated_article = state.news_article.model_copy(update={
             "embedded_links": updated_links
         })
-
-        pprint(f"[NODE: CHECK LINKS] Scored {len(updated_links)} links successfully.")
-
-        return state.model_copy(update={
-            "news_article": updated_article
-        })
+        return state.model_copy(update={"news_article": updated_article})
 
     except Exception as e:
-        pprint(f"[NODE: CHECK LINKS] A critical error occurred: {e}")
-        traceback.print_exc()
-        return state.model_copy(update={
-            "error_message": f"Error in check_embedded_links: {e}"
-        })
+        pprint(f"[NODE: CHECK LINKS] Error: {e}")
+        # Return state as-is on error to avoid breaking the workflow
+        return state

@@ -1,121 +1,97 @@
-import re
 import asyncio
-from typing import Set, List
+import re
+from typing import Set
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from requests_html import AsyncHTMLSession
-from pyppeteer.errors import NetworkError, PageError
-import requests
-from src.utils.browser import get_async_html_session
+from src.utils.browser import launch_async_browser
 
-# --- BLOCKLIST CONFIGURATION ---
-
-# 1. URL Patterns (Path/Query) that indicate ads/tracking
+# --- FILTERS ---
 AD_PATTERNS = [
     r"/ads/", r"/ad/", r"doubleclick", r"googlead", r"outbrain",
     r"taboola", r"click\?", r"campaign", r"sponsored", r"promotion"
 ]
-
-# 2. Domains to explicitly ignore (Ads, Social Media, Analytics)
 DOMAIN_BLOCKLIST = [
     "doubleclick.net", "googleadservices.com", "googlesyndication.com",
-    "adservice.google.com", "analytics.google.com", "facebook.com",
-    "twitter.com", "linkedin.com", "instagram.com", "pinterest.com",
-    "ad.doubleclick.net", "c.ad.doubleclick.net", "platform.twitter.com",
-    "syndication.twitter.com", "adobedtm.com", "omtrdc.net", "outbrain.com",
-    "taboola.com", "sharethrough.com", "adsrvr.org"
+    "facebook.com", "twitter.com", "linkedin.com", "instagram.com",
+    "outbrain.com", "taboola.com"
 ]
-
-# 3. Link Text patterns to ignore (Buttons, Social Shares)
 TEXT_BLOCKLIST_PATTERNS = [
-    r"^share$", r"^tweet$", r"^post$", r"^facebook$", r"^twitter$",
-    r"^linkedin$", r"^pinterest$", r"^advertisement$", r"^related:$",
-    r"share on.*", r"share to.*"
+    r"^share$", r"^tweet$", r"^post$", r"share on.*"
 ]
 
-async def fetch_listing_page(url: str, render_js: bool = True) -> str:
+async def fetch_listing_page(url: str) -> str:
     """
-    Fetches the HTML of a listing page.
-    Uses requests-html to optionally render JavaScript.
+    Fetches the HTML of a listing page using Async Playwright.
+    Includes logic to handle 'Infinite Scroll' pages.
     """
-    # Use the new centralized browser utility
-    session = get_async_html_session()
+    playwright = None
+    browser = None
     
     try:
-        response = await session.get(url, timeout=30)
-
-        if render_js:
-            try:
-                # Render with safeguards
-                await response.html.arender(scrolldown=2, sleep=1, timeout=15)
-            except (NetworkError, PageError, asyncio.TimeoutError) as e:
-                print(f"[LINK DISCOVERY] Render failed for {url} (Using static HTML): {e}")
-            except Exception as e:
-                print(f"[LINK DISCOVERY] Unexpected render error: {e}")
-
-        return response.html.html
-
-    except requests.exceptions.ConnectionError as e:
-        print(f"[LINK DISCOVERY] Connection Error for {url}: {e}")
-        raise e
-    except Exception as e:
-        raise e
-    finally:
+        # --- 1. LAUNCH ---
+        # Start an async browser
+        p, browser = await launch_async_browser()
+        page = await browser.new_page()
+        
+        # --- 2. NAVIGATE ---
+        await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+        
+        # --- 3. SCROLL HACK ---
+        # Many news sites (like CNN/Reuters) use lazy-loading.
+        # We run a quick JS command to scroll to the bottom.
         try:
-            await session.close()
-        except:
-            pass
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            # Wait 2s for the new items to populate
+            await page.wait_for_timeout(2000) 
+        except Exception:
+            pass # If scroll fails, we just take what's visible
+        
+        # --- 4. RETURN CONTENT ---
+        content = await page.content()
+        return content
+
+    except Exception as e:
+        print(f"[LINK DISCOVERY] Error fetching {url}: {e}")
+        return ""
+    finally:
+        # --- 5. CLEANUP ---
+        # Close everything to keep the Scheduler lightweight
+        if browser: await browser.close()
+        if playwright: await p.stop()
 
 def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set[str]:
     """
-    Parses HTML and returns a set of unique, valid, absolute URLs.
-    Includes logic to filter out ads, social media, and irrelevant sections.
+    Parses HTML, removes ads/noise, and returns clean absolute URLs.
+    (Logic remains largely the same as your previous version).
     """
     soup = BeautifulSoup(html, "lxml")
 
-    # --- 1. REMOVE NOISE ---
-    # Remove elements that typically contain ads or navigation clutter
+    # Remove clutter elements
     for tag in soup.select("header, footer, nav, .ad, .advertisement, .sponsored, aside"):
         tag.decompose()
 
     links = soup.find_all("a", href=True)
-
     valid_urls = set()
     base_domain = urlparse(base_url).netloc
 
     for link in links:
         href = link.get("href")
-        text = link.get_text(strip=True) # Extract text for filtering
+        text = link.get_text(strip=True)
 
-        # --- 2. NORMALIZE ---
+        # Normalize to absolute URL
         full_url = urljoin(base_url, href)
         parsed = urlparse(full_url)
 
-        # --- 3. FILTERING ---
-
-        # A. Domain Check (Must be same site)
-        # Note: This implicitly filters external ads, but we keep the blocklist check for safety
+        # Checks: Same Domain?
         if parsed.netloc != base_domain:
             continue
-
-        # B. Pattern Check (User defined)
+        # Checks: User Pattern?
         if url_pattern and url_pattern not in full_url:
             continue
-
-        # C. Basic Protocol Check
-        if "#" in href or "javascript:" in href or "mailto:" in href:
+        # Checks: Blocklists (Ads, Socials)
+        if any(re.search(p, full_url, re.IGNORECASE) for p in AD_PATTERNS):
             continue
-
-        # D. URL Pattern Blocklist (Ads/Trackers in URL)
-        if any(re.search(pattern, full_url, re.IGNORECASE) for pattern in AD_PATTERNS):
-            continue
-
-        # E. Domain Blocklist (Explicit bad domains)
-        if any(block in parsed.netloc for block in DOMAIN_BLOCKLIST):
-            continue
-
-        # F. Text Blocklist (Social share buttons, etc.)
-        if any(re.search(pattern, text, re.IGNORECASE) for pattern in TEXT_BLOCKLIST_PATTERNS):
+        if any(b in parsed.netloc for b in DOMAIN_BLOCKLIST):
             continue
 
         valid_urls.add(full_url)

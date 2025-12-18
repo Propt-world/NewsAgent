@@ -32,7 +32,7 @@ def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
 
         # 2. Get Prompts from State
         prompts = state.active_prompts
-
+    
         # 3. Get the LLM
         model = settings.get_model()
         structured_llm = model.with_structured_output(ValidationResultModel)

@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     OPENAI_URL: str = os.getenv('OPENAI_URL')
     OPIK_API_KEY: str = os.getenv('OPIK_API_KEY')
     OPIK_WORKSPACE: str = os.getenv('OPIK_WORKSPACE')
+    OPIK_PROJECT_NAME: str = os.getenv('OPIK_PROJECT_NAME')
     TAVILY_API_KEY: str = os.getenv('TAVILY_API_KEY')
 
     # Model Configuration
@@ -71,14 +72,14 @@ class Settings(BaseSettings):
 
         opik.configure(
             api_key=self.OPIK_API_KEY,
-            workspace=self.OPIK_WORKSPACE
+            workspace=self.OPIK_WORKSPACE,
         )
 
         # If a graph is provided, pass it to the tracer for visualization
         if graph:
-            opik_tracer = OpikTracer(graph=graph)
+            opik_tracer = OpikTracer(graph=graph, project_name=self.OPIK_PROJECT_NAME)
         else:
-            opik_tracer = OpikTracer()
+            opik_tracer = OpikTracer(project_name=self.OPIK_PROJECT_NAME)
 
         return opik_tracer
 

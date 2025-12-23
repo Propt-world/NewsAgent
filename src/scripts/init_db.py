@@ -402,19 +402,32 @@ def init_db():
         # ==========================================
         # 5. SCHEDULER: PROCESSED ARTICLES
         # ==========================================
-        print("--- Setting up Processed Articles Archive ---")
+        print("--- Setting up Processed Articles ---")
         articles_col = db["processed_articles"]
-
-        # CRITICAL PERFORMANCE INDEX
-        # This ensures that `find({"url": ...})` is instant, even with millions of records.
-        # unique=True also acts as a database-level constraint against duplicates.
         articles_col.create_index([("url", ASCENDING)], unique=True)
-
-        # Index for the Dashboard (to sort by date efficiently)
         articles_col.create_index([("discovered_at", -1)])
-
-        # Index for Status Filtering
         articles_col.create_index([("status", ASCENDING)])
+        
+        # ==========================================
+        # 6. ARCHIVE & TRASH COLLECTIONS (NEW)
+        # ==========================================
+        print("--- Setting up Archive & Trash ---")
+        
+        # A. Archived Articles
+        archive_col = db["archived_articles"]
+        # Ensure URLs are unique in archive too
+        archive_col.create_index([("url", ASCENDING)], unique=True)
+        # Index for sorting by when it was archived
+        archive_col.create_index([("archived_at", -1)])
+        # Useful if you want to search archives by source
+        archive_col.create_index([("source_id", ASCENDING)])
+
+        # B. Deleted Articles (Soft Delete)
+        deleted_col = db["deleted_articles"]
+        # Ensure URLs are unique in trash (prevents double-deleting issues)
+        deleted_col.create_index([("url", ASCENDING)], unique=True)
+        # Index for expiration policies (e.g., delete items older than 30 days)
+        deleted_col.create_index([("deleted_at", -1)])
 
         print("--- Initialization Complete ---")
         client.close()

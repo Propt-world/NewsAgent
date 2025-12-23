@@ -20,7 +20,7 @@ from src.draw_workflow_graph import generate_workflow_graph
 
 api = FastAPI(
     title="NewsAgent Server",
-    version="3.2",
+    version="3.3",
     description="Redis-Backed Async News Agent with Observability & Queue Management"
 )
 
@@ -251,6 +251,48 @@ async def requeue_all_dlq_items():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@api.delete("/queue/dlq/{job_id}")
+async def delete_dlq_item(job_id: str):
+    """
+    HARD DELETE: Permanently removes a specific item from the Dead Letter Queue.
+    This action cannot be undone.
+    """
+    try:
+        r = get_redis_client()
+        
+        # 1. Fetch all items to find the match (Redis List limitation)
+        dlq_items = r.lrange(settings.REDIS_DLQ_NAME, 0, -1)
+        
+        target_item_raw = None
+        
+        # 2. Search for the job
+        for item in dlq_items:
+            data = decode_job_data(item)
+            if data.get("job_id") == job_id:
+                target_item_raw = item
+                break
+        
+        if not target_item_raw:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found in DLQ")
+            
+        # 3. Remove the item
+        # count=1 means remove the first occurrence of this specific value
+        removed_count = r.lrem(settings.REDIS_DLQ_NAME, 1, target_item_raw)
+        
+        # 4. Cleanup status (Optional: mark as deleted or expire immediately)
+        r.delete(f"job:{job_id}")
+        
+        return {
+            "status": "success", 
+            "message": f"Job {job_id} permanently deleted from DLQ",
+            "count": removed_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- 3. GRAPH VISUALIZATION ENDPOINT ---
 @api.get("/debug/draw-graph", response_class=FileResponse)
 async def draw_graph():
@@ -328,6 +370,39 @@ async def submit_job(request: InvokeRequest):
         raise HTTPException(status_code=503, detail="Queue service unavailable")
     except Exception as e:
         pprint(f"[API] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 5. JOB STATUS ENDPOINT ---
+@api.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """
+    Fetch the real-time status of a specific job from Redis.
+    The worker updates this hash key as it processes the graph.
+    """
+    try:
+        r = get_redis_client()
+        # Fetch all fields from the hash "job:{job_id}"
+        job_data = r.hgetall(f"job:{job_id}")
+
+        if not job_data:
+            raise HTTPException(status_code=404, detail="Job not found (might be expired or invalid ID)")
+
+        # Redis returns bytes, so we must decode them to strings
+        decoded_data = {k.decode('utf-8'): v.decode('utf-8') for k, v in job_data.items()}
+
+        # If there is a "result" field (JSON string), parse it back to an object for cleaner API output
+        if "result" in decoded_data:
+            try:
+                decoded_data["result"] = json.loads(decoded_data["result"])
+            except:
+                pass # Keep as string if parse fails
+
+        return decoded_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        pprint(f"[API] Error fetching job {job_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================

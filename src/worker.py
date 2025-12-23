@@ -47,6 +47,15 @@ def run_worker():
     workflow_builder = MainWorkflow()
     app_graph = workflow_builder.create_workflow()
 
+    opik_tracer = None
+    if settings.OPIK_API_KEY:
+        try:
+            print("[WORKER] 🔭 Initializing Opik Tracing...")
+            # We pass the graph here so Opik can draw it
+            opik_tracer = settings.get_opik_client(graph=app_graph.get_graph(xray=True))
+        except Exception as e:
+            print(f"[WORKER] ⚠️ Could not initialize Opik: {e}") 
+
     # 3. Main Loop
     while True:
         try:
@@ -66,7 +75,7 @@ def run_worker():
             # --- NEW: Update Status to Processing ---
             update_job_status(r, job_id, "processing")
 
-            # 4. Initialize State
+            # 4. Initialize State & Opik Connection
             # Note: prompts are loaded automatically by Node 0
             initial_state = MainWorkflowState(
                 source_url=source_url,
@@ -77,7 +86,11 @@ def run_worker():
             try:
                 # The invoke method returns the final state (usually a dict)
                 # The graph handles everything, including the webhook at the end.
-                final_state = app_graph.invoke(initial_state)
+
+                run_config = {}
+                if opik_tracer:
+                    run_config["callbacks"] = [opik_tracer]
+                final_state = app_graph.invoke(initial_state, config=run_config)
 
                 # Check for logical errors captured within the graph nodes
                 # (e.g., newspaper4k failed, OpenAI rate limit, etc.)

@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     SUBMISSION_SOURCE_ID: str = os.getenv('SUBMISSION_SOURCE_ID', 'newsagent_scheduled_source')
 
     # Opik Settings
-    def get_opik_client(self):
+    def get_opik_client(self, graph=None):
         if not self.OPIK_API_KEY:
             raise ValueError("OPIK_API_KEY is not set")
         if not self.OPIK_WORKSPACE:
@@ -74,8 +74,11 @@ class Settings(BaseSettings):
             workspace=self.OPIK_WORKSPACE
         )
 
-        client = Opik()
-        opik_tracer = OpikTracer()
+        # If a graph is provided, pass it to the tracer for visualization
+        if graph:
+            opik_tracer = OpikTracer(graph=graph)
+        else:
+            opik_tracer = OpikTracer()
 
         return opik_tracer
 

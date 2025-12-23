@@ -23,6 +23,8 @@ client = MongoClient(settings.DATABASE_URL)
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
 articles_col = db["processed_articles"]
+archive_col = db["archived_articles"]
+deleted_col = db["deleted_articles"]
 
 # --- SCHEDULER SETUP ---
 scheduler = AsyncIOScheduler()
@@ -253,6 +255,27 @@ async def delete_source(source_id: str):
 
     return {"status": "deleted", "id": source_id}
 
+@app.post("/sources/{source_id}/run-now")
+async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
+    """
+    Manually triggers a check for a specific source immediately,
+    bypassing the time interval check.
+    """
+    # 1. Find the source
+    source = sources_col.find_one({"_id": source_id})
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    # 2. Add to Background Tasks
+    # We use FastAPI's BackgroundTasks so the API returns immediately
+    # while the crawler runs in the background.
+    background_tasks.add_task(check_single_source, source)
+
+    return {
+        "status": "triggered", 
+        "message": f"Source '{source.get('name')}' queued for immediate check."
+    }
+
 # --- 3. ARCHIVE ENDPOINTS ---
 @app.get("/articles")
 async def list_articles(
@@ -294,6 +317,60 @@ async def update_article_status(article_id: str, status_update: Dict[str, str] =
         raise HTTPException(status_code=404, detail="Article not found")
 
     return {"status": "updated", "id": article_id, "new_status": new_status}
+
+# --- 4. ARTICLE LIFECYCLE MANAGEMENT ---
+
+@app.post("/articles/{article_id}/archive")
+async def archive_article(article_id: str):
+    """
+    Moves an article from 'processed_articles' to 'archived_articles'.
+    Typically used for successfully processed items.
+    """
+    # 1. Find the article
+    article = articles_col.find_one({"_id": article_id})
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found in active list")
+
+    # 2. Insert into Archive
+    # Add a metadata field for when it was archived
+    article["archived_at"] = datetime.now(timezone.utc)
+    try:
+        archive_col.insert_one(article)
+    except Exception as e:
+        # If it already exists in archive, strictly speaking we can proceed to delete,
+        # but let's warn if it's a real error.
+        if "duplicate key" not in str(e).lower():
+            raise HTTPException(status_code=500, detail=f"Failed to archive: {str(e)}")
+
+    # 3. Delete from Active
+    articles_col.delete_one({"_id": article_id})
+
+    return {"status": "archived", "id": article_id}
+
+
+@app.delete("/articles/{article_id}")
+async def soft_delete_article(article_id: str):
+    """
+    SOFT DELETE: Moves an article from 'processed_articles' to 'deleted_articles'.
+    Typically used for queued, failed, or unwanted items.
+    """
+    # 1. Find the article
+    article = articles_col.find_one({"_id": article_id})
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found in active list")
+
+    # 2. Insert into Deleted Table
+    article["deleted_at"] = datetime.now(timezone.utc)
+    try:
+        deleted_col.insert_one(article)
+    except Exception as e:
+        if "duplicate key" not in str(e).lower():
+            raise HTTPException(status_code=500, detail=f"Failed to move to trash: {str(e)}")
+
+    # 3. Delete from Active
+    articles_col.delete_one({"_id": article_id})
+
+    return {"status": "soft_deleted", "id": article_id}
 
 if __name__ == "__main__":
     import uvicorn

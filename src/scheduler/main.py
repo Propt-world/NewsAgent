@@ -19,7 +19,7 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
 
 # --- DATABASE SETUP ---
-client = MongoClient(settings.DATABASE_URL)
+client = MongoClient(settings.DATABASE_URL, tlsInsecure=True)
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
 articles_col = db["processed_articles"]

@@ -1,0 +1,36 @@
+{
+  "family": "newsagent-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::773672087130:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "newsagent-worker",
+      "image": "773672087130.dkr.ecr.us-east-1.amazonaws.com/newsagent-worker:latest",
+      "essential": true,
+      "command": ["python", "src/worker.py"],
+      "environment": [
+        {"name": "REDIS_URL", "value": "redis://auth-redis.1wedhl.0001.use1.cache.amazonaws.com:6379/1"},
+        {"name": "DATABASE_URL", "value": "mongodb://newsagent:NewsAgent2024!@newsagent-docdb-cluster.cluster-cq1aycy2wfzf.us-east-1.docdb.amazonaws.com:27017/newsagent?ssl=true&ssl_cert_reqs=CERT_NONE&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"},
+        {"name": "MONGO_DB_NAME", "value": "newsagent"},
+        {"name": "REDIS_QUEUE_NAME", "value": "newsagent_jobs"},
+        {"name": "REDIS_DLQ_NAME", "value": "newsagent_dlq"},
+        {"name": "OPENAI_API_KEY", "value": "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"},
+        {"name": "TAVILY_API_KEY", "value": "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"},
+        {"name": "MODEL_NAME", "value": "gpt-4o-mini"},
+        {"name": "WEBHOOK_URL", "value": "http://newsagent-scheduler-service:8001/webhook/store-result"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/newsagent-worker",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

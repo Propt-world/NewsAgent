@@ -45,16 +45,23 @@ class Settings(BaseSettings):
     MODEL_NAME: str = os.getenv('MODEL_NAME')
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE'))
 
-    # --- Email / SMTP Configuration ---
+    # URL for Browserless (e.g., 'ws://browserless:3000')
+    # If None, falls back to local launch
+    BROWSER_WS_ENDPOINT: Optional[str] = os.getenv('BROWSER_WS_ENDPOINT')
+    BROWSERLESS_TOKEN: Optional[str] = os.getenv('BROWSERLESS_TOKEN')
+
+    # Email / SMTP Configuration
     SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", 587))
     SMTP_EMAIL: str = os.getenv("SMTP_EMAIL", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 
+    # The master API Key for accessing endpoints
+    NEWSAGENT_API_KEY: Optional[str] = os.getenv('NEWSAGENT_API_KEY')
+
     # Webhook Configuration
     # The URL where the agent will POST the final JSON
     WEBHOOK_URL: Optional[str] = os.getenv('WEBHOOK_URL')
-    # Optional secret to validate the request comes from this agent
     WEBHOOK_SECRET: Optional[str] = os.getenv('WEBHOOK_SECRET')
 
     # Scheduler Configuration

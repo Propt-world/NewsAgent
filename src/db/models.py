@@ -45,7 +45,6 @@ class Category(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="_id")
     name: str  # e.g. "Market & Economy"
     description: Optional[str] = None
-    sub_categories: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:

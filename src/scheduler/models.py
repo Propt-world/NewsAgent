@@ -18,6 +18,9 @@ class SourceConfig(BaseModel):
     # How often to check this source (in minutes)
     fetch_interval_minutes: int = 60
 
+    # Rate limit delay in seconds (default 5)
+    delay_seconds: int = Field(default=5, description="Seconds to wait between requests to this domain")
+
     is_active: bool = True
     last_run_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

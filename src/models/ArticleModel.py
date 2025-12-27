@@ -24,10 +24,6 @@ class ArticleModel(BaseModel):
         default_factory=list,
         description="A list of up to 3 main categories."
     )
-    sub_category: List[str] = Field(
-        default_factory=list,
-        description="A list of relevant sub-categories."
-    )
 
     # Use default_factory to ensure this is always a list,
     # which is easier to append to than an Optional.

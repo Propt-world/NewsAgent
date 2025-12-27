@@ -4,6 +4,7 @@ from typing import Set
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from src.utils.browser import launch_async_browser
+from src.utils.governance import GovernanceGatekeeper
 
 # --- FILTERS ---
 AD_PATTERNS = [
@@ -24,6 +25,17 @@ async def fetch_listing_page(url: str) -> str:
     Fetches the HTML of a listing page using Async Playwright.
     Includes logic to handle 'Infinite Scroll' pages.
     """
+
+    # --- 0. GOVERNANCE CHECK ---
+    gatekeeper = GovernanceGatekeeper()
+    
+    if not gatekeeper.can_fetch(url):
+        print(f"[LINK DISCOVERY] 🛑 Blocked by robots.txt: {url}")
+        return ""
+
+    # Blocking call to wait for slot (DB-configured delay)
+    gatekeeper.wait_for_slot(url)
+
     playwright = None
     browser = None
     
@@ -80,6 +92,7 @@ def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set
 
         # Normalize to absolute URL
         full_url = urljoin(base_url, href)
+        full_url = full_url.strip(" :\"',")
         parsed = urlparse(full_url)
 
         # Checks: Same Domain?

@@ -77,10 +77,9 @@ services:
       - .:/app
     environment:
       # Network: Service names are hostnames
-      # Network: Service names are hostnames
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL}
       # Use the container name 'mongo' for the connection
-      - DATABASE_URL=mongodb://mongo:27017
+      - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Pass through keys from your local machine
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -112,8 +111,8 @@ services:
       - .:/app
     environment:
       - BROWSER_WS_ENDPOINT=ws://browserless:3000?token=${BROWSERLESS_TOKEN}
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=mongodb://mongo:27017
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
@@ -150,15 +149,14 @@ services:
       - .:/app
     environment:
       # Connects to the same DB to store sources/archives
-      # Connects to the same DB to store sources/archives
-      - DATABASE_URL=mongodb://mongo:27017
+      - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Needs to know where the main API is to submit jobs
       - MAIN_API_URL=http://api:8000
       # Source ID for manually submitted articles (can be overridden via .env)
       - SUBMISSION_SOURCE_ID=${SUBMISSION_SOURCE_ID:-newsagent_scheduled_source}
       - BROWSER_WS_ENDPOINT=ws://browserless:3000?token=${BROWSERLESS_TOKEN}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL}
       - NEWSAGENT_API_KEY=${NEWSAGENT_API_KEY}
 
       # Email Settings for Failure Notifications

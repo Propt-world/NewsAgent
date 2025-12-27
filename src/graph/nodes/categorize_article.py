@@ -10,8 +10,7 @@ from langchain_core.prompts import PromptTemplate
 
 def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Assigns a list of categories (max 3) and a list of
-    sub-categories (no limit) to the article.
+    Assigns a list of categories (max 3) to the article.
     """
     pprint("[NODE 8: CATEGORIZE ARTICLE] Starting categorization...")
 
@@ -52,13 +51,11 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
         response: CategorizationModel = structured_llm.invoke(messages)
 
         pprint(f"[NODE 8: CATEGORIZE ARTICLE] Categories assigned: {response.categories}")
-        pprint(f"[NODE 8: CATEGORIZE ARTICLE] Sub-categories assigned: {response.sub_categories}")
 
         # 5. Update the ArticleModel in the state
         # --- UPDATED MAPPING ---
         updated_article = state.news_article.model_copy(update={
-            "category": response.categories,
-            "sub_category": response.sub_categories
+            "category": response.categories
         })
         # --- END UPDATES ---
 

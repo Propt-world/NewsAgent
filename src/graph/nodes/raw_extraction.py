@@ -5,6 +5,7 @@ from lxml.html import tostring
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
 from src.utils.browser import get_sync_browser_context
+from src.utils.governance import GovernanceGatekeeper
 
 def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -14,7 +15,21 @@ def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     - Uses Playwright's robust engine which doesn't "leak" processes.
     - Waits intelligently for the DOM to settle (domcontentloaded).
     """
+    
+    # --- 0. GOVERNANCE CHECK ---
     url = state.source_url
+    gatekeeper = GovernanceGatekeeper()
+
+    # A. Check Robots.txt
+    if not gatekeeper.can_fetch(url):
+        pprint(f"[NODE: RAW EXTRACTION] 🛑 Blocked by robots.txt: {url}")
+        return state.model_copy(update={
+            "error_message": f"Blocked by robots.txt: {url}"
+        })
+
+    # B. Rate Limit (Block until safe)
+    gatekeeper.wait_for_slot(url)
+    
     pprint(f"[NODE: RAW EXTRACTION] 🚀 Fetching with Playwright: {url}")
 
     playwright = None

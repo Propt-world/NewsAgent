@@ -172,31 +172,44 @@ list of 3-5 diverse, high-quality search queries.
     {
         "name": "categorization_system",
         "content": """You are an expert "Article Classifier" for a real estate news service.
-Your job is to assign relevant main categories and sub-categories
-to a news article based on its summary and content.
+Your job is to assign relevant categories to a news article based on its summary and content.
 
 You MUST choose from the following predefined "Knowledge Base":
 
-- **Market & Economy**: GCC Market Overview, UAE Market, Saudi Market, Qatar Market, Oman Market, Bahrain Market, Kuwait Market, Real Estate Indices, Economic Trends & Data, Market Comparisons
-- **Residential**: Apartments, Villas & Townhouses, Off-Plan Projects, Rental Market, Luxury Homes, Affordable Housing, Community Developments, Serviced Residences
-- **Commercial**: Office Spaces, Retail Spaces, Warehousing & Industrial, Co-Working Hubs, Mixed-Use Projects, Logistics Parks, Free Zones Developments
-- **Hospitality**: Hotel Developments, Resort Projects, Branded Residences, Serviced Apartments, Tourism Real Estate, Hospitality Investments
-- **Development**: Mega Projects, Masterplans, Urban Planning, Infrastructure Projects, Mixed-Use Developments, Public Sector Developments
-- **Developers**: UAE: Emaar, Aldar, Damac, Nakheel, Sobha, Binghatti, Meraas, Ellington, Danube, Azizi, Dubai Properties, KSA: Roshn, Red Sea Global, Dar Al Arkan, Jeddah Central Development, PIF Projects, Qatar: UDC, Barwa, Qatari Diar, Oman & Bahrain: Omran, Diyar Al Muharraq
-- **Investment**: REITs, Institutional Investment, Capital Flows, Private Equity, Foreign Investment, Mortgage Trends, ROI Insights, Real Estate Funds
-- **Finance**: Property Financing, Mortgage Rates, Valuations, Interest Rate Updates, Developer Payment Plans, Bank & Lender News
-- **PropTech**: Smart Property Solutions, Real Estate Data & AI, Automation Tools, CRM & Software Platforms, Blockchain in Real Estate, Virtual Tours (AR/VR), Digital Twins, Online Marketplaces
-- **Construction**: Contractors, Building Materials, Infrastructure Works, Engineering Firms, Project Management, Construction Updates, Safety Standards, Construction Technology
-- **Architecture & Design**: Urban Architecture, Sustainable Building Design, Masterplanning, Façade Innovation, Architectural Firms, Landmark Projects
-- **Sustainability**: Green Buildings, ESG in Real Estate, Smart Cities, Renewable Energy Integration, Carbon Neutral Projects, Environmental Standards, Sustainable Infrastructure
-- **Policy & Regulations**: Ownership Laws, Freehold & Leasehold Rules, Golden Visa Regulations, Property Taxation, RERA & DLD Policies, Zoning & Development Laws, Government Real Estate Initiatives
-- **People**: Developers & CEOs, Government Officials, Real Estate Analysts, Architects & Planners, Top Brokers, Industry Thought Leaders
+- **Off-Plan & New Launches**	Pre-construction projects and newly announced developments.
+- **Payment Plans & Offers**	Flexible payment options and developer incentives.
+- **High-Yield & ROI**	Properties focused on rental returns and capital appreciation.
+- **Golden Visa & Residency**	Real estate linked to long-term visa eligibility.
+- **Luxury Residences**	Ultra-high-end homes and brand partnerships.
+- **Affordable & Mid-Market**	Budget-friendly housing options and starter homes.
+- **Shared Ownership**	Crowdfunding and share-based property investment.
+- **Vocational Holiday Homes**	Vacation rentals and tourism-focused properties.
+- **Mega-Projects & Giga-Cities**	Massive government and private master developments.
+- **Villa, Apartments & Townhouses**	Properties located on beaches, islands, or marinas.
+- **Community Spotlights**	Guides and reviews of specific neighborhoods/areas.
+- **Commercial & Co-Working**	Office spaces, retail, and flexible work environments.
+- **Industrial & Logistics**	Warehousing, free zones, and industrial real estate.
+- **Future Forecast**	Market data on property valuations and predictions.
+- **Rental Market Watch**	Updates on rental prices, laws, and tenant trends.
+- **Construction Updates**	Progress reports on major projects.
+- **Legal & Regulatory**	Government laws, taxes, and property rules.
+- **Mortgage & Financing**	Banking news, interest rates, and loan advice.
+- **Sustainability & Green Living**	Eco-friendly developments and energy-efficient homes.
+- **PropTech & AI**	Technology transforming the real estate sector.
+- **Smart Homes & Automation**	IoT and connected living technologies.
+- **Wellness & Lifestyle**	Amenities focused on health, parks, and recreation.
+- **Developer News**	Corporate updates from major property developers.
+- **People**	Profiles of CEOs, agents, and architects.
+- **Events & Expos**	Coverage of real estate exhibitions and conferences.
+- **Architecture & Design Trends**	News on design styles, facades, and architectural innovation.
+- **Interiors & Luxury Fit-Out**	Trends in interior finishing, renovation, and furniture.
+- **Building Materials & Tech**	Physical construction tech and material market updates.
+- **Landscape & Outdoor Living**	Design of outdoor spaces, parks, and green communities.
+- **Urban Planning & Infrastructure**	Public realm, transport, and city-level planning news.
 
 --- RULES ---
-1. Select 1-3 main categories.
-2. Select any number of relevant sub-categories.
-3. If no sub-categories fit, return empty list.
-4. Do not make up new categories.""",
+1. Select 3-4 categories.
+2. Do not make up new categories.""",
         "input_variables": [],
         "description": "System instruction containing the Knowledge Base for categorization."
     },
@@ -283,20 +296,36 @@ RULES:
 
 # --- CATEGORIES (NEW) ---
 INITIAL_CATEGORIES = [
-    {"name": "Market & Economy", "sub_categories": ["GCC Market Overview", "UAE Market", "Saudi Market", "Qatar Market", "Oman Market", "Bahrain Market", "Kuwait Market", "Real Estate Indices", "Economic Trends & Data", "Market Comparisons"]},
-    {"name": "Residential", "sub_categories": ["Apartments", "Villas & Townhouses", "Off-Plan Projects", "Rental Market", "Luxury Homes", "Affordable Housing", "Community Developments", "Serviced Residences"]},
-    {"name": "Commercial", "sub_categories": ["Office Spaces", "Retail Spaces", "Warehousing & Industrial", "Co-Working Hubs", "Mixed-Use Projects", "Logistics Parks", "Free Zones Developments"]},
-    {"name": "Hospitality", "sub_categories": ["Hotel Developments", "Resort Projects", "Branded Residences", "Serviced Apartments", "Tourism Real Estate", "Hospitality Investments"]},
-    {"name": "Development", "sub_categories": ["Mega Projects", "Masterplans", "Urban Planning", "Infrastructure Projects", "Mixed-Use Developments", "Public Sector Developments"]},
-    {"name": "Developers", "sub_categories": ["UAE: Emaar", "Aldar", "Damac", "Nakheel", "Sobha", "Binghatti", "Meraas", "Ellington", "Danube", "Azizi", "Dubai Properties", "KSA: Roshn", "Red Sea Global", "Dar Al Arkan", "Jeddah Central Development", "PIF Projects", "Qatar: UDC", "Barwa", "Qatari Diar", "Oman & Bahrain: Omran", "Diyar Al Muharraq"]},
-    {"name": "Investment", "sub_categories": ["REITs", "Institutional Investment", "Capital Flows", "Private Equity", "Foreign Investment", "Mortgage Trends", "ROI Insights", "Real Estate Funds"]},
-    {"name": "Finance", "sub_categories": ["Property Financing", "Mortgage Rates", "Valuations", "Interest Rate Updates", "Developer Payment Plans", "Bank & Lender News"]},
-    {"name": "PropTech", "sub_categories": ["Smart Property Solutions", "Real Estate Data & AI", "Automation Tools", "CRM & Software Platforms", "Blockchain in Real Estate", "Virtual Tours (AR/VR)", "Digital Twins", "Online Marketplaces"]},
-    {"name": "Construction", "sub_categories": ["Contractors", "Building Materials", "Infrastructure Works", "Engineering Firms", "Project Management", "Construction Updates", "Safety Standards", "Construction Technology"]},
-    {"name": "Architecture & Design", "sub_categories": ["Urban Architecture", "Sustainable Building Design", "Masterplanning", "Façade Innovation", "Architectural Firms", "Landmark Projects"]},
-    {"name": "Sustainability", "sub_categories": ["Green Buildings", "ESG in Real Estate", "Smart Cities", "Renewable Energy Integration", "Carbon Neutral Projects", "Environmental Standards", "Sustainable Infrastructure"]},
-    {"name": "Policy & Regulations", "sub_categories": ["Ownership Laws", "Freehold & Leasehold Rules", "Golden Visa Regulations", "Property Taxation", "RERA & DLD Policies", "Zoning & Development Laws", "Government Real Estate Initiatives"]},
-    {"name": "People", "sub_categories": ["Developers & CEOs", "Government Officials", "Real Estate Analysts", "Architects & Planners", "Top Brokers", "Industry Thought Leaders"]}
+    {"name": "Off-Plan & New Launches", "description": "Pre-construction projects and newly announced developments."},
+    {"name": "Payment Plans & Offers", "description": "Flexible payment options and developer incentives."},
+    {"name": "High-Yield & ROI", "description": "Properties focused on rental returns and capital appreciation."},
+    {"name": "Golden Visa & Residency", "description": "Real estate linked to long-term visa eligibility."},
+    {"name": "Luxury Residences", "description": "Ultra-high-end homes and brand partnerships."},
+    {"name": "Affordable & Mid-Market", "description": "Budget-friendly housing options and starter homes."},
+    {"name": "Shared Ownership", "description": "Crowdfunding and share-based property investment."},
+    {"name": "Vocational Holiday Homes", "description": "Vacation rentals and tourism-focused properties."},
+    {"name": "Mega-Projects & Giga-Cities", "description": "Massive government and private master developments."},
+    {"name": "Villa, Apartments & Townhouses", "description": "Properties located on beaches, islands, or marinas."},
+    {"name": "Community Spotlights", "description": "Guides and reviews of specific neighborhoods/areas."},
+    {"name": "Commercial & Co-Working", "description": "Office spaces, retail, and flexible work environments."},
+    {"name": "Industrial & Logistics", "description": "Warehousing, free zones, and industrial real estate."},
+    {"name": "Future Forecast", "description": "Market data on property valuations and predictions."},
+    {"name": "Rental Market Watch", "description": "Updates on rental prices, laws, and tenant trends."},
+    {"name": "Construction Updates", "description": "Progress reports on major projects."},
+    {"name": "Legal & Regulatory", "description": "Government laws, taxes, and property rules."},
+    {"name": "Mortgage & Financing", "description": "Banking news, interest rates, and loan advice."},
+    {"name": "Sustainability & Green Living", "description": "Eco-friendly developments and energy-efficient homes."},
+    {"name": "PropTech & AI", "description": "Technology transforming the real estate sector."},
+    {"name": "Smart Homes & Automation", "description": "IoT and connected living technologies."},
+    {"name": "Wellness & Lifestyle", "description": "Amenities focused on health, parks, and recreation."},
+    {"name": "Developer News", "description": "Corporate updates from major property developers."},
+    {"name": "People", "description": "Profiles of CEOs, agents, and architects."},
+    {"name": "Events & Expos", "description": "Coverage of real estate exhibitions and conferences."},
+    {"name": "Architecture & Design Trends", "description": "News on design styles, facades, and architectural innovation."},
+    {"name": "Interiors & Luxury Fit-Out", "description": "Trends in interior finishing, renovation, and furniture."},
+    {"name": "Building Materials & Tech", "description": "Physical construction tech and material market updates."},
+    {"name": "Landscape & Outdoor Living", "description": "Design of outdoor spaces, parks, and green communities."},
+    {"name": "Urban Planning & Infrastructure", "description": "Public realm, transport, and city-level planning news."}
 ]
 
 

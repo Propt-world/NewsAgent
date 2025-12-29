@@ -17,10 +17,6 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 3. Install Playwright Browsers & Dependencies
-# This command installs Chromium and all necessary OS libs (libgbm, etc.) automatically
-RUN playwright install --with-deps chromium
-
 # 4. Copy Application Code
 COPY . .
 

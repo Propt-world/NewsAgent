@@ -15,6 +15,7 @@ from fastapi import (
     Header,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo import MongoClient
@@ -178,6 +179,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- 1. WEBHOOK ENDPOINT ---
 @app.post(

@@ -4,6 +4,7 @@ import json
 import redis
 import os
 from fastapi import FastAPI, HTTPException, Query, Body, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import List, Optional, Dict, Any
 from pprint import pprint
@@ -29,6 +30,15 @@ api = FastAPI(
     title="NewsAgent Server",
     version="3.4",
     description="Redis-Backed Async News Agent with Observability & Queue Management",
+)
+
+# Add CORS middleware
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Initialize Redis Connection Pool

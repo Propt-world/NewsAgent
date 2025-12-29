@@ -27,7 +27,7 @@ from src.scheduler.models import SourceConfig, ProcessedArticle
 from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
 from src.utils.security import verify_api_key, verify_webhook_secret
-from src.models.Responses import GenericResponse
+from src.models.Responses import GenericResponse, SchedulerHealthResponse
 
 # --- DATABASE SETUP ---
 client = MongoClient(settings.DATABASE_URL, tlsInsecure=True)
@@ -188,6 +188,60 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get(
+    "/health",
+    response_model=SchedulerHealthResponse,
+    description="Check the health of the scheduler service and its dependencies.",
+    tags=["System"],
+)
+async def health_check():
+    # 1. Database Check
+    db_status = "disconnected"
+    try:
+        # Using the global 'client' to ping
+        client.admin.command('ping')
+        db_status = "connected"
+    except Exception:
+        db_status = "disconnected"
+
+    # 2. Scheduler Check
+    sched_status = "stopped"
+    if scheduler.running:
+        sched_status = "running"
+
+    # 3. Main API Check
+    api_status = "unreachable"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as http:
+            # Attempt to hit the Main API health endpoint
+            # If it doesn't exist, we might get 404 but that implies reachability.
+            # If connection fails, it raises exception.
+            resp = await http.get(f"{settings.MAIN_API_URL}/health")
+            if resp.status_code == 200:
+                api_status = "connected"
+            else:
+                api_status = f"degraded ({resp.status_code})"
+    except Exception:
+        api_status = "unreachable"
+
+    # Overall Status
+    # Any major component failure = unhealthy
+    if db_status != "connected" or sched_status != "running":
+        overall = "unhealthy"
+    elif api_status == "unreachable":
+        # If Main API is down, Scheduler is degraded but still running
+        overall = "degraded"
+    else:
+        overall = "healthy"
+
+    return SchedulerHealthResponse(
+        status=overall,
+        database=db_status,
+        scheduler=sched_status,
+        main_api=api_status,
+        timestamp=datetime.now(timezone.utc)
+    )
 
 # --- 1. WEBHOOK ENDPOINT ---
 @app.post(

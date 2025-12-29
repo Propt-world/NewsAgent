@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Any, Optional, Dict, List
+from datetime import datetime
 
 # --- GENERIC RESPONSES ---
 class GenericResponse(BaseModel):
@@ -36,3 +37,10 @@ class QueueStatusResponse(BaseModel):
     status: str
     main_queue: QueueInfo
     dead_letter_queue: QueueInfo
+
+class SchedulerHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    database: str = Field(..., example="connected")
+    scheduler: str = Field(..., example="running")
+    main_api: str = Field(..., example="reachable")
+    timestamp: datetime

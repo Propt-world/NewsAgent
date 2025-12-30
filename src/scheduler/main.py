@@ -178,7 +178,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan)
+app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan, root_path="/newscheduler")
 
 # Add CORS middleware
 app.add_middleware(

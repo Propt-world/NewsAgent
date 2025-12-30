@@ -30,6 +30,7 @@ api = FastAPI(
     title="NewsAgent Server",
     version="3.4",
     description="Redis-Backed Async News Agent with Observability & Queue Management",
+    root_path="/newsapi",
 )
 
 # Add CORS middleware

@@ -8,8 +8,7 @@ Extract the following information from the provided text:
 - url: The source URL if mentioned
 - published_date: The publication date in YYYY-MM-DD format if available
 - author: The author's name if mentioned
-- category: The main category/topic of the article
-- sub_category: A more specific subcategory if applicable
+- category: A list of relevant categories/topics for the article
 - keywords: A list of 3-5 key terms that describe the article
 - embedded_links: A list of relevant links found in the content with their titles
 
@@ -29,8 +28,8 @@ schema = {
   "url": "string or null",
   "published_date": "string or null (YYYY-MM-DD format)",
   "author": "string or null",
-  "category": "string or null",
-  "sub_category": "string or null",
+  "category": ["string"],
+  "keywords": ["string"],
   "embedded_links": [
     {
       "url": "string",

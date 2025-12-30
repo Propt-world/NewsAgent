@@ -25,7 +25,6 @@ Extract the following information from the provided text:
 - published_date: The publication date in YYYY-MM-DD format if available
 - author: The author's name if mentioned
 - category: The main category/topic of the article
-- sub_category: A more specific subcategory if applicable
 - keywords: A list of 3-5 key terms that describe the article
 - embedded_links: A list of relevant links found in the content with their titles
 
@@ -409,7 +408,6 @@ def init_db():
                 new_cat = {
                     "_id": str(uuid.uuid4()),
                     "name": cat_data["name"],
-                    "sub_categories": cat_data["sub_categories"],
                     "created_at": datetime.now(timezone.utc)
                 }
                 categories_col.insert_one(new_cat)

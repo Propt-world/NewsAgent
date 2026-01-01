@@ -46,8 +46,10 @@ class Settings(BaseSettings):
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE'))
 
     # URL for Browserless (e.g., 'ws://browserless:3000')
-    # If None, falls back to local launch
+    # If None, raises error in browser.py as we removed local fallback
     BROWSER_WS_ENDPOINT: Optional[str] = os.getenv('BROWSER_WS_ENDPOINT')
+    # HTTP URL for health checks (e.g., 'http://browserless:3000')
+    BROWSERLESS_URL: Optional[str] = os.getenv('BROWSERLESS_URL')
     BROWSERLESS_TOKEN: Optional[str] = os.getenv('BROWSERLESS_TOKEN')
 
     # Email / SMTP Configuration
@@ -69,6 +71,8 @@ class Settings(BaseSettings):
     MAIN_API_URL: str = os.getenv('MAIN_API_URL', 'http://localhost:8000')
     # Source ID for manually submitted articles (not from scheduled sources)
     SUBMISSION_SOURCE_ID: str = os.getenv('SUBMISSION_SOURCE_ID', 'newsagent_scheduled_source')
+    # Scheduler URL for health checking
+    SCHEDULER_URL: str = os.getenv('SCHEDULER_URL', 'http://scheduler:8001')
 
     # Opik Settings
     def get_opik_client(self, graph=None):

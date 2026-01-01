@@ -12,17 +12,14 @@ def get_sync_browser_context():
     """
     playwright = sync_playwright().start()
     
+    
     if settings.BROWSER_WS_ENDPOINT:
         print(f"[BROWSER] 🔌 Connecting via CDP to: {settings.BROWSER_WS_ENDPOINT}")
         # CHANGED: connect -> connect_over_cdp
         # This bypasses the strict version check
         browser = playwright.chromium.connect_over_cdp(settings.BROWSER_WS_ENDPOINT)
     else:
-        print("[BROWSER] 🚀 Launching local Chrome")
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        raise ValueError("BROWSER_WS_ENDPOINT is not set. Local browser fallback is disabled.")
         
     return playwright, browser
 
@@ -37,10 +34,6 @@ async def launch_async_browser():
         # CHANGED: connect -> connect_over_cdp
         browser = await p.chromium.connect_over_cdp(settings.BROWSER_WS_ENDPOINT)
     else:
-        print("[BROWSER] 🚀 Launching local Chrome (Async)")
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        raise ValueError("BROWSER_WS_ENDPOINT is not set. Local browser fallback is disabled.")
         
     return p, browser

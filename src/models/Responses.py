@@ -10,7 +10,9 @@ class GenericResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = Field(..., example="healthy")
-    redis: str = Field(..., example="connected")
+    queue: str = Field(..., example="connected")
+    browserless: str = Field(..., example="connected")
+    scheduler: str = Field(..., example="reachable")
     graph_logic: str = Field(..., example="operational")
 
 # --- JOB RELATED ---
@@ -41,6 +43,7 @@ class QueueStatusResponse(BaseModel):
 class SchedulerHealthResponse(BaseModel):
     status: str = Field(..., example="healthy")
     database: str = Field(..., example="connected")
+    browserless: str = Field(..., example="connected")
     scheduler: str = Field(..., example="running")
     main_api: str = Field(..., example="reachable")
     timestamp: datetime

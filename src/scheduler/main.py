@@ -183,7 +183,7 @@ app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan, root_pat
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000"],
+    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000", "http://localhost:8001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -195,7 +195,7 @@ app.add_middleware(
     description="Check the health of the scheduler service and its dependencies.",
     tags=["System"],
 )
-async def health_check():
+async def health_check(check_external: bool = True):
     # 1. Database Check
     db_status = "disconnected"
     try:
@@ -211,35 +211,72 @@ async def health_check():
         sched_status = "running"
 
     # 3. Main API Check
-    api_status = "unreachable"
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as http:
-            # Attempt to hit the Main API health endpoint
-            # If it doesn't exist, we might get 404 but that implies reachability.
-            # If connection fails, it raises exception.
-            resp = await http.get(f"{settings.MAIN_API_URL}/health")
-            if resp.status_code == 200:
-                api_status = "connected"
-            else:
-                api_status = f"degraded ({resp.status_code})"
-    except Exception:
+    api_status = "skipped"
+    if check_external:
         api_status = "unreachable"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as http:
+                # Attempt to hit the Main API health endpoint with recursion breaker
+                resp = await http.get(f"{settings.MAIN_API_URL}/health", params={"check_external": "false"})
+                if resp.status_code == 200:
+                    api_status = "connected"
+                else:
+                    api_status = f"degraded ({resp.status_code})"
+        except Exception:
+            api_status = "unreachable"
+
+    # 4. Browserless Check
+    browser_status = "unconfigured"
+    if settings.BROWSERLESS_URL:
+        # Browserless is a leaf dependency (doesn't check us), so we can always check it,
+        # but for speed in 'shallow' mode we could skip it too. 
+        # However, check_external usually implies "services that depend on us or we depend on in a cycle".
+        # Browserless is a pure dependency. Let's keep verifying it unless strict speed is needed.
+        # Check if browserless is valid
+        try:
+            url = f"{settings.BROWSERLESS_URL}/pressure"
+            params = {}
+            if settings.BROWSERLESS_TOKEN:
+                params["token"] = settings.BROWSERLESS_TOKEN
+
+            async with httpx.AsyncClient(timeout=3.0) as http:
+                resp = await http.get(url, params=params)
+                if resp.status_code == 200:
+                    browser_status = "connected"
+                else:
+                    browser_status = f"degraded ({resp.status_code})"
+        except Exception:
+            browser_status = "unreachable"
 
     # Overall Status
     # Any major component failure = unhealthy
-    if db_status != "connected" or sched_status != "running":
+    # We now count browserless as a major component
+    if db_status != "connected" or sched_status != "running" or browser_status == "unreachable":
+        # Note: browserless "unconfigured" is technically healthy-ish if optional, but here we treat it as mandatory per plan.
+        # But if unconfigured is NOT possible due to settings choice, we assume mandatory.
+        # If browser_status is 'degraded', we might still say healthy or degraded.
         overall = "unhealthy"
     elif api_status == "unreachable":
         # If Main API is down, Scheduler is degraded but still running
         overall = "degraded"
     else:
         overall = "healthy"
+    
+    # If skipping external, we shouldn't mark as degraded just because api_status is 'skipped'
+    if check_external is False and api_status == "skipped":
+        # If everything else is fine
+        if overall == "degraded": 
+            # Was degraded only due to api?
+            # Re-evaluate
+            if db_status == "connected" and sched_status == "running" and browser_status != "unreachable":
+                overall = "healthy"
 
     return SchedulerHealthResponse(
         status=overall,
         database=db_status,
         scheduler=sched_status,
         main_api=api_status,
+        browserless=browser_status,
         timestamp=datetime.now(timezone.utc)
     )
 

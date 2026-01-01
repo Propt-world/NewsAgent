@@ -36,7 +36,7 @@ api = FastAPI(
 # Add CORS middleware
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000"],
+    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000", "http://localhost:8000", "http://localhost:8001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -88,27 +88,76 @@ def decode_job_data(raw_data: bytes) -> Dict[str, Any]:
         },
     },
 )
-async def health_check():
+async def health_check(check_external: bool = True):
     """
     Standard Health Check.
     Verifies:
-    1. Redis connectivity (Infrastructure)
-    2. Graph Compilation (Code Logic)
+    1. Queue Service (Infrastructure)
+    2. Browserless Service (Dependency)
+    3. Scheduler Service (Dependency)
+    4. Graph Compilation (Code Logic)
     """
-    health_status = {"status": "healthy", "redis": "unknown", "graph_logic": "unknown"}
+    import httpx  # Lazy import to avoid circular dep if any, though top level is fine usually.
+    
+    health_status = {
+        "status": "healthy", 
+        "queue": "unknown", 
+        "browserless": "unknown",
+        "scheduler": "unknown",
+        "graph_logic": "unknown"
+    }
 
-    # A. Check Redis
+    # A. Check Queue (Redis)
     try:
         r = get_redis_client()
         if r.ping():
-            health_status["redis"] = "connected"
+            health_status["queue"] = "connected"
     except Exception as e:
-        health_status["redis"] = f"disconnected: {str(e)}"
+        health_status["queue"] = f"disconnected: {str(e)}"
         health_status["status"] = "unhealthy"
-        # If critical infra is down, return 503
-        raise HTTPException(status_code=503, detail=health_status)
 
-    # B. Check Graph Logic
+    # B. Check Browserless
+    if settings.BROWSERLESS_URL:
+        try:
+            url = f"{settings.BROWSERLESS_URL}/pressure"
+            params = {}
+            if settings.BROWSERLESS_TOKEN:
+                params["token"] = settings.BROWSERLESS_TOKEN
+                
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(url, params=params)
+                if resp.status_code == 200:
+                    health_status["browserless"] = "connected"
+                else:
+                    health_status["browserless"] = f"degraded ({resp.status_code})"
+                    health_status["status"] = "unhealthy" # Critical dependency
+        except Exception:
+            health_status["browserless"] = "unreachable"
+            health_status["status"] = "unhealthy"
+    else:
+         health_status["browserless"] = "unconfigured"
+         health_status["status"] = "unhealthy"
+
+
+    # C. Check Scheduler
+    if check_external:
+        try:
+            # Recursion Breaker: Pass check_external=false
+            scheduler_health_url = f"{settings.SCHEDULER_URL}/health"
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(scheduler_health_url, params={"check_external": "false"})
+                if resp.status_code == 200:
+                    health_status["scheduler"] = "reachable"
+                else:
+                     health_status["scheduler"] = f"degraded ({resp.status_code})"
+                     health_status["status"] = "unhealthy"
+        except Exception:
+            health_status["scheduler"] = "unreachable"
+            health_status["status"] = "unhealthy"
+    else:
+        health_status["scheduler"] = "skipped"
+
+    # D. Check Graph Logic
     try:
         # We try to compile the graph. If there's a syntax error or
         # missing node in the definition, this throws an error.
@@ -118,6 +167,16 @@ async def health_check():
     except Exception as e:
         health_status["graph_logic"] = f"failed: {str(e)}"
         health_status["status"] = "unhealthy"
+    
+    # Check if we failed because of skipped deps? No, we just report skipped.
+    # But if status is "unhealthy" solely due to skipped? 
+    # If check_external is False, we shouldn't fail due to "skipped".
+    if not check_external and health_status["scheduler"] == "skipped":
+         if health_status["status"] == "unhealthy":
+             if health_status["queue"] == "connected" and health_status["browserless"] == "connected" and health_status["graph_logic"] == "operational":
+                  health_status["status"] = "healthy"
+
+    if health_status["status"] == "unhealthy":
         raise HTTPException(status_code=503, detail=health_status)
 
     return health_status

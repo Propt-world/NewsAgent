@@ -1,4 +1,5 @@
 import traceback
+import re
 from pprint import pprint
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.CategorizationModel import CategorizationModel
@@ -50,33 +51,46 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
         # 4. Call the LLM
         response: CategorizationModel = structured_llm.invoke(messages)
 
-        pprint(f"[NODE 8: CATEGORIZE ARTICLE] Categories assigned: {response.categories}")
+        predicted_categories = response.categories
+        pprint(f"[NODE 8: CATEGORIZE ARTICLE] LLM Raw Output: {predicted_categories}")
 
-        # 5. Resolve IDs
+        # 4. Resolve IDs with Normalization (The Fix)
         mapped_ids = []
         category_map = state.category_mapping or {}
+        
+        # Create a normalized lookup map (lowercase, no punctuation)
+        # e.g. "architecture  design trends" -> "uuid-123"
+        normalized_map = {}
+        for name, uid in category_map.items():
+            clean_key = re.sub(r'[^\w\s]', '', name).lower().strip()
+            normalized_map[clean_key] = uid
 
-        for cat_name in response.categories:
-            # Exact match lookup
+        for cat_name in predicted_categories:
+            # 1. Try Exact Match first
             if cat_name in category_map:
                 mapped_ids.append(category_map[cat_name])
+                continue
+            
+            # 2. Try Normalized Match (Handles **Bolding** or whitespace)
+            clean_name = re.sub(r'[^\w\s]', '', cat_name).lower().strip()
+            if clean_name in normalized_map:
+                found_id = normalized_map[clean_name]
+                mapped_ids.append(found_id)
+                pprint(f"[NODE 8] Fuzzy matched '{cat_name}' to ID {found_id}")
             else:
-                # Optional: Log warning if LLM predicted a category not in DB
-                pprint(f"[WARNING] Category '{cat_name}' has no mapped external_id.")
+                pprint(f"[WARNING] Could not map category '{cat_name}' (Cleaned: '{clean_name}')")
 
-        #   6. Update the ArticleModel in the state
+        pprint(f"[NODE 8] Final Mapped IDs: {mapped_ids}")
+
+        # 5. Update State
         updated_article = state.news_article.model_copy(update={
-            "category": response.categories,
+            "category": predicted_categories,
             "category_ids": mapped_ids
         })
 
-        return state.model_copy(update={
-            "news_article": updated_article
-        })
+        return state.model_copy(update={"news_article": updated_article})
 
     except Exception as e:
-        pprint(f"[NODE 8: CATEGORIZE ARTICLE] Error during categorization: {e}")
+        pprint(f"[NODE 8: CATEGORIZE ARTICLE] Error: {e}")
         traceback.print_exc()
-        return state.model_copy(update={
-            "error_message": f"Error in categorize_article: {e}"
-        })
+        return state.model_copy(update={"error_message": f"Error in categorize: {e}"})

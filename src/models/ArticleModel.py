@@ -25,6 +25,11 @@ class ArticleModel(BaseModel):
         description="A list of up to 3 main categories."
     )
 
+    category_ids: List[str] = Field(
+        default_factory=list,
+        description="The corresponding external IDs for the categories."
+    )
+
     # Use default_factory to ensure this is always a list,
     # which is easier to append to than an Optional.
     embedded_links: List[EmbeddedLinkModel] = Field(default_factory=list)

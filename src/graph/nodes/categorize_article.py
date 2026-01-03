@@ -52,12 +52,23 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
 
         pprint(f"[NODE 8: CATEGORIZE ARTICLE] Categories assigned: {response.categories}")
 
-        # 5. Update the ArticleModel in the state
-        # --- UPDATED MAPPING ---
+        # 5. Resolve IDs
+        mapped_ids = []
+        category_map = state.category_mapping or {}
+
+        for cat_name in response.categories:
+            # Exact match lookup
+            if cat_name in category_map:
+                mapped_ids.append(category_map[cat_name])
+            else:
+                # Optional: Log warning if LLM predicted a category not in DB
+                pprint(f"[WARNING] Category '{cat_name}' has no mapped external_id.")
+
+        #   6. Update the ArticleModel in the state
         updated_article = state.news_article.model_copy(update={
-            "category": response.categories
+            "category": response.categories,
+            "category_ids": mapped_ids
         })
-        # --- END UPDATES ---
 
         return state.model_copy(update={
             "news_article": updated_article

@@ -13,8 +13,9 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
     Responsibilities:
     1. Connects to MongoDB.
     2. Fetches the 'ACTIVE' version of every prompt required by the system.
-    3. Validates that no required prompts are missing using AgentPromptsModel.
-    4. Populates 'state.active_prompts' so downstream nodes can use them.
+    3. Fetches the category mapping (Name -> External ID) for the Postgres sync.
+    4. Validates that no required prompts are missing.
+    5. Populates 'state.active_prompts' and 'state.category_mapping'.
     """
     pprint("[NODE: LOAD CONFIG] Starting configuration load...")
 
@@ -43,26 +44,37 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
         # 1. Establish Database Connection
         client = MongoClient(settings.DATABASE_URL)
         db = client[settings.MONGO_DB_NAME]
-        collection = db["prompts"]
+        
+        # --- A. PROMPTS LOADING ---
+        prompts_collection = db["prompts"]
 
-        # 2. Query for Active Prompts
         # fetch all prompts where name is in REQUIRED_PROMPTS and status is ACTIVE
-        results = collection.find({
+        results = prompts_collection.find({
             "name": {"$in": REQUIRED_PROMPTS},
             "status": PromptStatus.ACTIVE
         })
 
-        # 3. Convert List of Docs to Dictionary
+        # Convert List of Docs to Dictionary
         raw_prompts_dict = {}
         for doc in results:
             raw_prompts_dict[doc["name"]] = doc["content"]
 
+        # --- B. CATEGORIES LOADING (NEW) ---
+        cat_collection = db["categories"]
+        # We only need the 'name' and 'external_id' fields
+        cat_results = cat_collection.find({}, {"name": 1, "external_id": 1})
+
+        # Build dictionary: { "Market News": "0598752f-fe7b...", ... }
+        cat_map = {}
+        for doc in cat_results:
+            if doc.get("name") and doc.get("external_id"):
+                cat_map[doc["name"]] = doc["external_id"]
+
+        pprint(f"[NODE: LOAD CONFIG] Loaded {len(cat_map)} category mappings.")
+
         client.close()
 
         # 4. Strict Validation (The "Guard Rail")
-        # By trying to instantiate the Pydantic model, we automatically check:
-        # - Are all required fields present?
-        # - Are they strings?
         pprint(f"[NODE: LOAD CONFIG] Found {len(raw_prompts_dict)} active prompts. Validating...")
 
         prompts_model = AgentPromptsModel(**raw_prompts_dict)
@@ -71,7 +83,8 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
 
         # 5. Update State
         return state.model_copy(update={
-            "active_prompts": prompts_model
+            "active_prompts": prompts_model,
+            "category_mapping": cat_map  # <--- Storing the map in state
         })
 
     except Exception as e:

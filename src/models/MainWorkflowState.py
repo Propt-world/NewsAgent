@@ -16,6 +16,9 @@ class MainWorkflowState(BaseModel):
     # This may be loaded from the database or constructed during workflow initialization.
     active_prompts: Optional[AgentPromptsModel] = None
 
+    # Maps category names to their external IDs (e.g., {"Market": "pg_123"})
+    category_mapping: Dict[str, str] = Field(default_factory=dict)
+
     # --- Fields for Looping & Validation ---
     validation_count: int = 0
 

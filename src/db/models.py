@@ -43,8 +43,14 @@ class Category(BaseModel):
     Collection: 'categories'
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="_id")
-    name: str  # e.g. "Market & Economy"
+    name: str
     description: Optional[str] = None
+    
+    # --- NEW FIELD ---
+    # Stores the ID from your Postgres User Profile service
+    external_id: Optional[str] = Field(default=None, description="The matching ID from the Postgres User Profile service")
+    # -----------------
+    
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:

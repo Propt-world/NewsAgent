@@ -175,36 +175,36 @@ Your job is to assign relevant categories to a news article based on its summary
 
 You MUST choose from the following predefined "Knowledge Base":
 
-- **Off-Plan & New Launches**	Pre-construction projects and newly announced developments.
-- **Payment Plans & Offers**	Flexible payment options and developer incentives.
-- **High-Yield & ROI**	Properties focused on rental returns and capital appreciation.
-- **Golden Visa & Residency**	Real estate linked to long-term visa eligibility.
-- **Luxury Residences**	Ultra-high-end homes and brand partnerships.
-- **Affordable & Mid-Market**	Budget-friendly housing options and starter homes.
-- **Shared Ownership**	Crowdfunding and share-based property investment.
-- **Vocational Holiday Homes**	Vacation rentals and tourism-focused properties.
-- **Mega-Projects & Giga-Cities**	Massive government and private master developments.
-- **Villa, Apartments & Townhouses**	Properties located on beaches, islands, or marinas.
-- **Community Spotlights**	Guides and reviews of specific neighborhoods/areas.
-- **Commercial & Co-Working**	Office spaces, retail, and flexible work environments.
-- **Industrial & Logistics**	Warehousing, free zones, and industrial real estate.
-- **Future Forecast**	Market data on property valuations and predictions.
-- **Rental Market Watch**	Updates on rental prices, laws, and tenant trends.
-- **Construction Updates**	Progress reports on major projects.
-- **Legal & Regulatory**	Government laws, taxes, and property rules.
-- **Mortgage & Financing**	Banking news, interest rates, and loan advice.
-- **Sustainability & Green Living**	Eco-friendly developments and energy-efficient homes.
-- **PropTech & AI**	Technology transforming the real estate sector.
-- **Smart Homes & Automation**	IoT and connected living technologies.
-- **Wellness & Lifestyle**	Amenities focused on health, parks, and recreation.
-- **Developer News**	Corporate updates from major property developers.
-- **People**	Profiles of CEOs, agents, and architects.
-- **Events & Expos**	Coverage of real estate exhibitions and conferences.
-- **Architecture & Design Trends**	News on design styles, facades, and architectural innovation.
-- **Interiors & Luxury Fit-Out**	Trends in interior finishing, renovation, and furniture.
-- **Building Materials & Tech**	Physical construction tech and material market updates.
-- **Landscape & Outdoor Living**	Design of outdoor spaces, parks, and green communities.
-- **Urban Planning & Infrastructure**	Public realm, transport, and city-level planning news.
+- **Off-Plan & New Launches** Pre-construction projects and newly announced developments.
+- **Payment Plans & Offers** Flexible payment options and developer incentives.
+- **High-Yield & ROI** Properties focused on rental returns and capital appreciation.
+- **Golden Visa & Residency** Real estate linked to long-term visa eligibility.
+- **Luxury Residences** Ultra-high-end homes and brand partnerships.
+- **Affordable & Mid-Market** Budget-friendly housing options and starter homes.
+- **Shared Ownership** Crowdfunding and share-based property investment.
+- **Vocational Holiday Homes** Vacation rentals and tourism-focused properties.
+- **Mega-Projects & Giga-Cities** Massive government and private master developments.
+- **Villa, Apartments & Townhouses** Properties located on beaches, islands, or marinas.
+- **Community Spotlights** Guides and reviews of specific neighborhoods/areas.
+- **Commercial & Co-Working** Office spaces, retail, and flexible work environments.
+- **Industrial & Logistics** Warehousing, free zones, and industrial real estate.
+- **Future Forecast** Market data on property valuations and predictions.
+- **Rental Market Watch** Updates on rental prices, laws, and tenant trends.
+- **Construction Updates** Progress reports on major projects.
+- **Legal & Regulatory** Government laws, taxes, and property rules.
+- **Mortgage & Financing** Banking news, interest rates, and loan advice.
+- **Sustainability & Green Living** Eco-friendly developments and energy-efficient homes.
+- **PropTech & AI** Technology transforming the real estate sector.
+- **Smart Homes & Automation** IoT and connected living technologies.
+- **Wellness & Lifestyle** Amenities focused on health, parks, and recreation.
+- **Developer News** Corporate updates from major property developers.
+- **People** Profiles of CEOs, agents, and architects.
+- **Events & Expos** Coverage of real estate exhibitions and conferences.
+- **Architecture & Design Trends** News on design styles, facades, and architectural innovation.
+- **Interiors & Luxury Fit-Out** Trends in interior finishing, renovation, and furniture.
+- **Building Materials & Tech** Physical construction tech and material market updates.
+- **Landscape & Outdoor Living** Design of outdoor spaces, parks, and green communities.
+- **Urban Planning & Infrastructure** Public realm, transport, and city-level planning news.
 
 --- RULES ---
 1. Select 3-4 categories.
@@ -293,38 +293,38 @@ RULES:
     },
 ]
 
-# --- CATEGORIES (NEW) ---
+# --- CATEGORIES (WITH EXTERNAL IDS) ---
 INITIAL_CATEGORIES = [
-    {"name": "Off-Plan & New Launches", "description": "Pre-construction projects and newly announced developments."},
-    {"name": "Payment Plans & Offers", "description": "Flexible payment options and developer incentives."},
-    {"name": "High-Yield & ROI", "description": "Properties focused on rental returns and capital appreciation."},
-    {"name": "Golden Visa & Residency", "description": "Real estate linked to long-term visa eligibility."},
-    {"name": "Luxury Residences", "description": "Ultra-high-end homes and brand partnerships."},
-    {"name": "Affordable & Mid-Market", "description": "Budget-friendly housing options and starter homes."},
-    {"name": "Shared Ownership", "description": "Crowdfunding and share-based property investment."},
-    {"name": "Vocational Holiday Homes", "description": "Vacation rentals and tourism-focused properties."},
-    {"name": "Mega-Projects & Giga-Cities", "description": "Massive government and private master developments."},
-    {"name": "Villa, Apartments & Townhouses", "description": "Properties located on beaches, islands, or marinas."},
-    {"name": "Community Spotlights", "description": "Guides and reviews of specific neighborhoods/areas."},
-    {"name": "Commercial & Co-Working", "description": "Office spaces, retail, and flexible work environments."},
-    {"name": "Industrial & Logistics", "description": "Warehousing, free zones, and industrial real estate."},
-    {"name": "Future Forecast", "description": "Market data on property valuations and predictions."},
-    {"name": "Rental Market Watch", "description": "Updates on rental prices, laws, and tenant trends."},
-    {"name": "Construction Updates", "description": "Progress reports on major projects."},
-    {"name": "Legal & Regulatory", "description": "Government laws, taxes, and property rules."},
-    {"name": "Mortgage & Financing", "description": "Banking news, interest rates, and loan advice."},
-    {"name": "Sustainability & Green Living", "description": "Eco-friendly developments and energy-efficient homes."},
-    {"name": "PropTech & AI", "description": "Technology transforming the real estate sector."},
-    {"name": "Smart Homes & Automation", "description": "IoT and connected living technologies."},
-    {"name": "Wellness & Lifestyle", "description": "Amenities focused on health, parks, and recreation."},
-    {"name": "Developer News", "description": "Corporate updates from major property developers."},
-    {"name": "People", "description": "Profiles of CEOs, agents, and architects."},
-    {"name": "Events & Expos", "description": "Coverage of real estate exhibitions and conferences."},
-    {"name": "Architecture & Design Trends", "description": "News on design styles, facades, and architectural innovation."},
-    {"name": "Interiors & Luxury Fit-Out", "description": "Trends in interior finishing, renovation, and furniture."},
-    {"name": "Building Materials & Tech", "description": "Physical construction tech and material market updates."},
-    {"name": "Landscape & Outdoor Living", "description": "Design of outdoor spaces, parks, and green communities."},
-    {"name": "Urban Planning & Infrastructure", "description": "Public realm, transport, and city-level planning news."}
+    {"name": "Architecture & Design Trends", "external_id": "0598752f-fe7b-46c4-adb2-d0a120ac7ba4"},
+    {"name": "Interiors & Luxury Fit-Out", "external_id": "f8fd0676-b020-4c9a-b211-cc151c1e269b"},
+    {"name": "Building Materials & Tech", "external_id": "fdfe14d5-66ee-4e8b-ac8d-e323abd1be3c"},
+    {"name": "Landscape & Outdoor Living", "external_id": "aa7a276a-0a40-499f-a5de-c183b55c14f0"},
+    {"name": "Urban Planning & Infrastructure", "external_id": "69688c2a-5c18-4a1a-a7b9-a509ccbc34fd"},
+    {"name": "Golden Visa & Residency", "external_id": "21cf167c-505f-461e-8fe0-57270da0525c"},
+    {"name": "Luxury Residences", "external_id": "59dd334f-bda8-48af-8b0d-52cd7aca6024"},
+    {"name": "Shared Ownership", "external_id": "8ff6ee28-2853-4b53-a1bd-3cc55ac2eaf3"},
+    {"name": "Vocational Holiday Homes", "external_id": "3d0f5c64-6cff-4831-b257-9b95eb426eac"},
+    {"name": "Mega-Projects & Giga-Cities", "external_id": "e1f60a8e-a1c3-4475-a823-492c4155ffed"},
+    {"name": "Villa, Apartments & Townhouses", "external_id": "edecd3a0-faf5-442c-aed1-44fbf2215a96"},
+    {"name": "Community Spotlights", "external_id": "25b6b7b5-3b78-4c3e-9e63-a7fc24b7fa26"},
+    {"name": "Commercial & Co-Working", "external_id": "87506e37-09c8-403e-be73-032a4609a696"},
+    {"name": "Industrial & Logistics", "external_id": "81a6c938-32ee-4566-ab9d-8c6eddd77a25"},
+    {"name": "Future Forecast", "external_id": "a7c37a51-b56e-4a72-bf77-5a7529db2f41"},
+    {"name": "Rental Market Watch", "external_id": "1d3cbd90-e97a-432e-b56d-1cdd11855916"},
+    {"name": "Construction Updates", "external_id": "669b1027-c955-4570-a9c8-59aa07a98902"},
+    {"name": "Legal & Regulatory", "external_id": "b182c602-97a8-445e-a074-866d40cf8804"},
+    {"name": "Mortgage & Financing", "external_id": "32a4d01d-05cb-47a6-904b-f71e12428e3d"},
+    {"name": "Sustainability & Green Living", "external_id": "0a8c9d0d-29fb-4985-93f2-3c94e602dde3"},
+    {"name": "PropTech & AI", "external_id": "56d6c5b1-6740-4919-abd2-0ba5efa0ffb2"},
+    {"name": "Smart Homes & Automation", "external_id": "4fadd5c6-c08a-4249-b5d4-0ce23b50521a"},
+    {"name": "Wellness & Lifestyle", "external_id": "52542d6d-e687-47ab-be1d-e9e910283737"},
+    {"name": "Developer News", "external_id": "85081255-4ad1-4f9d-9034-8f57aa72b485"},
+    {"name": "People", "external_id": "996365bf-b3bc-416c-9d6e-e5efd7144941"},
+    {"name": "Events & Expos", "external_id": "48ff44af-13aa-4440-9920-7a954568c037"},
+    {"name": "Off-Plan & New Launches", "external_id": "113607c7-5878-40b8-94af-52025926213e"},
+    {"name": "Payment Plans & Offers", "external_id": "8c6fb4b5-37cf-43e1-ac90-75157bd34aea"},
+    {"name": "High-Yield & ROI", "external_id": "30ea66e9-a7ec-4ed1-96b9-edd9fecd4b6a"},
+    {"name": "Affordable & Mid-Market", "external_id": "3b8ff43b-9c24-4af8-ae73-885fa66c9edb"}
 ]
 
 
@@ -396,24 +396,38 @@ def init_db():
                 print(f"  [~] Skipped Recipient (Already Exists): {email}")
 
         # ==========================================
-        # 3. CATEGORIES COLLECTION (NEW)
+        # 3. CATEGORIES COLLECTION (UPDATED)
         # ==========================================
         print("--- Setting up Categories ---")
         categories_col = db["categories"]
         categories_col.create_index([("name", ASCENDING)], unique=True)
+        # Add index for external_id for faster lookups
+        categories_col.create_index([("external_id", ASCENDING)])
 
         for cat_data in INITIAL_CATEGORIES:
             existing = categories_col.find_one({"name": cat_data["name"]})
+            
             if not existing:
+                # Insert new category with ID
                 new_cat = {
                     "_id": str(uuid.uuid4()),
                     "name": cat_data["name"],
+                    "external_id": cat_data.get("external_id"), # Store Postgres ID
                     "created_at": datetime.now(timezone.utc)
                 }
                 categories_col.insert_one(new_cat)
                 print(f"  [+] Added Category: {cat_data['name']}")
+            
+            elif existing.get("external_id") != cat_data.get("external_id"):
+                # Update existing category if the external_id is missing or different
+                categories_col.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {"external_id": cat_data.get("external_id")}}
+                )
+                print(f"  [>] Updated ID for Category: {cat_data['name']}")
+            
             else:
-                print(f"  [~] Skipped Category: {cat_data['name']}")
+                print(f"  [~] Skipped Category (Unchanged): {cat_data['name']}")
 
         # ==========================================
         # 4. SCHEDULER: SOURCES COLLECTION

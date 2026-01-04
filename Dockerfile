@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# 1.1 SSL Certificates (AWS DocumentDB)
+COPY global-bundle.pem /app/certs/global-bundle.pem
+
 # 2. Install Python Dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -204,6 +204,7 @@ $RECYCLE.BIN/
 # API keys and secrets
 *.key
 *.pem
+!global-bundle.pem
 secrets/
 config/secrets/
 

@@ -12,7 +12,7 @@ from src.models.RelevanceScoreModel import RelevanceScoreModel
 from src.configs.settings import settings
 
 # Import the Semaphore and Launcher from our new browser manager
-from src.utils.browser import launch_async_browser, BROWSER_SEMAPHORE
+from src.utils.browser import get_async_browser_context, BROWSER_SEMAPHORE
 
 async def _process_links_batch(
     links: List[EmbeddedLinkModel], # 1. We accept the FULL LIST to process in parallel
@@ -27,57 +27,56 @@ async def _process_links_batch(
     
     # --- A. RESOURCE SETUP ---
     # Launching a browser is expensive (CPU-wise). We do it ONCE for the whole batch.
-    p, browser = await launch_async_browser()
+    async with get_async_browser_context() as (p, browser):
     
-    # --- B. INITIALIZE LLM INTERNALY ---
-    # 2. The LLM is initialized HERE, so we don't need to pass it as an argument.
-    # It captures the settings and is ready to be used by the worker function below.
-    llm = settings.get_model().with_structured_output(RelevanceScoreModel)
+        # --- B. INITIALIZE LLM INTERNALY ---
+        # 2. The LLM is initialized HERE, so we don't need to pass it as an argument.
+        # It captures the settings and is ready to be used by the worker function below.
+        llm = settings.get_model().with_structured_output(RelevanceScoreModel)
 
-    # --- Inner Worker Function (Closure) ---
-    # Defined inside so it can access 'browser' and 'llm' without passing them as args
-    async def check_single_link(link: EmbeddedLinkModel):
-        
-        # --- C. CONCURRENCY CONTROL ---
-        # "Wait here until there are fewer than 8 active tabs"
-        async with BROWSER_SEMAPHORE: 
-            context = None
-            try:
-                # Create a lightweight "Context" (like a new Incognito window)
-                context = await browser.new_context()
-                page = await context.new_page()
-                
-                # Fast timeout (15s) - we don't need perfect rendering for relevance check
-                await page.goto(link.url, timeout=15000, wait_until="domcontentloaded")
-                
-                # Extract Text
-                html = await page.content()
-                soup = BeautifulSoup(html, "lxml")
-                text = soup.get_text(separator=" ", strip=True)[:1500]
+        # --- Inner Worker Function (Closure) ---
+        # Defined inside so it can access 'browser' and 'llm' without passing them as args
+        async def check_single_link(link: EmbeddedLinkModel):
+            
+            # --- C. CONCURRENCY CONTROL ---
+            # "Wait here until there are fewer than 8 active tabs"
+            async with BROWSER_SEMAPHORE: 
+                context = None
+                try:
+                    # Create a lightweight "Context" (like a new Incognito window)
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    
+                    # Fast timeout (15s) - we don't need perfect rendering for relevance check
+                    await page.goto(link.url, timeout=15000, wait_until="domcontentloaded")
+                    
+                    # Extract Text
+                    html = await page.content()
+                    soup = BeautifulSoup(html, "lxml")
+                    text = soup.get_text(separator=" ", strip=True)[:1500]
 
-                # --- D. USE THE LLM ---
-                # We use the prompts passed in arguments and the LLM initialized above
-                prompt = PromptTemplate.from_template(user_prompt)
-                fmt_prompt = prompt.format(
-                    summary=summary,
-                    link_context=link.context,
-                    link_content=text
-                )
-                
-                # Async LLM call
-                res = await llm.ainvoke([("system", sys_prompt), ("user", fmt_prompt)])
-                
-                return link.model_copy(update={"relevance_score": res.score})
+                    # --- D. USE THE LLM ---
+                    # We use the prompts passed in arguments and the LLM initialized above
+                    prompt = PromptTemplate.from_template(user_prompt)
+                    fmt_prompt = prompt.format(
+                        summary=summary,
+                        link_context=link.context,
+                        link_content=text
+                    )
+                    
+                    # Async LLM call
+                    res = await llm.ainvoke([("system", sys_prompt), ("user", fmt_prompt)])
+                    
+                    return link.model_copy(update={"relevance_score": res.score})
 
-            except Exception:
-                # If anything fails (timeout, 404), mark score as 0.0.
-                # Do NOT crash the whole batch for one bad link.
-                return link.model_copy(update={"relevance_score": 0.0})
-            finally:
-                # Close tab immediately to free up the Semaphore slot
-                if context: await context.close()
+                except Exception:
+                    # If anything fails (timeout, 404), mark score as 0.0.
+                    # Do NOT crash the whole batch for one bad link.
+                    return link.model_copy(update={"relevance_score": 0.0})
+                finally:
+                    # Close tab immediately to free up the Semaphore slot
+                    if context: await context.close()
 
-    try:
         # --- E. EXECUTE PARALLEL BATCH ---
         # Create a task for every link in the list
         tasks = [check_single_link(link) for link in links]
@@ -85,13 +84,8 @@ async def _process_links_batch(
         # asyncio.gather runs them all at once (respecting the Semaphore limit)
         results = await asyncio.gather(*tasks)
         return results
-    finally:
-        # --- F. CLEANUP ---
-        # Ensure the main browser process is killed.
-        if browser: await browser.close()
-        if p: await p.stop()
 
-def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
+async def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
     """
     Main node function.
     """
@@ -106,13 +100,22 @@ def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
         prompts = state.active_prompts
         
         # Run the async batch processor
-        # We use asyncio.run because this Node is synchronous, but the browser logic is async
-        updated_links = asyncio.run(_process_links_batch(
+        updated_links = await _process_links_batch(
             state.news_article.embedded_links,
             state.news_article.summary,
             prompts.relevance_system,
             prompts.relevance_user
-        ))
+        )
+
+        updated_article = state.news_article.model_copy(update={
+            "embedded_links": updated_links
+        })
+        return state.model_copy(update={"news_article": updated_article})
+
+    except Exception as e:
+        pprint(f"[NODE: CHECK LINKS] Error: {e}")
+        # Return state as-is on error to avoid breaking the workflow
+        return state
 
         updated_article = state.news_article.model_copy(update={
             "embedded_links": updated_links

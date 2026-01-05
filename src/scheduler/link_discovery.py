@@ -3,7 +3,7 @@ import re
 from typing import Set
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from src.utils.browser import launch_async_browser
+from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
 
 # --- FILTERS ---
@@ -41,35 +41,31 @@ async def fetch_listing_page(url: str) -> str:
     
     try:
         # --- 1. LAUNCH ---
-        # Start an async browser
-        p, browser = await launch_async_browser()
-        page = await browser.new_page()
-        
-        # --- 2. NAVIGATE ---
-        await page.goto(url, timeout=45000, wait_until="domcontentloaded")
-        
-        # --- 3. SCROLL HACK ---
-        # Many news sites (like CNN/Reuters) use lazy-loading.
-        # We run a quick JS command to scroll to the bottom.
-        try:
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            # Wait 2s for the new items to populate
-            await page.wait_for_timeout(2000) 
-        except Exception:
-            pass # If scroll fails, we just take what's visible
-        
-        # --- 4. RETURN CONTENT ---
-        content = await page.content()
-        return content
+        # Start an async browser using the context manager
+        async with get_async_browser_context() as (p, browser):
+            page = await browser.new_page()
+            
+            # --- 2. NAVIGATE ---
+            await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            
+            # --- 3. SCROLL HACK ---
+            # Many news sites (like CNN/Reuters) use lazy-loading.
+            # We run a quick JS command to scroll to the bottom.
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                # Wait 2s for the new items to populate
+                await page.wait_for_timeout(2000) 
+            except Exception:
+                pass # If scroll fails, we just take what's visible
+            
+            # --- 4. RETURN CONTENT ---
+            content = await page.content()
+            return content
 
     except Exception as e:
         print(f"[LINK DISCOVERY] Error fetching {url}: {e}")
         return ""
-    finally:
-        # --- 5. CLEANUP ---
-        # Close everything to keep the Scheduler lightweight
-        if browser: await browser.close()
-        if playwright: await p.stop()
+    # Finally block is removed as context manager handles cleanup
 
 def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set[str]:
     """

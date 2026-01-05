@@ -1,0 +1,143 @@
+name: Build and Deploy NewsAgent Services to AWS
+
+on:
+  push:
+    branches:
+      - workingState
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        service:
+          - name: newsagent-api
+            ecr-repo: newsagent-api
+            task-def: newsagent-api
+            ecs-service: newsagent-api-service
+            container-name: newsagent-api
+          - name: newsagent-worker
+            ecr-repo: newsagent-worker
+            task-def: newsagent-worker
+            ecs-service: newsagent-worker-service
+            container-name: newsagent-worker
+          - name: newsagent-scheduler
+            ecr-repo: newsagent-scheduler
+            task-def: newsagent-scheduler
+            ecs-service: newsagent-scheduler-service
+            container-name: newsagent-scheduler
+          - name: newsagent-browserless
+            ecr-repo: newsagent_browserless
+            task-def: newsagent-browserless
+            ecs-service: newsagent-browserless-service
+            container-name: newsagent-browserless
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Create ECR repository if it doesn't exist
+        run: |
+          aws ecr describe-repositories \
+            --repository-names ${{ matrix.service.ecr-repo }} \
+          || aws ecr create-repository \
+            --repository-name ${{ matrix.service.ecr-repo }}
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ matrix.service.ecr-repo }}
+          IMAGE_TAG: ${{ github.sha }}-build-${{ github.run_number }}
+        run: |
+          if [ "${{ matrix.service.name }}" = "newsagent-browserless" ]; then
+            # Use official browserless image for browserless service
+            docker pull ghcr.io/browserless/chromium:latest
+            docker tag ghcr.io/browserless/chromium:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            docker tag ghcr.io/browserless/chromium:latest $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          else
+            # Build NewsAgent services using Dockerfile
+            docker build \
+              --platform linux/amd64 \
+              -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+              -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          fi
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Update ECS task definition with new image
+        id: task-def-update
+        env:
+          CONTAINER_NAME: ${{ matrix.service.container-name }}
+        run: |
+          # Fetch current task definition
+          aws ecs describe-task-definition \
+            --task-definition "${{ matrix.service.task-def }}" \
+            --query taskDefinition > task-def.json
+          # Update container image by container name
+          jq --arg IMAGE "${{ steps.build-image.outputs.image }}" \
+             --arg CONTAINER "$CONTAINER_NAME" \
+             '
+             .containerDefinitions |=
+               map(
+                 if .name == $CONTAINER
+                 then .image = $IMAGE
+                 else .
+                 end
+               )
+             ' task-def.json > new-task-def.json
+          # Remove AWS-managed fields
+          jq 'del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy,
+                .deregisteredAt,
+                .inferenceAccelerators,
+                .ephemeralStorage,
+                .runtimePlatform
+              )' new-task-def.json > final-task-def.json
+          # Register new task definition revision
+          NEW_TASK=$(aws ecs register-task-definition \
+            --cli-input-json file://final-task-def.json)
+          REVISION=$(echo "$NEW_TASK" | jq -r '.taskDefinition.revision')
+          echo "revision=$REVISION" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Amazon ECS
+        run: |
+          aws ecs update-service \
+            --cluster "propt-world" \
+            --service "${{ matrix.service.ecs-service }}" \
+            --task-definition "${{ matrix.service.task-def }}:${{ steps.task-def-update.outputs.revision }}" \
+            --force-new-deployment
+          echo "Deployment started for ${{ matrix.service.name }} with revision ${{ steps.task-def-update.outputs.revision }}"
+
+      - name: Wait for ECS Service Stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "propt-world" \
+            --services "${{ matrix.service.ecs-service }}"
+          echo "${{ matrix.service.name }} ECS service is stable and running the latest version."

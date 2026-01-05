@@ -48,7 +48,7 @@ def get_sync_browser_context():
 #    playwright = sync_playwright().start()
 #    ...
 #    return playwright, browser
-
+#for commit only
 # Okay, so I should implement get_async_browser_context as a similar Helper or a Context Manager.
 # Since I am refactoring raw_extraction, I can choose to make it a context manager which is safer.
 

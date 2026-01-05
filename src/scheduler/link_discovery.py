@@ -104,5 +104,5 @@ def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set
             continue
 
         valid_urls.add(full_url)
-
+        #
     return valid_urls

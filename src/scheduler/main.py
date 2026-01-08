@@ -655,6 +655,67 @@ async def update_article_status(
     return {"status": "updated", "message": f"Article status updated to {new_status}", "id": article_id, "new_status": new_status}
 
 
+@app.patch(
+    "/articles/{article_id}/image",
+    response_model=GenericResponse,
+    description="Update the top_image of a processed article.",
+    responses={
+        status.HTTP_200_OK: {
+            "model": GenericResponse,
+            "description": "Article image updated successfully",
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "model": GenericResponse,
+            "description": "Article not found",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": GenericResponse,
+            "description": "Internal Server Error",
+        },
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def update_article_image(
+    article_id: str, image_update: Dict[str, str] = Body(...)
+):
+    """
+    Updates the 'top_image' field in the 'final_output' of a processed article.
+    Expects JSON body: { "image_url": "https://..." }
+    """
+    new_image_url = image_update.get("image_url")
+    if not new_image_url:
+         raise HTTPException(
+            status_code=400,
+            detail="Missing 'image_url' in request body."
+        )
+
+    # We need to update two places potentially:
+    # 1. final_output.top_image
+    # 2. final_output.news_article.top_image (if the structure is nested as expected)
+    
+    # We use dot notation for Mongo updates to reach into the dict
+    update_op = {
+        "$set": {
+            "final_output.top_image": new_image_url
+        }
+    }
+
+    result = articles_col.update_one(
+        {"_id": article_id}, 
+        update_op
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    return {
+        "status": "updated",
+        "message": "Article image updated successfully",
+        "id": article_id,
+        "new_image_url": new_image_url
+    }
+
+
 # --- 4. ARTICLE LIFECYCLE MANAGEMENT ---
 
 
@@ -749,6 +810,81 @@ async def soft_delete_article(article_id: str):
     articles_col.delete_one({"_id": article_id})
 
     return {"status": "soft_deleted", "message": "Article soft deleted successfully", "id": article_id}
+
+
+# --- 5. OPS / BACKFILL ENDPOINTS ---
+
+@app.post(
+    "/admin/ops/backfill-reading-time",
+    response_model=GenericResponse,
+    description="Trigger a backfill of reading_time for existing articles.",
+    responses={
+        status.HTTP_200_OK: {
+            "model": GenericResponse,
+            "description": "Backfill triggered successfully",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": GenericResponse,
+            "description": "Internal Server Error",
+        },
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def trigger_backfill_reading_time(background_tasks: BackgroundTasks):
+    """
+    Triggers a background task to calculate and update 'reading_time' for all processed articles.
+    This is useful for migrating old data to the new schema.
+    """
+    background_tasks.add_task(run_reading_time_backfill)
+    return {"status": "triggered", "message": "Reading time backfill started in background."}
+
+
+def run_reading_time_backfill():
+    import math
+    print("[OPS] 🔄 Starting Reading Time Backfill...")
+    try:
+        # Re-use global 'articles_col'
+        cursor = articles_col.find({"final_output": {"$ne": None}})
+        
+        updated_count = 0
+        skipped_count = 0
+        wpm = 200
+
+        for doc in cursor:
+            article_id = doc["_id"]
+            final_output = doc.get("final_output", {})
+            
+            # Skip if already fully populated
+            if final_output.get("reading_time") and final_output.get("reading_time_ar"):
+                skipped_count += 1
+                continue
+
+            updates = {}
+            
+            # Calc English
+            if not final_output.get("reading_time"):
+                content_en = final_output.get("cleaned_article_text") or final_output.get("content")
+                if content_en:
+                    word_count = len(content_en.split())
+                    updates["final_output.reading_time"] = math.ceil(word_count / wpm)
+
+            # Calc Arabic
+            if not final_output.get("reading_time_ar"):
+                content_ar = final_output.get("content_ar")
+                if content_ar:
+                    word_count_ar = len(content_ar.split())
+                    updates["final_output.reading_time_ar"] = math.ceil(word_count_ar / wpm)
+
+            if updates:
+                articles_col.update_one({"_id": article_id}, {"$set": updates})
+                updated_count += 1
+            else:
+                skipped_count += 1
+        
+        print(f"[OPS] ✅ Backfill Complete. Updated: {updated_count}, Skipped: {skipped_count}")
+
+    except Exception as e:
+        print(f"[OPS] ❌ Backfill Failed: {e}")
 
 
 if __name__ == "__main__":

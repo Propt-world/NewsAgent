@@ -1,6 +1,7 @@
 import math
 from pprint import pprint
 from src.models.MainWorkflowState import MainWorkflowState
+from src.utils.text_utils import to_arabic_numerals
 
 def calculate_reading_time(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -21,9 +22,8 @@ def calculate_reading_time(state: MainWorkflowState) -> MainWorkflowState:
     updates = {}
 
     # 1. English Reading Time
-    # We prefer to use the cleaned_article_text for calculation as it represents the full article
-    # Fallback to content if cleaned_text is somehow missing
-    english_text = state.cleaned_article_text or state.news_article.content
+    # We use the summary for calculation as it represents the concise content
+    english_text = state.news_article.summary
     if english_text:
         word_count = len(english_text.split())
         reading_time = math.ceil(word_count / WPM)
@@ -31,12 +31,12 @@ def calculate_reading_time(state: MainWorkflowState) -> MainWorkflowState:
         pprint(f"[NODE: CALC READING TIME] English: {word_count} words -> {reading_time} min")
 
     # 2. Arabic Reading Time
-    arabic_text = state.news_article.content_ar
+    arabic_text = state.news_article.summary_ar
     if arabic_text:
         word_count_ar = len(arabic_text.split())
         reading_time_ar = math.ceil(word_count_ar / WPM)
-        updates["reading_time_ar"] = reading_time_ar
-        pprint(f"[NODE: CALC READING TIME] Arabic: {word_count_ar} words -> {reading_time_ar} min")
+        updates["reading_time_ar"] = to_arabic_numerals(reading_time_ar)
+        pprint(f"[NODE: CALC READING TIME] Arabic: {word_count_ar} words -> {updates['reading_time_ar']} min")
 
     if updates:
         updated_article = state.news_article.model_copy(update=updates)

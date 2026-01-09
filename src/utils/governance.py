@@ -19,7 +19,7 @@ class GovernanceGatekeeper:
         self.db = self.mongo_client[settings.MONGO_DB_NAME]
         
         # 3. Bot Identity
-        self.user_agent = "NewsAgent-Bot/1.0 (+http://your-site.com/bot)" 
+        self.user_agent = settings.USER_AGENT 
 
     def _get_domain(self, url: str) -> str:
         return urlparse(url).netloc

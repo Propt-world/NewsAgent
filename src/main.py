@@ -797,6 +797,39 @@ async def list_categories():
 
 
 @api.post(
+    "/admin/backfill/countries",
+    status_code=status.HTTP_200_OK,
+    response_model=GenericResponse,
+    description="Trigger a backfill job to extract countries for existing articles.",
+    responses={
+        status.HTTP_200_OK: {"model": GenericResponse, "description": "Backfill completed"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": GenericResponse,
+            "description": "Internal Server Error",
+        },
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def backfill_countries_endpoint(limit: int = Query(0, description="Max articles to process (0 for all)")):
+    """
+    Trigger a backfill job to extract countries for existing articles.
+    This process runs synchronously and might take time if limit is high.
+    """
+    from src.utils.backfill import run_country_backfill
+    
+    try:
+        stats = run_country_backfill(limit=limit)
+        return {
+            "status": "success",
+            "message": f"Backfill complete: Found {stats['found']}, Updated {stats['updated']}, Errors {stats['errors']}",
+            # We could return detailed stats if we change the response model, 
+            # but GenericResponse usually just has status/message.
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api.post(
     "/admin/categories",
     status_code=status.HTTP_201_CREATED,
     response_model=GenericResponse,

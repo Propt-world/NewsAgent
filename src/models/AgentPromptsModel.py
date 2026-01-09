@@ -29,6 +29,10 @@ class AgentPromptsModel(BaseModel):
     categorization_system: str
     categorization_user: str
 
+    # --- Country Extraction ---
+    country_extraction_system: str
+    country_extraction_user: str
+
     # --- SEO ---
     seo_system: str
     seo_user: str

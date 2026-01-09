@@ -5,6 +5,7 @@ from lxml.html import tostring
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
     # ... (imports)
+from src.configs.settings import settings
 from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
 
@@ -39,7 +40,8 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
         # We start a fresh browser instance for this job.
         # This guarantees clean state (no cookies/cache from previous jobs).
         async with get_async_browser_context() as (playwright, browser):
-            page = await browser.new_page()
+            # Pass User-Agent to avoid default headless Chrome UA
+            page = await browser.new_page(user_agent=settings.USER_AGENT)
 
             # --- 2. NAVIGATION & WAIT ---
             try:

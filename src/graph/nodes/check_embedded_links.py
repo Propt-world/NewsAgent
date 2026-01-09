@@ -44,7 +44,7 @@ async def _process_links_batch(
                 context = None
                 try:
                     # Create a lightweight "Context" (like a new Incognito window)
-                    context = await browser.new_context()
+                    context = await browser.new_context(user_agent=settings.USER_AGENT)
                     page = await context.new_page()
                     
                     # Fast timeout (15s) - we don't need perfect rendering for relevance check

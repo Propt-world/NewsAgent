@@ -58,7 +58,12 @@ class Settings(BaseSettings):
 
     # Model Configuration
     MODEL_NAME: str = os.getenv('MODEL_NAME')
+    MODEL_NAME: str = os.getenv('MODEL_NAME')
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE'))
+
+    # Scraping Configuration
+    # Generic User Agent to mimic a real browser/user to avoid bot blocks
+    USER_AGENT: str = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     # URL for Browserless (e.g., 'ws://browserless:3000')
     # If None, raises error in browser.py as we removed local fallback

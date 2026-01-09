@@ -26,6 +26,11 @@ class ArticleModel(BaseModel):
         description="A list of up to 3 main categories."
     )
 
+    countries: List[str] = Field(
+        default_factory=list,
+        description="A list of countries relevant to the article."
+    )
+
     category_ids: List[str] = Field(
         default_factory=list,
         description="The corresponding external IDs for the categories."
@@ -42,4 +47,4 @@ class ArticleModel(BaseModel):
     title_ar: Optional[str] = None
     summary_ar: Optional[str] = None
     content_ar: Optional[str] = None
-    reading_time_ar: Optional[int] = Field(None, description="Estimated reading time in minutes (Arabic)")
+    reading_time_ar: Optional[str] = Field(None, description="Estimated reading time in minutes (Arabic numerals)")

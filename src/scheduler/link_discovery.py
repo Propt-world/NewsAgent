@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
+from src.configs.settings import settings
 
 # --- FILTERS ---
 AD_PATTERNS = [
@@ -43,7 +44,8 @@ async def fetch_listing_page(url: str) -> str:
         # --- 1. LAUNCH ---
         # Start an async browser using the context manager
         async with get_async_browser_context() as (p, browser):
-            page = await browser.new_page()
+            # Pass User-Agent to avoid default headless Chrome UA
+            page = await browser.new_page(user_agent=settings.USER_AGENT)
             
             # --- 2. NAVIGATE ---
             await page.goto(url, timeout=45000, wait_until="domcontentloaded")

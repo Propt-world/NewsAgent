@@ -8,6 +8,7 @@ from pprint import pprint
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from src.configs.settings import settings
+from src.utils.text_utils import to_arabic_numerals
 
 def calculate_wpm(text, wpm=200):
     if not text:
@@ -36,18 +37,14 @@ def backfill_reading_time():
             article_id = doc["_id"]
             final_output = doc.get("final_output", {})
             
-            # Check if likely already has it (optional optimization, but fast enough to re-check)
-            if "reading_time" in final_output and final_output["reading_time"] is not None:
-                skipped_count += 1
-                continue
-
             # Calculate English
-            content_en = final_output.get("cleaned_article_text") or final_output.get("content")
+            content_en = final_output.get("summary")
             rt_en = calculate_wpm(content_en)
 
             # Calculate Arabic
-            content_ar = final_output.get("content_ar")
-            rt_ar = calculate_wpm(content_ar)
+            content_ar = final_output.get("summary_ar")
+            rt_ar_int = calculate_wpm(content_ar)
+            rt_ar = to_arabic_numerals(rt_ar_int) if rt_ar_int is not None else None
 
             updates = {}
             if rt_en:

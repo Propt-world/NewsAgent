@@ -37,7 +37,9 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
         "seo_system",
         "seo_user",
         "translation_system",
-        "translation_user"
+        "translation_user",
+        "country_extraction_system",
+        "country_extraction_user"
         ]
 
     try:

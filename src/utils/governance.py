@@ -1,6 +1,7 @@
 import time
 import redis
 import logging
+import requests
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 from pymongo import MongoClient
@@ -78,11 +79,26 @@ class GovernanceGatekeeper:
         robots_url = f"{urlparse(url).scheme}://{domain}/robots.txt"
         rp = RobotFileParser()
         try:
-            rp.set_url(robots_url)
-            rp.read()
-            is_allowed = rp.can_fetch(self.user_agent, url)
-        except Exception:
-            is_allowed = True # Default to allow if robots.txt fails
+            # We manually fetch robots.txt because rp.read() uses a default UA 
+            # that is often blocked (e.g., by Gulf News).
+            headers = {"User-Agent": self.user_agent}
+            response = requests.get(robots_url, headers=headers, timeout=10)
+            
+            # If we get a 403, it's often because they block even browser-like UAs 
+            # if they suspect it's a bot, or the UA isn't "good" enough.
+            # But the spec says 403 = "Disallow All".
+            # If we get 404, it means "Allow All".
+            if response.status_code == 403:
+                is_allowed = False
+            elif response.status_code == 404:
+                is_allowed = True
+            else:
+                response.raise_for_status()
+                rp.parse(response.text.splitlines())
+                is_allowed = rp.can_fetch(self.user_agent, url)
+        except Exception as e:
+            logger.warning(f"Error fetching robots.txt for {domain}: {e}. Defaulting to ALLOW.")
+            is_allowed = True # Default to allow if robots.txt fetch fails (unless it was a 403)
 
         # 3. Cache (24 hours)
         self.redis.setex(robots_key, 86400, "1" if is_allowed else "0")

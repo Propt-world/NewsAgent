@@ -14,6 +14,10 @@ def calculate_reading_time(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: CALC READING TIME] Starting reading time calculation...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     if not state.news_article:
         pprint("[NODE: CALC READING TIME] Error: news_article is missing.")
         return state

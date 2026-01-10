@@ -17,6 +17,10 @@ def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: VALIDATE SUMMARY] Starting validation...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # 1. Guards: Check if we have the necessary content
         if not state.cleaned_article_text:

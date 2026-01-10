@@ -80,6 +80,10 @@ def extract_links(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: EXTRACT LINKS] Starting link extraction & filtering...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     html_snippet = state.cleaned_article_html
     base_url = state.source_url
 

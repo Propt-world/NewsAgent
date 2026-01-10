@@ -16,6 +16,10 @@ def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: FIND OTHER SOURCES] Starting multi-query search...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # 1. Guards: Check for content
         if not state.news_article or not state.news_article.summary:

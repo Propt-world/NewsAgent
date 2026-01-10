@@ -91,6 +91,10 @@ async def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: CHECK LINKS] Starting throttled link scoring...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # Guards
         if not state.news_article or not state.news_article.embedded_links:

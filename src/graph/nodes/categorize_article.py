@@ -15,6 +15,10 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE 8: CATEGORIZE ARTICLE] Starting categorization...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # 1. Guards: Check if we have content
         if not state.news_article or not state.news_article.summary:

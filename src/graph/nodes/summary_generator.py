@@ -16,6 +16,10 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint(f"[NODE: SUMMARY GENERATOR] Starting summary generation (Attempt #{state.validation_count + 1})...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # 1. Guards: Check if we have the necessary content
         if not state.cleaned_article_text:

@@ -11,6 +11,10 @@ def select_best_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: SELECT BEST SUMMARY] Selecting best summary...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         all_attempts = state.summary_attempts
 

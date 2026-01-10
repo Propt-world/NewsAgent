@@ -11,6 +11,10 @@ def extract_country(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: EXTRACT COUNTRY] Starting country extraction...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # 1. Guards: Check if we have content
         if not state.news_article or not state.news_article.summary:

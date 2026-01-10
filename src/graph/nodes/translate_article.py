@@ -11,6 +11,10 @@ def translate_article(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: TRANSLATE] Starting Arabic translation...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         # 1. Guard: Check if article exists
         if not state.news_article or not state.news_article.content:

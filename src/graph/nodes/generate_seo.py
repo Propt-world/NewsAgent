@@ -15,6 +15,10 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: SEO] Generating SEO metadata...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     try:
         if not state.news_article:
             return state

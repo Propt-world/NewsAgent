@@ -12,6 +12,10 @@ def notify_webhook(state: MainWorkflowState) -> MainWorkflowState:
     """
     pprint("[NODE: NOTIFY WEBHOOK] Preparing to send data to downstream service...")
 
+    # --- 0. FAIL FAST CHECK ---
+    if state.error_message:
+        return state
+
     if not settings.WEBHOOK_URL:
         pprint("[NODE: NOTIFY WEBHOOK] No WEBHOOK_URL configured. Skipping.")
         return state

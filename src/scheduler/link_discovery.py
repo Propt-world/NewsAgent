@@ -72,7 +72,6 @@ async def fetch_listing_page(url: str) -> str:
 def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set[str]:
     """
     Parses HTML, removes ads/noise, and returns clean absolute URLs.
-    (Logic remains largely the same as your previous version).
     """
     soup = BeautifulSoup(html, "lxml")
 
@@ -84,27 +83,39 @@ def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set
     valid_urls = set()
     base_domain = urlparse(base_url).netloc
 
+    # [FIX] Prepare normalized base URL for comparison (remove trailing slash)
+    normalized_base_url = base_url.rstrip("/")
+
     for link in links:
         href = link.get("href")
-        text = link.get_text(strip=True)
-
+        
         # Normalize to absolute URL
         full_url = urljoin(base_url, href)
         full_url = full_url.strip(" :\"',")
+        
+        # [FIX] Prepare normalized link URL
+        normalized_full_url = full_url.rstrip("/")
+
         parsed = urlparse(full_url)
 
-        # Checks: Same Domain?
+        # 1. Check: Is this the listing page itself?
+        if normalized_full_url == normalized_base_url:
+            continue
+
+        # 2. Check: Same Domain?
         if parsed.netloc != base_domain:
             continue
-        # Checks: User Pattern?
+
+        # 3. Check: User Pattern?
         if url_pattern and url_pattern not in full_url:
             continue
-        # Checks: Blocklists (Ads, Socials)
+
+        # 4. Check: Blocklists (Ads, Socials)
         if any(re.search(p, full_url, re.IGNORECASE) for p in AD_PATTERNS):
             continue
         if any(b in parsed.netloc for b in DOMAIN_BLOCKLIST):
             continue
 
         valid_urls.add(full_url)
-        #
+
     return valid_urls

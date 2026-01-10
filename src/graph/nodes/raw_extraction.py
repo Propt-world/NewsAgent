@@ -8,74 +8,98 @@ from src.configs.settings import settings
 from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
 
+# --- CONFIG: RESOURCE BLOCKING ---
+# Block heavy resources that crash headless browsers
+BLOCKED_RESOURCE_TYPES = ["image", "media", "font", "stylesheet"] 
+# Block known ad/tracker domains
+BLOCKED_URL_PATTERNS = [
+    "doubleclick", "googlead", "googlesyndication", "adservice",
+    "analytics", "facebook", "twitter", "outbrain", "taboola", 
+    "adsrvr", "rubicon", "criteo", "amazon-adsystem"
+]
+
 async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
     Extracts article content using Playwright (Async) and Newspaper4k.
+    Includes Ad-Blocking and Lazy-Load scrolling for stability.
     """
     
     # --- 0. GOVERNANCE CHECK ---
     url = state.source_url
     gatekeeper = GovernanceGatekeeper()
 
-    # A. Check Robots.txt
     if not gatekeeper.can_fetch(url):
         pprint(f"[NODE: RAW EXTRACTION] 🛑 Blocked by robots.txt: {url}")
         return state.model_copy(update={
             "error_message": f"Blocked by robots.txt: {url}"
         })
 
-    # B. Rate Limit (Block until safe)
     gatekeeper.wait_for_slot(url)
     
     pprint(f"[NODE: RAW EXTRACTION] 🚀 Fetching with Playwright (Async): {url}")
 
     try:
-        # --- 1. BROWSER INITIALIZATION ---
         async with get_async_browser_context() as (playwright, browser):
-            # Pass User-Agent to avoid default headless Chrome UA
             page = await browser.new_page(user_agent=settings.USER_AGENT)
 
-            # --- 2. NAVIGATION & WAIT ---
+            # --- 1. NETWORK INTERCEPTION (AD BLOCKER) ---
+            # This is critical for stability on heavy news sites
+            async def route_handler(route):
+                request = route.request
+                # Block by resource type (optional, but saves memory)
+                if request.resource_type in BLOCKED_RESOURCE_TYPES:
+                    await route.abort()
+                    return
+                # Block by domain pattern
+                if any(pattern in request.url for pattern in BLOCKED_URL_PATTERNS):
+                    await route.abort()
+                    return
+                await route.continue_()
+
+            await page.route("**/*", route_handler)
+
+            # --- 2. NAVIGATION & LAZY LOADING ---
             try:
-                # Use 'networkidle' to wait for initial XHR/API calls to finish
-                await page.goto(url, timeout=60000, wait_until="networkidle")
+                # 'domcontentloaded' is faster and safer since we manually wait later
+                await page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 
-                # --- NEW: LAZY LOAD SCROLL ---
-                # Some sites hide the rest of the article until you scroll.
-                # 1. Scroll halfway
+                # Scroll Logic (Triggers lazy loading of text)
+                # We prioritize text visibility over images/ads
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                 await page.wait_for_timeout(1000)
-                
-                # 2. Scroll to bottom
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(2000) # Give it time to render
-                
+                await page.wait_for_timeout(2000) 
+
             except Exception as e:
-                pprint(f"[NODE: RAW EXTRACTION] Navigation/Scroll warning: {e}")
+                # If navigation has issues but page is open, we try to proceed
+                pprint(f"[NODE: RAW EXTRACTION] Navigation warning: {e}")
 
             # --- 3. EXTRACTION ---
+            # We explicitly check if page is closed to avoid TargetClosedError
+            if page.is_closed():
+                raise Exception("Browser page crashed or closed unexpectedly during navigation.")
+
             html_content = await page.content()
-            page_title = await page.title() # Capture title for debugging
+            page_title = await page.title()
             
             # --- 4. PARSING (Newspaper4k) ---
             article = Article(url)
             article.download(input_html=html_content)
             article.parse()
 
-            # --- 5. QUALITY CHECK & DEBUGGING ---
+            # --- 5. QUALITY CHECK ---
             if not article.text or len(article.text) < 50:
                 print(f"\n--- ❌ EXTRACTION FAILED DEBUG INFO ---")
                 print(f"URL: {url}")
-                print(f"Page Title: {page_title}")
-                print(f"HTML Length: {len(html_content)} chars")
-                print(f"Snippet: {article.text[:100] if article.text else 'NO TEXT'}")
-                print(f"---------------------------------------\n")
+                print(f"Title: {page_title}")
+                print(f"HTML Size: {len(html_content)}")
+                print("---------------------------------------\n")
                 
                 return state.model_copy(update={
-                    "error_message": f"Extracted content is empty or too short. Page Title: '{page_title}'"
+                    "error_message": f"Extracted content is empty. Page Title: '{page_title}'"
                 })
 
-            # --- 6. BUILD MODEL ---
+            # --- 6. SUCCESS ---
             initial_article = ArticleModel(
                 title=article.title,
                 content=article.text,

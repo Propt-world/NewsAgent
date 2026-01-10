@@ -4,7 +4,6 @@ from newspaper import Article
 from lxml.html import tostring
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
-    # ... (imports)
 from src.configs.settings import settings
 from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
@@ -12,10 +11,6 @@ from src.utils.governance import GovernanceGatekeeper
 async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
     Extracts article content using Playwright (Async) and Newspaper4k.
-    
-    Improvement over requests-html:
-    - Uses Playwright's robust engine which doesn't "leak" processes.
-    - Waits intelligently for the DOM to settle (domcontentloaded).
     """
     
     # --- 0. GOVERNANCE CHECK ---
@@ -30,53 +25,57 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
         })
 
     # B. Rate Limit (Block until safe)
-    # Note: gatekeeper is sync, but blocking here is acceptable for single-threaded worker stability
     gatekeeper.wait_for_slot(url)
     
     pprint(f"[NODE: RAW EXTRACTION] 🚀 Fetching with Playwright (Async): {url}")
 
     try:
         # --- 1. BROWSER INITIALIZATION ---
-        # We start a fresh browser instance for this job.
-        # This guarantees clean state (no cookies/cache from previous jobs).
         async with get_async_browser_context() as (playwright, browser):
             # Pass User-Agent to avoid default headless Chrome UA
             page = await browser.new_page(user_agent=settings.USER_AGENT)
 
             # --- 2. NAVIGATION & WAIT ---
             try:
-                # We assume a 60s timeout. EC2 networks can sometimes be slow/throttled.
-                # wait_until='domcontentloaded' waits for the HTML to be parsed and DOM built.
-                await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                # Use 'networkidle' to wait for initial XHR/API calls to finish
+                await page.goto(url, timeout=60000, wait_until="networkidle")
                 
-                # OPTIONAL: Wait a tiny bit extra (2s) for "hydration"
-                # (e.g., React apps that attach text after the initial HTML load).
-                await page.wait_for_timeout(2000) 
+                # --- NEW: LAZY LOAD SCROLL ---
+                # Some sites hide the rest of the article until you scroll.
+                # 1. Scroll halfway
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                await page.wait_for_timeout(1000)
+                
+                # 2. Scroll to bottom
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(2000) # Give it time to render
+                
             except Exception as e:
-                # If navigation times out, we DON'T fail yet. 
-                # Often the text is already loaded, but some tracking pixel is stalling the page.
-                pprint(f"[NODE: RAW EXTRACTION] Navigation warning (attempting extract anyway): {e}")
+                pprint(f"[NODE: RAW EXTRACTION] Navigation/Scroll warning: {e}")
 
             # --- 3. EXTRACTION ---
-            # Get the full, rendered HTML from the browser
             html_content = await page.content()
+            page_title = await page.title() # Capture title for debugging
             
             # --- 4. PARSING (Newspaper4k) ---
-            # We feed the rendered HTML into Newspaper4k.
-            # This allows us to use Newspaper's excellent logic on JS-heavy sites.
             article = Article(url)
             article.download(input_html=html_content)
             article.parse()
 
-            # --- 5. QUALITY CHECK ---
-            # If the text is empty or trivially short, something went wrong.
+            # --- 5. QUALITY CHECK & DEBUGGING ---
             if not article.text or len(article.text) < 50:
-                    return state.model_copy(update={
-                    "error_message": "Extracted content is empty or too short."
+                print(f"\n--- ❌ EXTRACTION FAILED DEBUG INFO ---")
+                print(f"URL: {url}")
+                print(f"Page Title: {page_title}")
+                print(f"HTML Length: {len(html_content)} chars")
+                print(f"Snippet: {article.text[:100] if article.text else 'NO TEXT'}")
+                print(f"---------------------------------------\n")
+                
+                return state.model_copy(update={
+                    "error_message": f"Extracted content is empty or too short. Page Title: '{page_title}'"
                 })
 
             # --- 6. BUILD MODEL ---
-            # Create the data object for the rest of the workflow
             initial_article = ArticleModel(
                 title=article.title,
                 content=article.text,
@@ -85,7 +84,6 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                 top_image=article.top_image
             )
 
-            # We also keep the raw HTML of the main node for the 'extract_links' node
             clean_html = ""
             if article.top_node is not None:
                 clean_html = tostring(article.top_node, encoding='unicode')
@@ -97,9 +95,6 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             })
 
     except Exception as e:
-        # Catch-all for unexpected browser crashes
         pprint(f"[NODE: RAW EXTRACTION] Critical Error: {e}")
         traceback.print_exc()
         return state.model_copy(update={"error_message": f"Playwright Error: {e}"})
-        
-    # Context manager handles browser cleanup automatically

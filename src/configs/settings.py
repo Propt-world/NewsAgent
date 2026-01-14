@@ -47,6 +47,11 @@ class Settings(BaseSettings):
                 # Appending AWS DocumentDB specific options
                 self.DATABASE_URL += f"{separator}tls=true&tlsCAFile={cert_path}&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"
 
+    # AWS S3 Settings
+    AWS_ACCESS_KEY_ID: Optional[str] = os.getenv('AWS_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY: Optional[str] = os.getenv('AWS_SECRET_ACCESS_KEY')
+    AWS_REGION: str = os.getenv('AWS_REGION', 'us-east-1')
+    S3_BUCKET_NAME: Optional[str] = os.getenv('S3_BUCKET_NAME')
 
     # Keys and URLs
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY')

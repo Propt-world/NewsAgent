@@ -2,6 +2,8 @@ import asyncio
 import os
 import traceback
 import uuid
+import boto3
+import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -14,6 +16,8 @@ from fastapi import (
     Depends,
     Header,
     status,
+    File,
+    UploadFile
 )
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -29,7 +33,7 @@ from src.utils.email_utils import send_error_email
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.models.Responses import GenericResponse, SchedulerHealthResponse
 
-# --- DATABASE SETUP ---
+# DATABASE SETUP
 client = MongoClient(settings.DATABASE_URL, tlsInsecure=True)
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
@@ -37,7 +41,7 @@ articles_col = db["processed_articles"]
 archive_col = db["archived_articles"]
 deleted_col = db["deleted_articles"]
 
-# --- SCHEDULER SETUP ---
+# SCHEDULER SETUP
 scheduler = AsyncIOScheduler()
 
 # Semaphore to limit concurrent browser instances
@@ -100,11 +104,11 @@ async def check_single_source(source: dict):
                     except Exception:
                         continue
 
-                    # --- PREPARE API REQUEST ---
+                    # PREPARE API REQUEST
                     api_base = getattr(settings, 'MAIN_API_URL', "http://api:8000")
                     api_url = f"{api_base}/submit-job"
 
-                    # --- [FIX] ADD SECURITY HEADERS ---
+                    # [FIX] ADD SECURITY HEADERS
                     headers = {}
                     if settings.NEWSAGENT_API_KEY:
                         headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
@@ -113,7 +117,7 @@ async def check_single_source(source: dict):
                     payload = {"source_url": link, "max_retries": 3}
 
                     try:
-                        # --- [FIX] PASS HEADERS HERE ---
+                        # [FIX] PASS HEADERS HERE
                         resp = await http_client.post(api_url, json=payload, headers=headers)
                         resp.raise_for_status()
                         print(f"[SCHEDULER] 🚀 Submitted: {link}")
@@ -166,9 +170,7 @@ async def run_scheduler_cycle():
             asyncio.create_task(check_single_source(source_doc))
 
 
-# --- FASTAPI APP ---
-
-
+# FASTAPI APP
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
@@ -280,7 +282,7 @@ async def health_check(check_external: bool = True):
         timestamp=datetime.now(timezone.utc)
     )
 
-# --- 1. WEBHOOK ENDPOINT ---
+# 1. WEBHOOK ENDPOINT
 @app.post(
     "/webhook/store-result",
     status_code=status.HTTP_200_OK,
@@ -339,9 +341,7 @@ async def store_result(payload: Dict[str, Any]):
     return {"status": "ok", "message": "Result stored"}
 
 
-# --- 2. SOURCE MANAGEMENT ENDPOINTS ---
-
-
+# 2. SOURCE MANAGEMENT ENDPOINTS
 @app.post(
     "/sources",
     status_code=status.HTTP_201_CREATED,
@@ -560,7 +560,7 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
     }
 
 
-# --- 3. ARCHIVE ENDPOINTS ---
+# 3. ARCHIVE ENDPOINTS
 @app.get(
     "/articles",
     response_model=List[ProcessedArticle],
@@ -658,11 +658,15 @@ async def update_article_status(
 @app.patch(
     "/articles/{article_id}/image",
     response_model=GenericResponse,
-    description="Update the top_image of a processed article.",
+    description="Upload a new image to S3 (renamed to article title) and update MongoDB (Image & SEO).",
     responses={
         status.HTTP_200_OK: {
             "model": GenericResponse,
             "description": "Article image updated successfully",
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "model": GenericResponse,
+            "description": "Invalid file type",
         },
         status.HTTP_404_NOT_FOUND: {
             "model": GenericResponse,
@@ -676,49 +680,115 @@ async def update_article_status(
     dependencies=[Depends(verify_api_key)],
 )
 async def update_article_image(
-    article_id: str, image_update: Dict[str, str] = Body(...)
+    article_id: str, 
+    file: UploadFile = File(...)
 ):
     """
-    Updates the 'top_image' field in the 'final_output' of a processed article.
-    Expects JSON body: { "image_url": "https://..." }
+    Updates the 'top_image' and the SEO 'mainEntityOfPage' URL.
     """
-    new_image_url = image_update.get("image_url")
-    if not new_image_url:
-         raise HTTPException(
-            status_code=400,
-            detail="Missing 'image_url' in request body."
+    # 1. Validate S3 Configuration
+    if not settings.AWS_ACCESS_KEY_ID or not settings.S3_BUCKET_NAME:
+        raise HTTPException(
+            status_code=500, 
+            detail="Server S3 configuration is missing."
         )
 
-    # We need to update two places potentially:
-    # 1. final_output.top_image
-    # 2. final_output.news_article.top_image (if the structure is nested as expected)
-    
-    # We use dot notation for Mongo updates to reach into the dict
-    update_op = {
-        "$set": {
-            "final_output.top_image": new_image_url
-        }
+    # 2. Validate File Content (Strict)
+    ALLOWED_MIME_TYPES = {
+        "image/jpeg": ".jpg", 
+        "image/png": ".png", 
+        "image/webp": ".webp"
     }
+    
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type: {file.content_type}. Only JPEG, PNG, and WEBP are allowed."
+        )
 
-    result = articles_col.update_one(
-        {"_id": article_id}, 
-        update_op
-    )
-
-    if result.matched_count == 0:
+    # 3. Fetch Article (Needed for SEO Title)
+    article = articles_col.find_one({"_id": article_id})
+    if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    return {
-        "status": "updated",
-        "message": "Article image updated successfully",
-        "id": article_id,
-        "new_image_url": new_image_url
-    }
+    try:
+        # 4. Generate SEO Filename
+        title = article.get("final_output", {}).get("title")
+        
+        if not title:
+            # Fallback: Use the original filename if title is missing
+            title = file.filename.rsplit('.', 1)[0]
+
+        # Sanitize Title for S3 Key
+        clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', title.lower())
+        clean_title = re.sub(r'[-\s]+', '-', clean_title).strip('-')
+        
+        # Determine extension
+        file_extension = ALLOWED_MIME_TYPES[file.content_type]
+        
+        # Final S3 Key
+        s3_key = f"articles/{article_id}/{clean_title}{file_extension}"
+
+        # 5. Upload to S3
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            region_name=settings.AWS_REGION
+        )
+
+        s3_client.upload_fileobj(
+            file.file, 
+            settings.S3_BUCKET_NAME, 
+            s3_key,
+            ExtraArgs={'ContentType': file.content_type}
+        )
+
+        # 6. Construct Public URLs
+        new_image_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
+        
+        # Construct the Internal Canonical URL
+        new_canonical_url = f"https://propt.global/news/{article_id}"
+
+        # 7. Update Database (3 Fields Updated)
+        update_op = {
+            "$set": {
+                # 1. Update the visual image reference
+                "final_output.top_image": new_image_url,
+                
+                # 2. Update the SEO Schema image reference
+                "final_output.seo.json_ld_schema.image": new_image_url,
+                
+                # 3. Update the Canonical ID to point to your platform
+                "final_output.seo.json_ld_schema.mainEntityOfPage.@id": new_canonical_url
+            }
+        }
+
+        result = articles_col.update_one(
+            {"_id": article_id}, 
+            update_op
+        )
+
+        return {
+            "status": "updated",
+            "message": "Article image and SEO URLs updated successfully",
+            "id": article_id,
+            "new_image_url": new_image_url,
+            "new_canonical_url": new_canonical_url
+        }
+
+    except Exception as e:
+        print(f"[SCHEDULER] S3 Upload Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to upload image: {str(e)}"
+        )
+    finally:
+        await file.close()
 
 
-# --- 4. ARTICLE LIFECYCLE MANAGEMENT ---
-
-
+# 4. ARTICLE LIFECYCLE MANAGEMENT
 @app.post(
     "/articles/{article_id}/archive",
     response_model=GenericResponse,
@@ -812,8 +882,7 @@ async def soft_delete_article(article_id: str):
     return {"status": "soft_deleted", "message": "Article soft deleted successfully", "id": article_id}
 
 
-# --- 5. OPS / BACKFILL ENDPOINTS ---
-
+# 5. OPS / BACKFILL ENDPOINTS
 @app.post(
     "/admin/ops/backfill-reading-time",
     response_model=GenericResponse,

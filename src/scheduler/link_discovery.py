@@ -7,7 +7,7 @@ from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
 from src.configs.settings import settings
 
-# --- FILTERS ---
+# FILTERS
 AD_PATTERNS = [
     r"/ads/", r"/ad/", r"doubleclick", r"googlead", r"outbrain",
     r"taboola", r"click\?", r"campaign", r"sponsored", r"promotion"
@@ -27,7 +27,7 @@ async def fetch_listing_page(url: str) -> str:
     Includes logic to handle 'Infinite Scroll' pages.
     """
 
-    # --- 0. GOVERNANCE CHECK ---
+    # 0. GOVERNANCE CHECK
     gatekeeper = GovernanceGatekeeper()
     
     if not gatekeeper.can_fetch(url):
@@ -41,16 +41,16 @@ async def fetch_listing_page(url: str) -> str:
     browser = None
     
     try:
-        # --- 1. LAUNCH ---
+        # 1. LAUNCH
         # Start an async browser using the context manager
         async with get_async_browser_context() as (p, browser):
             # Pass User-Agent to avoid default headless Chrome UA
             page = await browser.new_page(user_agent=settings.USER_AGENT)
             
-            # --- 2. NAVIGATE ---
+            # 2. NAVIGATE
             await page.goto(url, timeout=45000, wait_until="domcontentloaded")
             
-            # --- 3. SCROLL HACK ---
+            # 3. SCROLL HACK
             # Many news sites (like CNN/Reuters) use lazy-loading.
             # We run a quick JS command to scroll to the bottom.
             try:
@@ -60,7 +60,7 @@ async def fetch_listing_page(url: str) -> str:
             except Exception:
                 pass # If scroll fails, we just take what's visible
             
-            # --- 4. RETURN CONTENT ---
+            # 4. RETURN CONTENT
             content = await page.content()
             return content
 

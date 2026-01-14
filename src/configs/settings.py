@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = os.getenv('AWS_SECRET_ACCESS_KEY')
     AWS_REGION: str = os.getenv('AWS_REGION', 'us-east-1')
     S3_BUCKET_NAME: Optional[str] = os.getenv('S3_BUCKET_NAME')
+    S3_FOLDER_PREFIX: Optional[str] = os.getenv('S3_FOLDER_PREFIX', '')
 
     # Keys and URLs
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY')

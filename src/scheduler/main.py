@@ -727,7 +727,14 @@ async def update_article_image(
         file_extension = ALLOWED_MIME_TYPES[file.content_type]
         
         # Final S3 Key
-        s3_key = f"articles/{article_id}/{clean_title}{file_extension}"
+        key_path = f"articles/{article_id}/{clean_title}{file_extension}"
+        s3_key = key_path
+        
+        if settings.S3_FOLDER_PREFIX:
+            # Ensure prefix doesn't have leading/trailing slashes causing double slashes
+            prefix = settings.S3_FOLDER_PREFIX.strip("/")
+            if prefix:
+                s3_key = f"{prefix}/{key_path}"
 
         # 5. Upload to S3
         s3_client = boto3.client(

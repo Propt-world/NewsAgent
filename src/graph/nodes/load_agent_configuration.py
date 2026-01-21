@@ -39,7 +39,9 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
         "translation_system",
         "translation_user",
         "country_extraction_system",
-        "country_extraction_user"
+        "country_extraction_user",
+        "social_caption_system",
+        "social_caption_user"
         ]
 
     try:

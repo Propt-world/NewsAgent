@@ -37,6 +37,10 @@ class AgentPromptsModel(BaseModel):
     seo_system: str
     seo_user: str
 
+    # --- Social Media Caption ---
+    social_caption_system: str
+    social_caption_user: str
+
     # --- Translation ---
     translation_system: str
     translation_user: str

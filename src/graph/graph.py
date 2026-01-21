@@ -16,6 +16,7 @@ from src.graph.nodes.generate_seo import generate_seo
 from src.graph.nodes.translate_article import translate_article
 from src.graph.nodes.calculate_reading_time import calculate_reading_time
 from src.graph.nodes.notify_webhook import notify_webhook
+from src.graph.nodes.generate_social_media import generate_social_media
 
 # --- Import Conditional Edge Function ---
 from src.graph.nodes.conditional_edges import check_summary_validity
@@ -59,6 +60,7 @@ class MainWorkflow:
         builder.add_node("generate_seo", generate_seo)
         builder.add_node("translate_article", translate_article)
         builder.add_node("calculate_reading_time", calculate_reading_time)
+        builder.add_node("generate_social_media", generate_social_media)
         builder.add_node("notify_webhook", notify_webhook)
 
         # 2. Set the entry point
@@ -88,7 +90,8 @@ class MainWorkflow:
         builder.add_edge("extract_country", "generate_seo")
         builder.add_edge("generate_seo", "translate_article")
         builder.add_edge("translate_article", "calculate_reading_time")
-        builder.add_edge("calculate_reading_time", "notify_webhook")
+        builder.add_edge("calculate_reading_time", "generate_social_media")
+        builder.add_edge("generate_social_media", "notify_webhook")
 
         # 6. Set the final node
         builder.add_edge("notify_webhook", END)

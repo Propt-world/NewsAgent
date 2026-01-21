@@ -2,6 +2,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from src.models.EmbeddedLinkModel import EmbeddedLinkModel
 from src.models.SeoMetadataModel import SeoMetadataModel
+from src.models.SocialCaptionModel import SocialCaptionModel
 
 
 class ArticleModel(BaseModel):
@@ -40,6 +41,9 @@ class ArticleModel(BaseModel):
     # which is easier to append to than an Optional.
     embedded_links: List[EmbeddedLinkModel] = Field(default_factory=list)
 
+    # Social Media Caption Data
+    social_media: Optional[SocialCaptionModel] = None
+    
     # SEO Data
     seo: Optional[SeoMetadataModel] = None
 

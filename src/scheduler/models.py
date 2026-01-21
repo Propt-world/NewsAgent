@@ -48,3 +48,14 @@ class ProcessedArticle(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+class PaginatedArticleResponse(BaseModel):
+    total: int
+    page: int
+    size: int
+    pages: int
+    items: List[ProcessedArticle]
+
+    class Config:
+        populate_by_name = True

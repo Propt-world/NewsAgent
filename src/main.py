@@ -17,6 +17,7 @@ from src.db.models import PromptTemplate, Category, EmailRecipient
 from src.graph.graph import MainWorkflow
 from src.draw_workflow_graph import generate_workflow_graph
 from src.utils.security import verify_api_key  # Import the guard
+from src.utils.backfill_social import run_social_backfill
 from src.models.Responses import (
     JobSubmissionResponse,
     JobStatusResponse,
@@ -923,6 +924,34 @@ async def delete_category(cat_id: str):
         "message": "Category deleted successfully",
         "id": cat_id,
     }
+
+@api.post(
+    "/admin/backfill/social",
+    status_code=status.HTTP_200_OK,
+    response_model=GenericResponse,
+    description="Trigger a backfill job to generate social media captions for existing articles.",
+    responses={
+        status.HTTP_200_OK: {"model": GenericResponse, "description": "Backfill completed"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": GenericResponse,
+            "description": "Internal Server Error",
+        },
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def backfill_social_endpoint(limit: int = Query(0, description="Max articles to process (0 for all)")):
+    """
+    Trigger a backfill job to generate social media captions.
+    Runs synchronously.
+    """
+    try:
+        stats = run_social_backfill(limit=limit)
+        return {
+            "status": "success",
+            "message": f"Social Backfill complete: Found {stats['found']}, Updated {stats['updated']}, Errors {stats['errors']}",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- C. EMAIL RECIPIENTS ---

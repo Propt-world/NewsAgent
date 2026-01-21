@@ -61,21 +61,57 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             # --- 2. NAVIGATION & LAZY LOADING ---
             try:
                 await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+
+                # Handle Cloudflare/Anti-Bot "Checking your browser" screens
+                try:
+                    current_title = await page.title()
+                    if "checking your browser" in current_title.lower() or "just a moment" in current_title.lower():
+                        print(f"[NODE: RAW EXTRACTION] 🛡️ Anti-bot screen detected: '{current_title}'. Waiting for redirect...")
+                        
+                        # Wait up to 15 seconds for an <h1> tag (indicating real content loaded)
+                        try:
+                            await page.wait_for_selector("h1", state="attached", timeout=15000)
+                            print("[NODE: RAW EXTRACTION] ✅ Redirect successful. Real content loaded.")
+                        except Exception:
+                            print("[NODE: RAW EXTRACTION] ⚠️ Timed out waiting for H1. Proceeding anyway...")
+                except Exception as e:
+                    print(f"[NODE: RAW EXTRACTION] Warning checking title: {e}")
                 
-                # Scroll Logic (Triggers lazy loading)
+                # Scroll Logic
+                # SCROLL TO MIDDLE
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                 await page.wait_for_timeout(1000)
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                
+                # FIX: Don't scroll to the very bottom to avoid "Infinite Scroll" navigation triggers
+                # Scroll to 90% of the page height instead
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.9)")
                 await page.wait_for_timeout(2000) 
 
             except Exception as e:
                 pprint(f"[NODE: RAW EXTRACTION] Navigation warning: {e}")
 
+            # --- REPLACEMENT START ---
             if page.is_closed():
                 raise Exception("Browser page crashed or closed unexpectedly.")
 
-            html_content = await page.content()
+            # --- RETRY LOGIC FOR CONTENT RETRIEVAL ---
+            html_content = ""
+            for attempt in range(3):
+                try:
+                    html_content = await page.content()
+                    break
+                except Exception as e:
+                    if "navigating" in str(e) or "Execution context was destroyed" in str(e):
+                        print(f"[NODE: RAW EXTRACTION] Navigation detected during read. Retrying {attempt+1}/3...")
+                        await page.wait_for_timeout(1000)
+                    else:
+                        raise e
+            
+            if not html_content:
+                 raise Exception("Failed to retrieve content after retries.")
+
             page_title = await page.title()
+            # --- REPLACEMENT END ---
             
             # --- 3. STRATEGY A: Newspaper4k ---
             article = Article(url)

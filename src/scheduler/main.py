@@ -6,6 +6,7 @@ import boto3
 import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 from fastapi import (
@@ -17,7 +18,8 @@ from fastapi import (
     Header,
     status,
     File,
-    UploadFile
+    UploadFile,
+    Query
 )
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -27,7 +29,7 @@ from bson import ObjectId
 import httpx
 
 from src.configs.settings import settings
-from src.scheduler.models import SourceConfig, ProcessedArticle
+from src.scheduler.models import SourceConfig, ProcessedArticle, PaginatedArticleResponse
 from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
 from src.utils.security import verify_api_key, verify_webhook_secret
@@ -563,11 +565,11 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
 # 3. ARCHIVE ENDPOINTS
 @app.get(
     "/articles",
-    response_model=List[ProcessedArticle],
-    description="List all articles.",
+    response_model=PaginatedArticleResponse,
+    description="List all articles with pagination.",
     responses={
         status.HTTP_200_OK: {
-            "model": List[ProcessedArticle],
+            "model": PaginatedArticleResponse,
             "description": "Articles retrieved successfully",
         },
         status.HTTP_500_INTERNAL_SERVER_ERROR: {
@@ -577,13 +579,35 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
     },
     dependencies=[Depends(verify_api_key)],
 )
-async def list_articles(limit: int = 50, skip: int = 0, status: Optional[str] = None):
+async def list_articles(
+    page: int = Query(1, ge=1, description="Page number (starts at 1)"),
+    limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
+    status: Optional[str] = None
+):
     query = {}
     if status:
         query["status"] = status
 
+    # 1. Get Total Count
+    total_count = articles_col.count_documents(query)
+
+    # 2. Calculate Skip
+    skip = (page - 1) * limit
+
+    # 3. Calculate Total Pages
+    total_pages = (total_count + limit - 1) // limit
+
+    # 4. Fetch Data
     cursor = articles_col.find(query).sort("discovered_at", -1).skip(skip).limit(limit)
-    return list(cursor)
+    items = list(cursor)
+
+    return PaginatedArticleResponse(
+        total=total_count,
+        page=page,
+        size=limit,
+        pages=total_pages,
+        items=items
+    )
 
 
 @app.get(

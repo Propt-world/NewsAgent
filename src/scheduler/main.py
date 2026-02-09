@@ -34,9 +34,15 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.models.Responses import GenericResponse, SchedulerHealthResponse
+from src.utils.image_compressor import compress_image
+from src.utils.mongo_store import get_mongo_store
+from src.utils.chunker import Chunker
+from src.utils.loader import normalize_document
+import tempfile
+import shutil
 
 # DATABASE SETUP
-client = MongoClient(settings.DATABASE_URL, tlsInsecure=True)
+client = MongoClient(settings.DATABASE_URL)
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
 articles_col = db["processed_articles"]
@@ -636,7 +642,6 @@ async def get_article(article_id: str):
         raise HTTPException(status_code=404, detail="Article not found")
     return article
 
-
 @app.patch(
     "/articles/{article_id}/status",
     response_model=GenericResponse,
@@ -668,6 +673,67 @@ async def update_article_status(
             status_code=400,
             detail=f"Invalid status. Must be one of: {allowed_statuses}",
         )
+
+    # Trigger embedding generation if approved
+    if new_status == "approved":
+        try:
+            # 1. Fetch full article
+            article = articles_col.find_one({"_id": article_id})
+            if not article:
+                raise HTTPException(status_code=404, detail="Article not found")
+
+            # 2. Normalize and Chunk
+            print(f"[SCHEDULER] 🧠 Generating embeddings for article: {article_id}")
+            norm_doc = normalize_document(article)
+            
+            chunker = Chunker(chunk_size=1000, chunk_overlap=200)
+            chunks = chunker.chunk_document(norm_doc)
+            
+            docs_to_ingest = []
+            for chunk in chunks:
+                summary = chunk.get("summary", "")
+                title = chunk.get("title", "")
+                content_part = chunk.get("content_chunk", "") # Chunker puts split text here
+                url = chunk.get("url", "")
+                
+                # Composite text for embedding
+                chunk_text = f"Summary: {summary}\nTitle: {title}\nContent: {content_part}\nURL: {url}"
+                
+                # Metadata
+                metadata = {
+                    "title": title,
+                    "url": url,
+                    "summary": summary,
+                    "published_date": chunk.get("published_date"),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "original_metadata": chunk.get("original_metadata")
+                }
+                
+                docs_to_ingest.append({
+                    "source_id": chunk.get("source_id"),
+                    "chunk_text": chunk_text,
+                    "metadata": metadata
+                })
+
+            # 3. Store in Vector DB
+            if docs_to_ingest:
+                mongo_store = get_mongo_store()
+                await mongo_store.add_documents(docs_to_ingest)
+                # Note: mongo_store connection is managed globally/singleton, so strict close per request isn't typical here 
+                # unless we want to force cleanup, but get_mongo_store reuses the client.
+                print(f"[SCHEDULER] ✅ Embeddings stored for {article_id} ({len(docs_to_ingest)} chunks)")
+            else:
+                print(f"[SCHEDULER] ⚠️ No content to chunk for {article_id}")
+
+        except Exception as e:
+            print(f"[SCHEDULER] ❌ Error generating embeddings: {e}")
+            traceback.print_exc()
+            # We catch exception so status update still proceeds, or should we fail?
+            # Usually better to fail if strict, but maybe logging is enough. 
+            # Let's log and proceed for now, or raise 500? 
+            # Plan didn't specify, but safer to let user know it failed.
+            # However, if we fail here, status isn't updated. 
+            # I will allow status update to proceed but log error strongly.
 
     result = articles_col.update_one(
         {"_id": article_id}, {"$set": {"status": new_status}}
@@ -747,66 +813,106 @@ async def update_article_image(
         clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', title.lower())
         clean_title = re.sub(r'[-\s]+', '-', clean_title).strip('-')
         
-        # Determine extension
-        file_extension = ALLOWED_MIME_TYPES[file.content_type]
+        # Temp file handling for compression
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_input:
+            # Write uploaded content to temp file
+            shutil.copyfileobj(file.file, tmp_input)
+            tmp_input_path = tmp_input.name
         
-        # Final S3 Key
-        key_path = f"articles/{article_id}/{clean_title}{file_extension}"
-        s3_key = key_path
-        
-        if settings.S3_FOLDER_PREFIX:
-            # Ensure prefix doesn't have leading/trailing slashes causing double slashes
-            prefix = settings.S3_FOLDER_PREFIX.strip("/")
-            if prefix:
-                s3_key = f"{prefix}/{key_path}"
+        compressed_path = None
+        final_file_path = tmp_input_path
+        final_content_type = file.content_type
+        # Default extension based on input, but might change if compressed
+        final_extension = ALLOWED_MIME_TYPES[file.content_type]
 
-        # 5. Upload to S3
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION
-        )
-
-        s3_client.upload_fileobj(
-            file.file, 
-            settings.S3_BUCKET_NAME, 
-            s3_key,
-            ExtraArgs={'ContentType': file.content_type}
-        )
-
-        # 6. Construct Public URLs
-        new_image_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
-        
-        # Construct the Internal Canonical URL
-        new_canonical_url = f"https://propt.global/news/{article_id}"
-
-        # 7. Update Database (3 Fields Updated)
-        update_op = {
-            "$set": {
-                # 1. Update the visual image reference
-                "final_output.top_image": new_image_url,
+        try:
+            # Attempt Compression
+            print(f"[SCHEDULER] Compressing image: {tmp_input_path}")
+            # Target 1.5MB as per default
+            result = compress_image(tmp_input_path, target_size_mb=1.5)
+            
+            if result['success']:
+                compressed_path = result['output_path']
+                final_file_path = compressed_path
+                # Compressor converts to JPEG
+                final_content_type = "image/jpeg"
+                final_extension = ".jpg"
+                print(f"[SCHEDULER] Compression successful. New size: {result['compressed_size_mb']}MB")
+            else:
+                print(f"[SCHEDULER] Compression failed/skipped: {result.get('error')}. Using original.")
                 
-                # 2. Update the SEO Schema image reference
-                "final_output.seo.json_ld_schema.image": new_image_url,
-                
-                # 3. Update the Canonical ID to point to your platform
-                "final_output.seo.json_ld_schema.mainEntityOfPage.@id": new_canonical_url
+            # Recalculate S3 Key with potentially new extension
+            key_path = f"articles/{article_id}/{clean_title}{final_extension}"
+            s3_key = key_path
+            
+            if settings.S3_FOLDER_PREFIX:
+                prefix = settings.S3_FOLDER_PREFIX.strip("/")
+                if prefix:
+                    s3_key = f"{prefix}/{key_path}"
+
+            # 5. Upload to S3
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                region_name=settings.AWS_REGION
+            )
+
+            with open(final_file_path, "rb") as f:
+                s3_client.upload_fileobj(
+                    f, 
+                    settings.S3_BUCKET_NAME, 
+                    s3_key,
+                    ExtraArgs={'ContentType': final_content_type}
+                )
+
+            # 6. Construct Public URLs
+            new_image_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
+            
+            # Construct the Internal Canonical URL
+            new_canonical_url = f"https://propt.global/news/{article_id}"
+
+            # 7. Update Database (3 Fields Updated)
+            update_op = {
+                "$set": {
+                    # 1. Update the visual image reference
+                    "final_output.top_image": new_image_url,
+                    
+                    # 2. Update the SEO Schema image reference
+                    "final_output.seo.json_ld_schema.image": new_image_url,
+                    
+                    # 3. Update the Canonical ID to point to your platform
+                    "final_output.seo.json_ld_schema.mainEntityOfPage.@id": new_canonical_url
+                }
             }
-        }
 
-        result = articles_col.update_one(
-            {"_id": article_id}, 
-            update_op
-        )
+            result = articles_col.update_one(
+                {"_id": article_id}, 
+                update_op
+            )
 
-        return {
-            "status": "updated",
-            "message": "Article image and SEO URLs updated successfully",
-            "id": article_id,
-            "new_image_url": new_image_url,
-            "new_canonical_url": new_canonical_url
-        }
+            return {
+                "status": "updated",
+                "message": "Article image and SEO URLs updated successfully",
+                "id": article_id,
+                "new_image_url": new_image_url,
+                "new_canonical_url": new_canonical_url
+            }
+
+        finally:
+            # Cleanup temp files
+            if os.path.exists(tmp_input_path):
+                try:
+                    os.unlink(tmp_input_path)
+                except Exception:
+                    pass
+            # If compressed path is different and exists (though compress_image overwrites by default logic if not specified, 
+            # let's be safe if logic changes)
+            if compressed_path and compressed_path != tmp_input_path and os.path.exists(compressed_path):
+                try:
+                    os.unlink(compressed_path)
+                except Exception:
+                    pass
 
     except Exception as e:
         print(f"[SCHEDULER] S3 Upload Error: {e}")

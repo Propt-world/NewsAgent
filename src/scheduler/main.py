@@ -4,6 +4,7 @@ import traceback
 import uuid
 import boto3
 import re
+import certifi
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
@@ -53,7 +54,7 @@ logger = logging.getLogger("scheduler")
 
 # DATABASE SETUP
 logger.info(f"🔌 Connecting to MongoDB at: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
-client = MongoClient(settings.DATABASE_URL)
+client = MongoClient(settings.DATABASE_URL, tlsCAFile=certifi.where())
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
 articles_col = db["processed_articles"]

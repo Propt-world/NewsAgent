@@ -40,19 +40,6 @@ class Settings(BaseSettings):
     MONGO_VECTOR_INDEX_NAME: str = os.getenv('MONGO_VECTOR_INDEX_NAME', "newsagent_vector_index")
     MONGO_EMBEDDING_MODEL: str = os.getenv('MONGO_EMBEDDING_MODEL', "text-embedding-3-large")
 
-    # Automatic SSL/TLS Handling for AWS DocumentDB
-    def __init__(self, **data):
-        super().__init__(**data)
-        cert_path = "/app/certs/global-bundle.pem"
-        
-        # Only append TLS params if cert exists AND we aren't explicitly targeting localhost
-        # (Though localhost check is a loose heuristic, it helps local dev)
-        if os.path.exists(cert_path) and "localhost" not in self.DATABASE_URL:
-            # Check if TLS params already exist to avoid duplication
-            if "tls=true" not in self.DATABASE_URL:
-                separator = "&" if "?" in self.DATABASE_URL else "?"
-                # Appending AWS DocumentDB specific options
-                self.DATABASE_URL += f"{separator}tls=true&tlsCAFile={cert_path}&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"
 
     # AWS S3 Settings
     AWS_ACCESS_KEY_ID: Optional[str] = os.getenv('AWS_ACCESS_KEY_ID')

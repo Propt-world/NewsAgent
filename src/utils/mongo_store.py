@@ -39,7 +39,7 @@ class MongoStore:
             }
             
             # Configure TLS/SSL for MongoDB Atlas
-            if settings.DATABASE_URL.startswith("mongodb://") and not settings.DATABASE_URL.startswith("mongodb+srv://"):
+            if "mongodb.net" in settings.DATABASE_URL or settings.DATABASE_URL.startswith("mongodb+srv://"):
                 connection_params["tls"] = True
                 try:
                     connection_params["tlsCAFile"] = certifi.where()

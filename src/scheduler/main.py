@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+import logging
+import sys
 
 from fastapi import (
     FastAPI,
@@ -41,7 +43,16 @@ from src.utils.loader import normalize_document
 import tempfile
 import shutil
 
+# LOGGING SETUP
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("scheduler")
+
 # DATABASE SETUP
+logger.info(f"🔌 Connecting to MongoDB at: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
 client = MongoClient(settings.DATABASE_URL)
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
@@ -54,6 +65,7 @@ scheduler = AsyncIOScheduler()
 
 # Semaphore to limit concurrent browser instances
 CONCURRENCY_LIMIT = asyncio.Semaphore(3)
+
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -72,7 +84,7 @@ async def check_single_source(source: dict):
         url = source["listing_url"]
         pattern = source.get("url_pattern")
 
-        print(f"[SCHEDULER] 🔎 Checking source: {name} ({url})")
+        logger.info(f"🔎 Checking source: {name} ({url})")
 
         try:
             # 1. Fetch & Extract
@@ -80,7 +92,7 @@ async def check_single_source(source: dict):
             found_urls = extract_valid_urls(html, url, pattern)
 
             if not found_urls:
-                print(f"[SCHEDULER] No URLs found for {name}.")
+                logger.info(f"No URLs found for {name}.")
                 sources_col.update_one(
                     {"_id": source_id},
                     {"$set": {"last_run_at": datetime.now(timezone.utc)}}
@@ -95,7 +107,7 @@ async def check_single_source(source: dict):
             existing_urls = {doc["url"] for doc in existing_docs}
             new_urls = found_urls - existing_urls
 
-            print(f"[SCHEDULER] Found {len(found_urls)} links. {len(new_urls)} are new.")
+            logger.info(f"Found {len(found_urls)} links. {len(new_urls)} are new.")
 
             # 3. Submit Jobs
             async with httpx.AsyncClient() as http_client:
@@ -128,9 +140,9 @@ async def check_single_source(source: dict):
                         # [FIX] PASS HEADERS HERE
                         resp = await http_client.post(api_url, json=payload, headers=headers)
                         resp.raise_for_status()
-                        print(f"[SCHEDULER] 🚀 Submitted: {link}")
+                        logger.info(f"🚀 Submitted: {link}")
                     except Exception as e:
-                        print(f"[SCHEDULER] ❌ Failed to submit {link}: {e}")
+                        logger.error(f"❌ Failed to submit {link}: {e}")
                         articles_col.update_one(
                             {"_id": new_article["_id"]},
                             {"$set": {"status": "submission_failed"}}
@@ -144,8 +156,7 @@ async def check_single_source(source: dict):
 
         except Exception as e:
             error_msg = f"Error processing source {name}: {e}"
-            print(f"[SCHEDULER] {error_msg}")
-            traceback.print_exc()
+            logger.error(error_msg, exc_info=True)
             send_error_email(
                 job_id=f"scheduler-{source_id}",
                 source_url=url,
@@ -157,33 +168,47 @@ async def run_scheduler_cycle():
     """
     Main Loop: Finds active sources that are due for a check.
     """
-    print("[SCHEDULER] ⏰ Cycle starting...")
-    active_sources = sources_col.find({"is_active": True})
+    try:
+        logger.info("⏰ Cycle starting...")
+        active_sources = sources_col.find({"is_active": True})
 
-    current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(timezone.utc)
 
-    for source_doc in active_sources:
-        last_run = ensure_utc(source_doc.get("last_run_at"))
-        interval_mins = source_doc.get("fetch_interval_minutes", 60)
+        for source_doc in active_sources:
+            last_run = ensure_utc(source_doc.get("last_run_at"))
+            interval_mins = source_doc.get("fetch_interval_minutes", 60)
 
-        should_run = False
-        if not last_run:
-            should_run = True
-        else:
-            delta = current_time - last_run
-            if delta.total_seconds() / 60 >= interval_mins:
+            should_run = False
+            if not last_run:
                 should_run = True
+            else:
+                delta = current_time - last_run
+                if delta.total_seconds() / 60 >= interval_mins:
+                    should_run = True
 
-        if should_run:
-            asyncio.create_task(check_single_source(source_doc))
+            if should_run:
+                asyncio.create_task(check_single_source(source_doc))
+
+    except Exception:
+        logger.exception("Error in scheduler cycle")
 
 
 # FASTAPI APP
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Database Connectivity Check
+    logger.info("📡 Pinging MongoDB Atlas...")
+    try:
+        client.admin.command('ping')
+        logger.info("✅ MongoDB Connection Successful.")
+    except Exception as e:
+        logger.error(f"❌ MongoDB Connection Failed: {e}", exc_info=True)
+        # We don't necessarily exit here as some endpoints might work, 
+        # but the scheduler will likely fail.
+
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()
-    print("--- 🗓️ Scheduler Service Started ---")
+    logger.info("--- 🗓️ Scheduler Service Started ---")
     yield
     scheduler.shutdown()
 
@@ -319,7 +344,7 @@ async def store_result(payload: Dict[str, Any]):
     if not url or not data:
         raise HTTPException(status_code=400, detail="Invalid Payload")
 
-    print(f"[WEBHOOK] 📥 Received result for: {url}")
+    logger.info(f"[WEBHOOK] 📥 Received result for: {url}")
 
     result = articles_col.update_one(
         {"url": url},
@@ -333,7 +358,7 @@ async def store_result(payload: Dict[str, Any]):
     )
 
     if result.matched_count == 0:
-        print("[WEBHOOK] URL not in scheduler DB. Creating new record.")
+        logger.info("[WEBHOOK] URL not in scheduler DB. Creating new record.")
         articles_col.insert_one(
             {
                 "_id": str(uuid.uuid4()),
@@ -683,7 +708,7 @@ async def update_article_status(
                 raise HTTPException(status_code=404, detail="Article not found")
 
             # 2. Normalize and Chunk
-            print(f"[SCHEDULER] 🧠 Generating embeddings for article: {article_id}")
+            logger.info(f"🧠 Generating embeddings for article: {article_id}")
             norm_doc = normalize_document(article)
             
             chunker = Chunker(chunk_size=1000, chunk_overlap=200)
@@ -721,13 +746,12 @@ async def update_article_status(
                 await mongo_store.add_documents(docs_to_ingest)
                 # Note: mongo_store connection is managed globally/singleton, so strict close per request isn't typical here 
                 # unless we want to force cleanup, but get_mongo_store reuses the client.
-                print(f"[SCHEDULER] ✅ Embeddings stored for {article_id} ({len(docs_to_ingest)} chunks)")
+                logger.info(f"✅ Embeddings stored for {article_id} ({len(docs_to_ingest)} chunks)")
             else:
-                print(f"[SCHEDULER] ⚠️ No content to chunk for {article_id}")
+                logger.warning(f"⚠️ No content to chunk for {article_id}")
 
         except Exception as e:
-            print(f"[SCHEDULER] ❌ Error generating embeddings: {e}")
-            traceback.print_exc()
+            logger.error(f"❌ Error generating embeddings: {e}", exc_info=True)
             # We catch exception so status update still proceeds, or should we fail?
             # Usually better to fail if strict, but maybe logging is enough. 
             # Let's log and proceed for now, or raise 500? 
@@ -827,7 +851,7 @@ async def update_article_image(
 
         try:
             # Attempt Compression
-            print(f"[SCHEDULER] Compressing image: {tmp_input_path}")
+            logger.info(f"Compressing image: {tmp_input_path}")
             # Target 1.5MB as per default
             result = compress_image(tmp_input_path, target_size_mb=1.5)
             
@@ -837,9 +861,9 @@ async def update_article_image(
                 # Compressor converts to JPEG
                 final_content_type = "image/jpeg"
                 final_extension = ".jpg"
-                print(f"[SCHEDULER] Compression successful. New size: {result['compressed_size_mb']}MB")
+                logger.info(f"Compression successful. New size: {result['compressed_size_mb']}MB")
             else:
-                print(f"[SCHEDULER] Compression failed/skipped: {result.get('error')}. Using original.")
+                logger.warning(f"Compression failed/skipped: {result.get('error')}. Using original.")
                 
             # Recalculate S3 Key with potentially new extension
             key_path = f"articles/{article_id}/{clean_title}{final_extension}"
@@ -915,8 +939,7 @@ async def update_article_image(
                     pass
 
     except Exception as e:
-        print(f"[SCHEDULER] S3 Upload Error: {e}")
-        traceback.print_exc()
+        logger.error(f"S3 Upload Error: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to upload image: {str(e)}"
@@ -1047,7 +1070,7 @@ async def trigger_backfill_reading_time(background_tasks: BackgroundTasks):
 
 def run_reading_time_backfill():
     import math
-    print("[OPS] 🔄 Starting Reading Time Backfill...")
+    logger.info("[OPS] 🔄 Starting Reading Time Backfill...")
     try:
         # Re-use global 'articles_col'
         cursor = articles_col.find({"final_output": {"$ne": None}})
@@ -1087,10 +1110,10 @@ def run_reading_time_backfill():
             else:
                 skipped_count += 1
         
-        print(f"[OPS] ✅ Backfill Complete. Updated: {updated_count}, Skipped: {skipped_count}")
+        logger.info(f"[OPS] ✅ Backfill Complete. Updated: {updated_count}, Skipped: {skipped_count}")
 
     except Exception as e:
-        print(f"[OPS] ❌ Backfill Failed: {e}")
+        logger.error(f"[OPS] ❌ Backfill Failed: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

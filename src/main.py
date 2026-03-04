@@ -3,6 +3,7 @@ import uuid
 import json
 import redis
 import os
+import certifi
 from fastapi import FastAPI, HTTPException, Query, Body, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -56,7 +57,7 @@ def get_redis_client():
 
 
 def get_mongo_db():
-    client = MongoClient(settings.DATABASE_URL)
+    client = MongoClient(settings.DATABASE_URL, tlsCAFile=certifi.where())
     return client[settings.MONGO_DB_NAME]
 
 

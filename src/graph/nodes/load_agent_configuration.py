@@ -1,4 +1,5 @@
 import traceback
+import certifi
 from pprint import pprint
 from pymongo import MongoClient
 from src.db.enums import PromptStatus
@@ -46,7 +47,7 @@ def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
 
     try:
         # 1. Establish Database Connection
-        client = MongoClient(settings.DATABASE_URL)
+        client = MongoClient(settings.DATABASE_URL, tlsCAFile=certifi.where())
         db = client[settings.MONGO_DB_NAME]
         
         # --- A. PROMPTS LOADING ---

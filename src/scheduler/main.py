@@ -4,10 +4,13 @@ import traceback
 import uuid
 import boto3
 import re
+import certifi
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+import logging
+import sys
 
 from fastapi import (
     FastAPI,
@@ -34,9 +37,24 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import send_error_email
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.models.Responses import GenericResponse, SchedulerHealthResponse
+from src.utils.image_compressor import compress_image
+from src.utils.mongo_store import get_mongo_store
+from src.utils.chunker import Chunker
+from src.utils.loader import normalize_document
+import tempfile
+import shutil
+
+# LOGGING SETUP
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("scheduler")
 
 # DATABASE SETUP
-client = MongoClient(settings.DATABASE_URL, tlsInsecure=True)
+logger.info(f"🔌 Connecting to MongoDB at: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
+client = MongoClient(settings.DATABASE_URL, tlsCAFile=certifi.where())
 db = client[settings.MONGO_DB_NAME]
 sources_col = db["sources"]
 articles_col = db["processed_articles"]
@@ -48,6 +66,7 @@ scheduler = AsyncIOScheduler()
 
 # Semaphore to limit concurrent browser instances
 CONCURRENCY_LIMIT = asyncio.Semaphore(3)
+
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -66,7 +85,7 @@ async def check_single_source(source: dict):
         url = source["listing_url"]
         pattern = source.get("url_pattern")
 
-        print(f"[SCHEDULER] 🔎 Checking source: {name} ({url})")
+        logger.info(f"🔎 Checking source: {name} ({url})")
 
         try:
             # 1. Fetch & Extract
@@ -74,7 +93,7 @@ async def check_single_source(source: dict):
             found_urls = extract_valid_urls(html, url, pattern)
 
             if not found_urls:
-                print(f"[SCHEDULER] No URLs found for {name}.")
+                logger.info(f"No URLs found for {name}.")
                 sources_col.update_one(
                     {"_id": source_id},
                     {"$set": {"last_run_at": datetime.now(timezone.utc)}}
@@ -89,7 +108,7 @@ async def check_single_source(source: dict):
             existing_urls = {doc["url"] for doc in existing_docs}
             new_urls = found_urls - existing_urls
 
-            print(f"[SCHEDULER] Found {len(found_urls)} links. {len(new_urls)} are new.")
+            logger.info(f"Found {len(found_urls)} links. {len(new_urls)} are new.")
 
             # 3. Submit Jobs
             async with httpx.AsyncClient() as http_client:
@@ -122,9 +141,9 @@ async def check_single_source(source: dict):
                         # [FIX] PASS HEADERS HERE
                         resp = await http_client.post(api_url, json=payload, headers=headers)
                         resp.raise_for_status()
-                        print(f"[SCHEDULER] 🚀 Submitted: {link}")
+                        logger.info(f"🚀 Submitted: {link}")
                     except Exception as e:
-                        print(f"[SCHEDULER] ❌ Failed to submit {link}: {e}")
+                        logger.error(f"❌ Failed to submit {link}: {e}")
                         articles_col.update_one(
                             {"_id": new_article["_id"]},
                             {"$set": {"status": "submission_failed"}}
@@ -138,8 +157,7 @@ async def check_single_source(source: dict):
 
         except Exception as e:
             error_msg = f"Error processing source {name}: {e}"
-            print(f"[SCHEDULER] {error_msg}")
-            traceback.print_exc()
+            logger.error(error_msg, exc_info=True)
             send_error_email(
                 job_id=f"scheduler-{source_id}",
                 source_url=url,
@@ -151,33 +169,47 @@ async def run_scheduler_cycle():
     """
     Main Loop: Finds active sources that are due for a check.
     """
-    print("[SCHEDULER] ⏰ Cycle starting...")
-    active_sources = sources_col.find({"is_active": True})
+    try:
+        logger.info("⏰ Cycle starting...")
+        active_sources = sources_col.find({"is_active": True})
 
-    current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(timezone.utc)
 
-    for source_doc in active_sources:
-        last_run = ensure_utc(source_doc.get("last_run_at"))
-        interval_mins = source_doc.get("fetch_interval_minutes", 60)
+        for source_doc in active_sources:
+            last_run = ensure_utc(source_doc.get("last_run_at"))
+            interval_mins = source_doc.get("fetch_interval_minutes", 60)
 
-        should_run = False
-        if not last_run:
-            should_run = True
-        else:
-            delta = current_time - last_run
-            if delta.total_seconds() / 60 >= interval_mins:
+            should_run = False
+            if not last_run:
                 should_run = True
+            else:
+                delta = current_time - last_run
+                if delta.total_seconds() / 60 >= interval_mins:
+                    should_run = True
 
-        if should_run:
-            asyncio.create_task(check_single_source(source_doc))
+            if should_run:
+                asyncio.create_task(check_single_source(source_doc))
+
+    except Exception:
+        logger.exception("Error in scheduler cycle")
 
 
 # FASTAPI APP
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Database Connectivity Check
+    logger.info("📡 Pinging MongoDB Atlas...")
+    try:
+        client.admin.command('ping')
+        logger.info("✅ MongoDB Connection Successful.")
+    except Exception as e:
+        logger.error(f"❌ MongoDB Connection Failed: {e}", exc_info=True)
+        # We don't necessarily exit here as some endpoints might work, 
+        # but the scheduler will likely fail.
+
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()
-    print("--- 🗓️ Scheduler Service Started ---")
+    logger.info("--- 🗓️ Scheduler Service Started ---")
     yield
     scheduler.shutdown()
 
@@ -313,7 +345,7 @@ async def store_result(payload: Dict[str, Any]):
     if not url or not data:
         raise HTTPException(status_code=400, detail="Invalid Payload")
 
-    print(f"[WEBHOOK] 📥 Received result for: {url}")
+    logger.info(f"[WEBHOOK] 📥 Received result for: {url}")
 
     result = articles_col.update_one(
         {"url": url},
@@ -327,7 +359,7 @@ async def store_result(payload: Dict[str, Any]):
     )
 
     if result.matched_count == 0:
-        print("[WEBHOOK] URL not in scheduler DB. Creating new record.")
+        logger.info("[WEBHOOK] URL not in scheduler DB. Creating new record.")
         articles_col.insert_one(
             {
                 "_id": str(uuid.uuid4()),
@@ -636,7 +668,6 @@ async def get_article(article_id: str):
         raise HTTPException(status_code=404, detail="Article not found")
     return article
 
-
 @app.patch(
     "/articles/{article_id}/status",
     response_model=GenericResponse,
@@ -668,6 +699,66 @@ async def update_article_status(
             status_code=400,
             detail=f"Invalid status. Must be one of: {allowed_statuses}",
         )
+
+    # Trigger embedding generation if approved
+    if new_status == "approved":
+        try:
+            # 1. Fetch full article
+            article = articles_col.find_one({"_id": article_id})
+            if not article:
+                raise HTTPException(status_code=404, detail="Article not found")
+
+            # 2. Normalize and Chunk
+            logger.info(f"🧠 Generating embeddings for article: {article_id}")
+            norm_doc = normalize_document(article)
+            
+            chunker = Chunker(chunk_size=1000, chunk_overlap=200)
+            chunks = chunker.chunk_document(norm_doc)
+            
+            docs_to_ingest = []
+            for chunk in chunks:
+                summary = chunk.get("summary", "")
+                title = chunk.get("title", "")
+                content_part = chunk.get("content_chunk", "") # Chunker puts split text here
+                url = chunk.get("url", "")
+                
+                # Composite text for embedding
+                chunk_text = f"Summary: {summary}\nTitle: {title}\nContent: {content_part}\nURL: {url}"
+                
+                # Metadata
+                metadata = {
+                    "title": title,
+                    "url": url,
+                    "summary": summary,
+                    "published_date": chunk.get("published_date"),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "original_metadata": chunk.get("original_metadata")
+                }
+                
+                docs_to_ingest.append({
+                    "source_id": chunk.get("source_id"),
+                    "chunk_text": chunk_text,
+                    "metadata": metadata
+                })
+
+            # 3. Store in Vector DB
+            if docs_to_ingest:
+                mongo_store = get_mongo_store()
+                await mongo_store.add_documents(docs_to_ingest)
+                # Note: mongo_store connection is managed globally/singleton, so strict close per request isn't typical here 
+                # unless we want to force cleanup, but get_mongo_store reuses the client.
+                logger.info(f"✅ Embeddings stored for {article_id} ({len(docs_to_ingest)} chunks)")
+            else:
+                logger.warning(f"⚠️ No content to chunk for {article_id}")
+
+        except Exception as e:
+            logger.error(f"❌ Error generating embeddings: {e}", exc_info=True)
+            # We catch exception so status update still proceeds, or should we fail?
+            # Usually better to fail if strict, but maybe logging is enough. 
+            # Let's log and proceed for now, or raise 500? 
+            # Plan didn't specify, but safer to let user know it failed.
+            # However, if we fail here, status isn't updated. 
+            # I will allow status update to proceed but log error strongly.
 
     result = articles_col.update_one(
         {"_id": article_id}, {"$set": {"status": new_status}}
@@ -747,70 +838,109 @@ async def update_article_image(
         clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', title.lower())
         clean_title = re.sub(r'[-\s]+', '-', clean_title).strip('-')
         
-        # Determine extension
-        file_extension = ALLOWED_MIME_TYPES[file.content_type]
+        # Temp file handling for compression
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_input:
+            # Write uploaded content to temp file
+            shutil.copyfileobj(file.file, tmp_input)
+            tmp_input_path = tmp_input.name
         
-        # Final S3 Key
-        key_path = f"articles/{article_id}/{clean_title}{file_extension}"
-        s3_key = key_path
-        
-        if settings.S3_FOLDER_PREFIX:
-            # Ensure prefix doesn't have leading/trailing slashes causing double slashes
-            prefix = settings.S3_FOLDER_PREFIX.strip("/")
-            if prefix:
-                s3_key = f"{prefix}/{key_path}"
+        compressed_path = None
+        final_file_path = tmp_input_path
+        final_content_type = file.content_type
+        # Default extension based on input, but might change if compressed
+        final_extension = ALLOWED_MIME_TYPES[file.content_type]
 
-        # 5. Upload to S3
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION
-        )
-
-        s3_client.upload_fileobj(
-            file.file, 
-            settings.S3_BUCKET_NAME, 
-            s3_key,
-            ExtraArgs={'ContentType': file.content_type}
-        )
-
-        # 6. Construct Public URLs
-        new_image_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
-        
-        # Construct the Internal Canonical URL
-        new_canonical_url = f"https://propt.global/news/{article_id}"
-
-        # 7. Update Database (3 Fields Updated)
-        update_op = {
-            "$set": {
-                # 1. Update the visual image reference
-                "final_output.top_image": new_image_url,
+        try:
+            # Attempt Compression
+            logger.info(f"Compressing image: {tmp_input_path}")
+            # Target 1.5MB as per default
+            result = compress_image(tmp_input_path, target_size_mb=1.5)
+            
+            if result['success']:
+                compressed_path = result['output_path']
+                final_file_path = compressed_path
+                # Compressor converts to JPEG
+                final_content_type = "image/jpeg"
+                final_extension = ".jpg"
+                logger.info(f"Compression successful. New size: {result['compressed_size_mb']}MB")
+            else:
+                logger.warning(f"Compression failed/skipped: {result.get('error')}. Using original.")
                 
-                # 2. Update the SEO Schema image reference
-                "final_output.seo.json_ld_schema.image": new_image_url,
-                
-                # 3. Update the Canonical ID to point to your platform
-                "final_output.seo.json_ld_schema.mainEntityOfPage.@id": new_canonical_url
+            # Recalculate S3 Key with potentially new extension
+            key_path = f"articles/{article_id}/{clean_title}{final_extension}"
+            s3_key = key_path
+            
+            if settings.S3_FOLDER_PREFIX:
+                prefix = settings.S3_FOLDER_PREFIX.strip("/")
+                if prefix:
+                    s3_key = f"{prefix}/{key_path}"
+
+            # 5. Upload to S3
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                region_name=settings.AWS_REGION
+            )
+
+            with open(final_file_path, "rb") as f:
+                s3_client.upload_fileobj(
+                    f, 
+                    settings.S3_BUCKET_NAME, 
+                    s3_key,
+                    ExtraArgs={'ContentType': final_content_type}
+                )
+
+            # 6. Construct Public URLs
+            new_image_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
+            
+            # Construct the Internal Canonical URL
+            new_canonical_url = f"https://propt.global/news/{article_id}"
+
+            # 7. Update Database (3 Fields Updated)
+            update_op = {
+                "$set": {
+                    # 1. Update the visual image reference
+                    "final_output.top_image": new_image_url,
+                    
+                    # 2. Update the SEO Schema image reference
+                    "final_output.seo.json_ld_schema.image": new_image_url,
+                    
+                    # 3. Update the Canonical ID to point to your platform
+                    "final_output.seo.json_ld_schema.mainEntityOfPage.@id": new_canonical_url
+                }
             }
-        }
 
-        result = articles_col.update_one(
-            {"_id": article_id}, 
-            update_op
-        )
+            result = articles_col.update_one(
+                {"_id": article_id}, 
+                update_op
+            )
 
-        return {
-            "status": "updated",
-            "message": "Article image and SEO URLs updated successfully",
-            "id": article_id,
-            "new_image_url": new_image_url,
-            "new_canonical_url": new_canonical_url
-        }
+            return {
+                "status": "updated",
+                "message": "Article image and SEO URLs updated successfully",
+                "id": article_id,
+                "new_image_url": new_image_url,
+                "new_canonical_url": new_canonical_url
+            }
+
+        finally:
+            # Cleanup temp files
+            if os.path.exists(tmp_input_path):
+                try:
+                    os.unlink(tmp_input_path)
+                except Exception:
+                    pass
+            # If compressed path is different and exists (though compress_image overwrites by default logic if not specified, 
+            # let's be safe if logic changes)
+            if compressed_path and compressed_path != tmp_input_path and os.path.exists(compressed_path):
+                try:
+                    os.unlink(compressed_path)
+                except Exception:
+                    pass
 
     except Exception as e:
-        print(f"[SCHEDULER] S3 Upload Error: {e}")
-        traceback.print_exc()
+        logger.error(f"S3 Upload Error: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to upload image: {str(e)}"
@@ -941,7 +1071,7 @@ async def trigger_backfill_reading_time(background_tasks: BackgroundTasks):
 
 def run_reading_time_backfill():
     import math
-    print("[OPS] 🔄 Starting Reading Time Backfill...")
+    logger.info("[OPS] 🔄 Starting Reading Time Backfill...")
     try:
         # Re-use global 'articles_col'
         cursor = articles_col.find({"final_output": {"$ne": None}})
@@ -981,10 +1111,10 @@ def run_reading_time_backfill():
             else:
                 skipped_count += 1
         
-        print(f"[OPS] ✅ Backfill Complete. Updated: {updated_count}, Skipped: {skipped_count}")
+        logger.info(f"[OPS] ✅ Backfill Complete. Updated: {updated_count}, Skipped: {skipped_count}")
 
     except Exception as e:
-        print(f"[OPS] ❌ Backfill Failed: {e}")
+        logger.error(f"[OPS] ❌ Backfill Failed: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

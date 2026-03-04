@@ -11,10 +11,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 1.1 SSL Certificates (AWS DocumentDB)
-COPY global-bundle.pem /app/certs/global-bundle.pem
 
 # 2. Install Python Dependencies
 COPY requirements.txt .

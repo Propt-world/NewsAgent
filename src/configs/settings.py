@@ -32,20 +32,14 @@ class Settings(BaseSettings):
     # Default to local mongodb
     DATABASE_URL: str = os.getenv('DATABASE_URL', "mongodb://localhost:27017")
     MONGO_DB_NAME: str = os.getenv('MONGO_DB_NAME', "newsagent")
+    
+    # Vector DB / Embedding Settings (Required by mongo_store.py)
+    # Aligning MONGODB_DB with MONGO_DB_NAME, but verifying expected variable name
+    MONGO_DB_COLLECTION: str = os.getenv('MONGO_DB_COLLECTION', "vectorized_articles")
+    MONGO_DB_BIO_COLLECTION: str = os.getenv('MONGO_DB_BIO_COLLECTION', "chatbot_bio")
+    MONGO_VECTOR_INDEX_NAME: str = os.getenv('MONGO_VECTOR_INDEX_NAME', "newsagent_vector_index")
+    MONGO_EMBEDDING_MODEL: str = os.getenv('MONGO_EMBEDDING_MODEL', "text-embedding-3-large")
 
-    # Automatic SSL/TLS Handling for AWS DocumentDB
-    def __init__(self, **data):
-        super().__init__(**data)
-        cert_path = "/app/certs/global-bundle.pem"
-        
-        # Only append TLS params if cert exists AND we aren't explicitly targeting localhost
-        # (Though localhost check is a loose heuristic, it helps local dev)
-        if os.path.exists(cert_path) and "localhost" not in self.DATABASE_URL:
-            # Check if TLS params already exist to avoid duplication
-            if "tls=true" not in self.DATABASE_URL:
-                separator = "&" if "?" in self.DATABASE_URL else "?"
-                # Appending AWS DocumentDB specific options
-                self.DATABASE_URL += f"{separator}tls=true&tlsCAFile={cert_path}&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false"
 
     # AWS S3 Settings
     AWS_ACCESS_KEY_ID: Optional[str] = os.getenv('AWS_ACCESS_KEY_ID')

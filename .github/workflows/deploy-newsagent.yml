@@ -3,7 +3,7 @@ name: Build and Deploy NewsAgent Services to AWS
 on:
   push:
     branches:
-      - develop
+      - developp
 
 jobs:
   deploy:

@@ -1,4 +1,22 @@
 services:
+  # --- Database (MongoDB Atlas Local) ---
+  mongo:
+    image: mongodb/mongodb-atlas-local:latest
+    container_name: newsagent_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+    environment:
+      - MONGODB_INITDB_ROOT_USERNAME=root
+      - MONGODB_INITDB_ROOT_PASSWORD=example
+    healthcheck:
+      test: [ "CMD-SHELL", "mongosh --eval 'db.adminCommand(\"ping\")'" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # --- 1. The Message Broker (Redis) ---
   redis:
     image: redis:alpine
@@ -45,7 +63,8 @@ services:
       # Network: Service names are hostnames
       - REDIS_URL=redis://redis:6379
       # Use the container name 'mongo' for the connection
-      # Use the configured URL from .env (Atlas)
+      # Override the Atlas URL from .env with the local Atlas URL if desired
+      # - DATABASE_URL=mongodb://root:example@mongo:27017/?authSource=admin&directConnection=true
       - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Pass through keys from your local machine
@@ -76,6 +95,7 @@ services:
     environment:
       - BROWSER_WS_ENDPOINT=ws://browserless:3000?token=${BROWSERLESS_TOKEN}
       - REDIS_URL=redis://redis:6379
+      # - DATABASE_URL=mongodb://root:example@mongo:27017/?authSource=admin&directConnection=true
       - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -111,6 +131,7 @@ services:
     environment:
       # Connects to the same DB to store sources/archives
       # Connects to the same DB to store sources/archives
+      # - DATABASE_URL=mongodb://root:example@mongo:27017/?authSource=admin&directConnection=true
       - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Needs to know where the main API is to submit jobs
@@ -139,5 +160,5 @@ services:
 
 volumes:
   redis_data:
-
-
+  mongo_data:
+  mongo_config:

@@ -1,0 +1,3 @@
+.github/workflows/deploy-newsagent.yml merge=ours
+docker-compose.yml merge=ours
+docker-compose.debug.yml merge=ours

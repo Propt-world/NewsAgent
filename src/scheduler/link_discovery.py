@@ -7,7 +7,7 @@ from src.utils.browser import get_async_browser_context
 from src.utils.governance import GovernanceGatekeeper
 from src.configs.settings import settings
 
-# FILTERS
+# --- FILTERS ---
 AD_PATTERNS = [
     r"/ads/", r"/ad/", r"doubleclick", r"googlead", r"outbrain",
     r"taboola", r"click\?", r"campaign", r"sponsored", r"promotion"
@@ -19,6 +19,10 @@ DOMAIN_BLOCKLIST = [
 ]
 TEXT_BLOCKLIST_PATTERNS = [
     r"^share$", r"^tweet$", r"^post$", r"share on.*"
+]
+
+PAGINATION_PATTERNS = [
+    r"/page/\d+", r"\?page=\d+", r"/category/", r"/categories/", r"/author/"
 ]
 
 async def fetch_listing_page(url: str) -> str:
@@ -70,50 +74,40 @@ async def fetch_listing_page(url: str) -> str:
     # Finally block is removed as context manager handles cleanup
 
 def extract_valid_urls(html: str, base_url: str, url_pattern: str = None) -> Set[str]:
-    """
-    Parses HTML, removes ads/noise, and returns clean absolute URLs.
-    """
     soup = BeautifulSoup(html, "lxml")
 
-    # Remove clutter elements
-    for tag in soup.select("header, footer, nav, .ad, .advertisement, .sponsored, aside"):
+    # ENHANCED: Remove sidebars, footers, and ads before extracting links
+    noise_selectors = [
+        "header", "footer", "nav", "aside", ".ad", ".advertisement", 
+        ".sponsored", ".sidebar", ".article-right-sidebar", 
+        ".footer-menu", ".related", ".recommended"
+    ]
+    for tag in soup.select(", ".join(noise_selectors)):
         tag.decompose()
 
     links = soup.find_all("a", href=True)
     valid_urls = set()
     base_domain = urlparse(base_url).netloc
-
-    # [FIX] Prepare normalized base URL for comparison (remove trailing slash)
     normalized_base_url = base_url.rstrip("/")
 
     for link in links:
         href = link.get("href")
-        
-        # Normalize to absolute URL
-        full_url = urljoin(base_url, href)
-        full_url = full_url.strip(" :\"',")
-        
-        # [FIX] Prepare normalized link URL
+        full_url = urljoin(base_url, href).strip(" :\"',")
         normalized_full_url = full_url.rstrip("/")
-
         parsed = urlparse(full_url)
 
         # 1. Check: Is this the listing page itself?
-        if normalized_full_url == normalized_base_url:
-            continue
-
+        if normalized_full_url == normalized_base_url: continue
         # 2. Check: Same Domain?
-        if parsed.netloc != base_domain:
-            continue
-
+        if parsed.netloc != base_domain: continue
         # 3. Check: User Pattern?
-        if url_pattern and url_pattern not in full_url:
-            continue
-
+        if url_pattern and url_pattern not in full_url: continue
         # 4. Check: Blocklists (Ads, Socials)
-        if any(re.search(p, full_url, re.IGNORECASE) for p in AD_PATTERNS):
-            continue
-        if any(b in parsed.netloc for b in DOMAIN_BLOCKLIST):
+        if any(re.search(p, full_url, re.IGNORECASE) for p in AD_PATTERNS): continue
+        if any(b in parsed.netloc for b in DOMAIN_BLOCKLIST): continue
+            
+        # 5. NEW: Check Pagination Patterns
+        if any(re.search(p, full_url, re.IGNORECASE) for p in PAGINATION_PATTERNS):
             continue
 
         valid_urls.add(full_url)

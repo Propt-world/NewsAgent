@@ -948,6 +948,32 @@ async def update_article_image(
     finally:
         await file.close()
 
+@app.patch("/articles/{article_id}/title")
+async def update_article_title(article_id: str, title_update: Dict[str, str] = Body(...)):
+    """
+    Updates the title of a processed article.
+    Expects a JSON payload: {"title": "New Updated Title"}
+    """
+    ensure_mongo_connected()
+    new_title = title_update.get("title")
+
+    if not new_title or not new_title.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Title cannot be empty."
+        )
+
+    # The title is stored inside the 'final_output' object
+    result = articles_col.update_one(
+        {"_id": article_id},
+        {"$set": {"final_output.title": new_title.strip()}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    return {"status": "updated", "id": article_id, "new_title": new_title.strip()}
+
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT
 @app.post(

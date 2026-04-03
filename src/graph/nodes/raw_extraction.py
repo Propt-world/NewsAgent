@@ -78,13 +78,7 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                     print(f"[NODE: RAW EXTRACTION] Warning checking title: {e}")
                 
                 # Scroll Logic
-                # SCROLL TO MIDDLE
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                await page.wait_for_timeout(1000)
-                
-                # FIX: Don't scroll to the very bottom to avoid "Infinite Scroll" navigation triggers
-                # Scroll to 90% of the page height instead
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.9)")
+                await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
                 await page.wait_for_timeout(2000) 
 
             except Exception as e:
@@ -111,11 +105,29 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                  raise Exception("Failed to retrieve content after retries.")
 
             page_title = await page.title()
+
+            # --- NEW: HTML PRE-CLEANING & EXACT TITLE EXTRACTION ---
+            soup = BeautifulSoup(html_content, "lxml")
+            
+            # 1. Grab bulletproof title from Meta Tags before parsing libraries get confused
+            og_title = soup.find("meta", property="og:title")
+            bulletproof_title = og_title["content"] if og_title and og_title.get("content") else page_title
+            
+            # 2. Decompose sidebars and recommended sections to prevent "Content Bleed"
+            noise_selectors = [
+                "aside", "footer", "nav", "header", ".sidebar", 
+                ".article-right-sidebar", ".related", ".recommended", 
+                ".most-popuplar-ongoing-viral-outer", ".footer-menu"
+            ]
+            for tag in soup.select(", ".join(noise_selectors)):
+                tag.decompose()
+                
+            cleaned_html_for_parsing = str(soup)
             # --- REPLACEMENT END ---
             
             # --- 3. STRATEGY A: Newspaper4k ---
             article = Article(url)
-            article.download(input_html=html_content)
+            article.download(input_html=cleaned_html_for_parsing)
             article.parse()
             
             extracted_text = article.text
@@ -198,7 +210,7 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
 
             # --- 7. SUCCESS ---
             initial_article = ArticleModel(
-                title=article.title or page_title,
+                title=bulletproof_title, # <--- FIX: USE THE BULLETPROOF META TITLE
                 content=extracted_text,
                 published_date=article.publish_date.isoformat() if article.publish_date else None,
                 author=", ".join(article.authors) if article.authors else None,

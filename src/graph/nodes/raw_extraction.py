@@ -126,12 +126,34 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             # --- REPLACEMENT END ---
             
             # --- 3. STRATEGY A: Newspaper4k ---
-            article = Article(url)
-            article.download(input_html=cleaned_html_for_parsing)
-            article.parse()
+            extracted_text = ""
+            source_strategy = ""
+            clean_html = cleaned_html_for_parsing
             
-            extracted_text = article.text
-            source_strategy = "Newspaper4k"
+            pub_date = None
+            authors_str = None
+            top_img = None
+            
+            try:
+                # --- FIX: Force English to ignore site typos like <html lang="bn"> ---
+                article = Article(url, language='en') 
+                
+                article.download(input_html=cleaned_html_for_parsing)
+                article.parse()
+                
+                extracted_text = article.text
+                source_strategy = "Newspaper4k"
+                
+                if article.top_node is not None:
+                    clean_html = tostring(article.top_node, encoding='unicode')
+                    
+                pub_date = article.publish_date.isoformat() if article.publish_date else None
+                authors_str = ", ".join(article.authors) if article.authors else None
+                top_img = article.top_image
+                
+            except Exception as parse_error:
+                print(f"[NODE: RAW EXTRACTION] ⚠️ Newspaper4k failed ({parse_error}). Falling back...")
+                pass
 
             # --- 4. STRATEGY B: JSON-LD (Structured Data) ---
             # This is highly effective for Gulf News and modern sites
@@ -210,22 +232,20 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
 
             # --- 7. SUCCESS ---
             initial_article = ArticleModel(
-                title=bulletproof_title, # <--- FIX: USE THE BULLETPROOF META TITLE
+                title=bulletproof_title, 
                 content=extracted_text,
-                published_date=article.publish_date.isoformat() if article.publish_date else None,
-                author=", ".join(article.authors) if article.authors else None,
-                top_image=article.top_image
+                published_date=pub_date,     # <--- FIX: Use the safe variable
+                author=authors_str,          # <--- FIX: Use the safe variable
+                top_image=top_img            # <--- FIX: Use the safe variable
             )
             
             print(f"[NODE: RAW EXTRACTION] ✅ Final Success using: {source_strategy}")
 
-            clean_html = ""
-            if article.top_node is not None:
-                clean_html = tostring(article.top_node, encoding='unicode')
+            # Remove the clean_html assignment here since we already handled it safely above!
 
             return state.model_copy(update={
                 "cleaned_article_text": extracted_text,
-                "cleaned_article_html": clean_html,
+                "cleaned_article_html": clean_html, # clean_html is safe because we defined it on line 121
                 "news_article": initial_article
             })
 

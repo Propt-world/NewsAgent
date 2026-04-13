@@ -47,7 +47,7 @@ import shutil
 # LOGGING SETUP
 logging.basicConfig(
     stream=sys.stdout,
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("scheduler")
@@ -948,13 +948,15 @@ async def update_article_image(
     finally:
         await file.close()
 
-@app.patch("/articles/{article_id}/title")
+@app.patch(
+    "/articles/{article_id}/title",
+    dependencies=[Depends(verify_api_key)]
+)
 async def update_article_title(article_id: str, title_update: Dict[str, str] = Body(...)):
     """
     Updates the title of a processed article.
     Expects a JSON payload: {"title": "New Updated Title"}
     """
-    ensure_mongo_connected()
     new_title = title_update.get("title")
 
     if not new_title or not new_title.strip():
@@ -963,16 +965,23 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
             detail="Title cannot be empty."
         )
 
+    # Sanitize Title for Slug
+    clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', new_title.lower())
+    new_slug = re.sub(r'[-\s]+', '-', clean_title).strip('-')
+
     # The title is stored inside the 'final_output' object
     result = articles_col.update_one(
         {"_id": article_id},
-        {"$set": {"final_output.title": new_title.strip()}}
+        {"$set": {
+            "final_output.title": new_title.strip(),
+            "final_output.seo.slug": new_slug
+        }}
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    return {"status": "updated", "id": article_id, "new_title": new_title.strip()}
+    return {"status": "updated", "id": article_id, "new_title": new_title.strip(), "new_slug": new_slug}
 
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT

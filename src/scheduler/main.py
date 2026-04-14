@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 import httpx
 
@@ -407,6 +408,16 @@ async def add_source(source: SourceConfig):
             "message": "Source added successfully",
             "id": source_dict["_id"],
         }
+    except DuplicateKeyError as e:
+        if "listing_url" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A source with the listing url '{source.listing_url}' already exists."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A source with this unique identifier already exists."
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)

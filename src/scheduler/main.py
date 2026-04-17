@@ -994,6 +994,122 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
 
     return {"status": "updated", "id": article_id, "new_title": new_title.strip(), "new_slug": new_slug}
 
+@app.get(
+    "/articles/search/text",
+    response_model=PaginatedArticleResponse,
+    description="Dedicated API for standard text search across articles, including full content.",
+    responses={
+        status.HTTP_200_OK: {
+            "model": PaginatedArticleResponse,
+            "description": "Search results retrieved successfully",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": GenericResponse,
+            "description": "Internal Server Error",
+        },
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def search_articles_text(
+    q: str = Query(..., min_length=1, description="The text/keyword to search for"),
+    page: int = Query(1, ge=1, description="Page number (starts at 1)"),
+    limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status")
+):
+    """
+    Standard Regex Search. Looks for the keyword in the URL, Title, Summary, and Full Content.
+    """
+    try:
+        query = {}
+        if status_filter:
+            query["status"] = status_filter
+
+        # Case-insensitive search across title, summary, url, and full content
+        query["$or"] = [
+            {"final_output.title": {"$regex": q, "$options": "i"}},
+            {"final_output.summary": {"$regex": q, "$options": "i"}},
+            {"url": {"$regex": q, "$options": "i"}},
+            {"final_output.content": {"$regex": q, "$options": "i"}},    # <-- Added English Content
+            {"final_output.content_ar": {"$regex": q, "$options": "i"}} # <-- Added Arabic Content (optional but helpful)
+        ]
+
+        # 1. Get Total Count
+        total_count = articles_col.count_documents(query)
+
+        # 2. Calculate Skip
+        skip = (page - 1) * limit
+
+        # 3. Calculate Total Pages
+        total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
+
+        # 4. Fetch Data
+        cursor = articles_col.find(query).sort("discovered_at", -1).skip(skip).limit(limit)
+        items = list(cursor)
+
+        return PaginatedArticleResponse(
+            total=total_count,
+            page=page,
+            size=limit,
+            pages=total_pages,
+            items=items
+        )
+    except Exception as e:
+        logger.error(f"Text search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(
+    "/articles/search/similarity",
+    description="Dedicated API for semantic/AI search to find similar articles or duplicates.",
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Semantic search completed",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": GenericResponse,
+            "description": "Internal Server Error",
+        },
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def search_articles_similarity(
+    q: str = Query(..., min_length=5, description="The semantic query or paragraph to match against"),
+    limit: int = Query(5, ge=1, le=50, description="Max similar results to return"),
+    min_score: float = Query(0.7, ge=0.0, le=1.0, description="Minimum relevance score (cosine similarity)")
+):
+    """
+    Vector Search / AI Similarity. Takes a text snippet, embeds it using OpenAI, 
+    and finds contextually similar article chunks in the database.
+    """
+    try:
+        mongo_store = get_mongo_store()
+        
+        # Execute vector search via MongoStore
+        # Note: Your MongoStore query method returns chunks, not full articles
+        results = await mongo_store.query(query_text=q, limit=limit)
+        
+        formatted_results = []
+        for res in results:
+            score = res.get("score", 0.0)
+            
+            # Optionally filter out weak matches
+            if score >= min_score:
+                formatted_results.append({
+                    "source_article_id": res.get("source_id"),
+                    "matching_chunk": res.get("chunk_text"),
+                    "relevance_score": score,
+                    "metadata": res.get("metadata", {})
+                })
+                
+        return {
+            "status": "success",
+            "query": q,
+            "total_matches": len(formatted_results),
+            "results": formatted_results
+        }
+    except Exception as e:
+        logger.error(f"Similarity search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT
 @app.post(

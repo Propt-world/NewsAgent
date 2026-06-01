@@ -20,7 +20,7 @@ jobs:
 
       - name: Deploy to AWS Server
         run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@34.226.175.88 << 'EOF'
+          ssh -o StrictHostKeyChecking=no ubuntu@32.195.160.240 << 'EOF'
             set -e
             cd /var/www/NewsAgent
             echo "Pulling latest code..."

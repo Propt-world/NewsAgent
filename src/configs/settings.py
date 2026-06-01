@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, List
 from pydantic_settings import BaseSettings
 from langchain_openai import ChatOpenAI
 from opik.integrations.langchain import OpikTracer
@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     # API Settings
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "News Article Extractor"
+    
+    # CORS Configuration
+    CORS_ORIGINS: str = "https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:8000,http://localhost:8001,https://backoffice.propt.global"
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     # Server Settings
     HOST: str = "0.0.0.0"

@@ -220,7 +220,7 @@ app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan, root_pat
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://main.d211u21suwdysn.amplifyapp.com", "http://localhost:3000", "http://localhost:8001"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

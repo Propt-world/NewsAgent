@@ -35,7 +35,7 @@ services:
   api:
     build: .
     container_name: newsagent_api
-    command: uvicorn src.main:api --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn src.main:api --host 0.0.0.0 --port 8003 --reload
     ports:
       - "8000:8000"
     volumes:

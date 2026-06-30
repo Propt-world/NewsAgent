@@ -18,6 +18,32 @@ BLOCKED_URL_PATTERNS = [
     "adsrvr", "rubicon", "criteo", "amazon-adsystem"
 ]
 
+# Fallback UA used only when normal extraction returns empty content.
+CRAWLER_USER_AGENT = (
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+)
+
+WAF_CHALLENGE_MARKERS = [
+    "verification required",
+    "request could not be satisfied",
+    "detected unusual activity",
+    "automated (bot) activity",
+    "captcha",
+    "cf-chl",
+    "cloudflare",
+    "attention required",
+    "why is this step needed",
+]
+
+
+def is_cdn_waf_challenge_page(page_title: str, html_content: str) -> bool:
+    """Detects common CDN/WAF challenge pages from title/body signatures."""
+    title = (page_title or "").lower()
+    # Limit scan length for performance while keeping enough signal.
+    body = (html_content or "")[:4000].lower()
+    combined = f"{title}\n{body}"
+    return any(marker in combined for marker in WAF_CHALLENGE_MARKERS)
+
 async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
     Extracts article content using Playwright (Async).
@@ -218,8 +244,156 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                             print(f"[NODE: RAW EXTRACTION] ✅ Success via Manual Selector: '{selector}'")
                             break
 
+            # --- 5.5 ONE-TIME FALLBACK: CRAWLER USER AGENT ---
+            if not extracted_text or len(extracted_text) < 50:
+                print(
+                    "[NODE: RAW EXTRACTION] ⚠️ Primary extraction returned empty content. "
+                    "Retrying once with crawler user-agent..."
+                )
+                crawler_page = await browser.new_page(user_agent=CRAWLER_USER_AGENT)
+                await crawler_page.route("**/*", route_handler)
+
+                try:
+                    try:
+                        await crawler_page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                        await crawler_page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
+                        await crawler_page.wait_for_timeout(2000)
+                    except Exception as nav_error:
+                        pprint(f"[NODE: RAW EXTRACTION] Crawler fallback navigation warning: {nav_error}")
+
+                    crawler_html = ""
+                    for attempt in range(3):
+                        try:
+                            crawler_html = await crawler_page.content()
+                            break
+                        except Exception as read_error:
+                            if "navigating" in str(read_error) or "Execution context was destroyed" in str(read_error):
+                                print(
+                                    "[NODE: RAW EXTRACTION] Crawler fallback navigation during read. "
+                                    f"Retrying {attempt+1}/3..."
+                                )
+                                await crawler_page.wait_for_timeout(1000)
+                            else:
+                                raise read_error
+
+                    crawler_title = await crawler_page.title()
+
+                    if crawler_html:
+                        crawler_soup = BeautifulSoup(crawler_html, "lxml")
+                        crawler_og_title = crawler_soup.find("meta", property="og:title")
+                        crawler_bulletproof_title = (
+                            crawler_og_title["content"]
+                            if crawler_og_title and crawler_og_title.get("content")
+                            else crawler_title
+                        )
+
+                        noise_selectors = [
+                            "aside", "footer", "nav", "header", ".sidebar",
+                            ".article-right-sidebar", ".related", ".recommended",
+                            ".most-popuplar-ongoing-viral-outer", ".footer-menu"
+                        ]
+                        for tag in crawler_soup.select(", ".join(noise_selectors)):
+                            tag.decompose()
+
+                        crawler_cleaned_html = str(crawler_soup)
+
+                        crawler_text = ""
+                        crawler_strategy = ""
+                        crawler_clean_html = crawler_cleaned_html
+                        crawler_pub_date = None
+                        crawler_authors = None
+                        crawler_top_img = None
+
+                        try:
+                            crawler_article = Article(url, language='en')
+                            crawler_article.download(input_html=crawler_cleaned_html)
+                            crawler_article.parse()
+
+                            crawler_text = crawler_article.text
+                            crawler_strategy = "Newspaper4k"
+
+                            if crawler_article.top_node is not None:
+                                crawler_clean_html = tostring(crawler_article.top_node, encoding='unicode')
+
+                            crawler_pub_date = (
+                                crawler_article.publish_date.isoformat()
+                                if crawler_article.publish_date
+                                else None
+                            )
+                            crawler_authors = ", ".join(crawler_article.authors) if crawler_article.authors else None
+                            crawler_top_img = crawler_article.top_image
+                        except Exception:
+                            pass
+
+                        if not crawler_text or len(crawler_text) < 200:
+                            scripts = crawler_soup.find_all('script', type='application/ld+json')
+                            for script in scripts:
+                                try:
+                                    data = json.loads(script.string)
+                                    items = data if isinstance(data, list) else [data]
+
+                                    for item in items:
+                                        if 'articleBody' in item:
+                                            clean_body = BeautifulSoup(item['articleBody'], "lxml").get_text()
+                                            if len(clean_body) > 200:
+                                                crawler_text = clean_body
+                                                crawler_strategy = "JSON-LD"
+                                                break
+                                    if crawler_text and len(crawler_text) > 200:
+                                        break
+                                except Exception:
+                                    continue
+
+                        if not crawler_text or len(crawler_text) < 200:
+                            selectors = [
+                                "div.story-element-text",
+                                ".story-element",
+                                ".Iqx1L",
+                                "article",
+                                ".story-content",
+                                ".article-body",
+                                "#article-body",
+                                ".post-content",
+                                "main"
+                            ]
+                            for selector in selectors:
+                                elements = crawler_soup.select(selector)
+                                if elements:
+                                    text_parts = [e.get_text(separator=" ", strip=True) for e in elements]
+                                    full_text = "\n\n".join(text_parts)
+                                    if len(full_text) > 200:
+                                        crawler_text = full_text
+                                        crawler_strategy = f"BS4: {selector}"
+                                        break
+
+                        if crawler_text and len(crawler_text) >= 50:
+                            print("[NODE: RAW EXTRACTION] ✅ Crawler fallback succeeded.")
+                            extracted_text = crawler_text
+                            source_strategy = f"{crawler_strategy} (crawler-fallback)"
+                            clean_html = crawler_clean_html
+                            bulletproof_title = crawler_bulletproof_title
+                            pub_date = crawler_pub_date
+                            authors_str = crawler_authors
+                            top_img = crawler_top_img
+                            page_title = crawler_title
+                        else:
+                            print("[NODE: RAW EXTRACTION] ❌ Crawler fallback still returned empty content.")
+                            page_title = crawler_title
+                            html_content = crawler_html
+                    else:
+                        print("[NODE: RAW EXTRACTION] ❌ Crawler fallback could not retrieve page content.")
+
+                finally:
+                    await crawler_page.close()
+
             # --- 6. FINAL QUALITY CHECK ---
             if not extracted_text or len(extracted_text) < 50:
+                if is_cdn_waf_challenge_page(page_title, html_content):
+                    print("[NODE: RAW EXTRACTION] 🛑 CDN/WAF challenge page detected.")
+                    return state.model_copy(update={
+                        "error_message": f"Blocked by CDN/WAF challenge. Page Title: '{page_title}'"
+                    })
+
                 print(f"\n--- ❌ EXTRACTION FAILED DEBUG INFO ---")
                 print(f"URL: {url}")
                 print(f"Title: {page_title}")

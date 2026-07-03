@@ -31,32 +31,17 @@ services:
       timeout: 5s
       retries: 5
 
-  # --- 5. Search Context Service ---
-  searxng:
-    image: docker.io/searxng/searxng:latest
-    container_name: newsagent_searxng
-    ports:
-      # Exposed for local debugging; other services use http://searxng:8080.
-      - "127.0.0.1:8080:8080"
-    volumes:
-      - ./searxng:/etc/searxng:rw
-      - searxng_cache:/var/cache/searxng:rw
-    environment:
-      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:8080/}
-    restart: always
-
-  # --- 6. The API (Producer) ---
+  # --- 5. The API (Producer) ---
   api:
-    image: newsagent-api
     build: .
     container_name: newsagent_api
-    # Internal callers use the Docker service name: http://api:8003
     command: uvicorn src.main:api --host 0.0.0.0 --port 8003 --reload
     ports:
       - "8003:8003"
     volumes:
       - .:/app
     environment:
+      # Network: Service names are hostnames
       # Network: Service names are hostnames
       - REDIS_URL=redis://redis:6379
       # Use the container name 'mongo' for the connection
@@ -65,13 +50,7 @@ services:
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Pass through keys from your local machine
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - SEARCH_PROVIDER=${SEARCH_PROVIDER:-searxng}
-      - SEARXNG_BASE_URL=${SEARXNG_INTERNAL_URL:-http://searxng:8080}
-      - SEARXNG_ENGINES=${SEARXNG_ENGINES:-duckduckgo,brave}
-      - SEARCH_MAX_RESULTS=${SEARCH_MAX_RESULTS:-5}
-      - SEARCH_TIMEOUT_SECONDS=${SEARCH_TIMEOUT_SECONDS:-8}
-      - SEARCH_CACHE_TTL_SECONDS=${SEARCH_CACHE_TTL_SECONDS:-86400}
-      - MAIN_API_URL=http://api:8003
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
       - SCHEDULER_URL=http://scheduler:8001
       - WEBHOOK_URL=${WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
@@ -86,10 +65,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      searxng:
-        condition: service_started
 
-  # --- 7. The Worker (Consumer) ---
+  # --- 6. The Worker (Consumer) ---
   worker:
     build: .
     container_name: newsagent_worker
@@ -102,13 +79,7 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - SEARCH_PROVIDER=${SEARCH_PROVIDER:-searxng}
-      - SEARXNG_BASE_URL=${SEARXNG_INTERNAL_URL:-http://searxng:8080}
-      - SEARXNG_ENGINES=${SEARXNG_ENGINES:-duckduckgo,brave}
-      - SEARCH_MAX_RESULTS=${SEARCH_MAX_RESULTS:-5}
-      - SEARCH_TIMEOUT_SECONDS=${SEARCH_TIMEOUT_SECONDS:-8}
-      - SEARCH_CACHE_TTL_SECONDS=${SEARCH_CACHE_TTL_SECONDS:-86400}
-      - MAIN_API_URL=http://api:8003
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - NEWSAGENT_API_KEY=${NEWSAGENT_API_KEY}
@@ -126,10 +97,8 @@ services:
 
       browserless:
         condition: service_healthy
-      searxng:
-        condition: service_started
 
-  # --- 8. The Scheduler Service ---
+  # --- 7. The Scheduler Service ---
   scheduler:
     build: .
     container_name: newsagent_scheduler
@@ -141,10 +110,11 @@ services:
       - .:/app
     environment:
       # Connects to the same DB to store sources/archives
+      # Connects to the same DB to store sources/archives
       - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Needs to know where the main API is to submit jobs
-      - MAIN_API_URL=http://api:8003
+      - MAIN_API_URL=http://api:8000
       # Source ID for manually submitted articles (can be overridden via .env)
       - SUBMISSION_SOURCE_ID=${SUBMISSION_SOURCE_ID:-newsagent_scheduled_source}
       - BROWSER_WS_ENDPOINT=ws://browserless:3000?token=${BROWSERLESS_TOKEN}
@@ -169,6 +139,5 @@ services:
 
 volumes:
   redis_data:
-  searxng_cache:
 
 

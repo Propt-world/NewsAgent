@@ -3,13 +3,15 @@
 
 services:
   api:
-    command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn src.main:api --host 0.0.0.0 --port 8003 --reload
+    command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn src.main:api --host 0.0.0.0 --port 8000 --reload
     ports:
+      - "8000:8000"
       - "5678:5678"  # Debug port
 
   scheduler:
     command: python -m debugpy --listen 0.0.0.0:5679 -m uvicorn src.scheduler.main:app --host 0.0.0.0 --port 8001 --reload
     ports:
+      - "8001:8001"
       - "5679:5679"  # Debug port
 
   worker:

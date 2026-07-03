@@ -8,7 +8,7 @@ from src.models.MainWorkflowState import MainWorkflowState
 from src.models.ArticleModel import ArticleModel
 from src.configs.settings import settings
 from src.utils.browser import get_async_browser_context
-from src.utils.governance import GovernanceGatekeeper
+from src.utils.governance import AsyncGovernanceGatekeeper
 
 # --- CONFIG: RESOURCE BLOCKING ---
 BLOCKED_RESOURCE_TYPES = ["image", "media", "font", "stylesheet"] 
@@ -29,15 +29,15 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     
     # --- 0. GOVERNANCE CHECK ---
     url = state.source_url
-    gatekeeper = GovernanceGatekeeper()
+    gatekeeper = AsyncGovernanceGatekeeper()
 
-    if not gatekeeper.can_fetch(url):
+    if not await gatekeeper.can_fetch(url):
         pprint(f"[NODE: RAW EXTRACTION] 🛑 Blocked by robots.txt: {url}")
         return state.model_copy(update={
             "error_message": f"Blocked by robots.txt: {url}"
         })
 
-    gatekeeper.wait_for_slot(url)
+    await gatekeeper.wait_for_slot(url)
     
     pprint(f"[NODE: RAW EXTRACTION] 🚀 Fetching with Playwright (Async): {url}")
 
@@ -234,6 +234,7 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             initial_article = ArticleModel(
                 title=bulletproof_title, 
                 content=extracted_text,
+                source_title=bulletproof_title,
                 published_date=pub_date,     # <--- FIX: Use the safe variable
                 author=authors_str,          # <--- FIX: Use the safe variable
                 top_image=top_img            # <--- FIX: Use the safe variable

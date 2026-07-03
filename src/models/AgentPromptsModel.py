@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 class AgentPromptsModel(BaseModel):
@@ -5,9 +7,6 @@ class AgentPromptsModel(BaseModel):
     Defines the exact set of prompts required for the NewsAgent to function.
     This ensures that if the DB is missing a key, we fail fast.
     """
-    # --- Content Extraction ---
-    content_extractor: str = Field(..., description="Prompt for the content extraction node")
-
     # --- Summarization ---
     summary_system: str
     summary_initial_user: str
@@ -32,6 +31,10 @@ class AgentPromptsModel(BaseModel):
     # --- Country Extraction ---
     country_extraction_system: str
     country_extraction_user: str
+
+    # --- Content Enrichment ---
+    content_enrichment_system: Optional[str] = None
+    content_enrichment_user: Optional[str] = None
 
     # --- SEO ---
     seo_system: str

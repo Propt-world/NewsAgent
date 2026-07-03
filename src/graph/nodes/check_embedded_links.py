@@ -1,5 +1,4 @@
 import asyncio
-import traceback
 from pprint import pprint
 from typing import List
 from bs4 import BeautifulSoup
@@ -27,7 +26,7 @@ async def _process_links_batch(
     
     # --- A. RESOURCE SETUP ---
     # Launching a browser is expensive (CPU-wise). We do it ONCE for the whole batch.
-    async with get_async_browser_context() as (p, browser):
+    async with get_async_browser_context() as (_, browser):
     
         # --- B. INITIALIZE LLM INTERNALY ---
         # 2. The LLM is initialized HERE, so we don't need to pass it as an argument.
@@ -110,16 +109,6 @@ async def check_embedded_links(state: MainWorkflowState) -> MainWorkflowState:
             prompts.relevance_system,
             prompts.relevance_user
         )
-
-        updated_article = state.news_article.model_copy(update={
-            "embedded_links": updated_links
-        })
-        return state.model_copy(update={"news_article": updated_article})
-
-    except Exception as e:
-        pprint(f"[NODE: CHECK LINKS] Error: {e}")
-        # Return state as-is on error to avoid breaking the workflow
-        return state
 
         updated_article = state.news_article.model_copy(update={
             "embedded_links": updated_links

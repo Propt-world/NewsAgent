@@ -3,8 +3,6 @@ from typing import Optional, List
 from pydantic_settings import BaseSettings
 from langchain_openai import ChatOpenAI
 from opik.integrations.langchain import OpikTracer
-#from langchain_tavily import TavilySearch, TavilySearchResults
-from tavily import TavilyClient
 from opik import Opik
 import opik
 from dotenv import load_dotenv
@@ -17,7 +15,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "News Article Extractor"
     
     # CORS Configuration
-    CORS_ORIGINS: str = "https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:8000,http://localhost:8001,https://backoffice.propt.global"
+    CORS_ORIGINS: str = "https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:8003,http://localhost:8001,https://backoffice.propt.global"
 
     @property
     def cors_origins_list(self) -> List[str]:
@@ -25,7 +23,7 @@ class Settings(BaseSettings):
 
     # Server Settings
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = 8003
     RELOAD: bool = True
 
     # Redis Configuration
@@ -61,12 +59,20 @@ class Settings(BaseSettings):
     OPIK_API_KEY: str = os.getenv('OPIK_API_KEY')
     OPIK_WORKSPACE: str = os.getenv('OPIK_WORKSPACE')
     OPIK_PROJECT_NAME: str = os.getenv('OPIK_PROJECT_NAME')
-    TAVILY_API_KEY: str = os.getenv('TAVILY_API_KEY')
 
     # Model Configuration
-    MODEL_NAME: str = os.getenv('MODEL_NAME')
-    MODEL_NAME: str = os.getenv('MODEL_NAME')
-    MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE'))
+    MODEL_NAME: str = os.getenv('MODEL_NAME', "gpt-4o-mini")
+    MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE', "0.5"))
+
+    # Search / Context Configuration
+    SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "searxng")
+    SEARXNG_BASE_URL: str = os.getenv("SEARXNG_BASE_URL", "http://localhost:8080")
+    SEARXNG_ENGINES: str = os.getenv("SEARXNG_ENGINES", "duckduckgo,brave")
+    SEARCH_MAX_RESULTS: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
+    SEARCH_TIMEOUT_SECONDS: float = float(os.getenv("SEARCH_TIMEOUT_SECONDS", "8"))
+    SEARCH_CACHE_TTL_SECONDS: int = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", "86400"))
+    SEARCH_LANGUAGE: str = os.getenv("SEARCH_LANGUAGE", "en")
+    SEARCH_SAFESEARCH: int = int(os.getenv("SEARCH_SAFESEARCH", "1"))
 
     # Scraping Configuration
     # Generic User Agent to mimic a real browser/user to avoid bot blocks
@@ -95,7 +101,7 @@ class Settings(BaseSettings):
 
     # Scheduler Configuration
     # Main API URL for submitting jobs (used by scheduler service)
-    MAIN_API_URL: str = os.getenv('MAIN_API_URL', 'http://localhost:8000')
+    MAIN_API_URL: str = os.getenv('MAIN_API_URL', 'http://localhost:8003')
     # Source ID for manually submitted articles (not from scheduled sources)
     SUBMISSION_SOURCE_ID: str = os.getenv('SUBMISSION_SOURCE_ID', 'newsagent_scheduled_source')
     # Scheduler URL for health checking
@@ -128,12 +134,21 @@ class Settings(BaseSettings):
             openai_api_key=self.OPENAI_API_KEY
         )
 
-    def get_tavily_client(self) -> TavilyClient:
-        if not self.TAVILY_API_KEY:
-            raise ValueError("TAVILY_API_KEY is not set")
+    def get_search_client(self):
+        provider = (self.SEARCH_PROVIDER or "").lower()
+        if provider != "searxng":
+            raise ValueError(f"Unsupported SEARCH_PROVIDER: {self.SEARCH_PROVIDER}")
 
-        return TavilyClient(
-            api_key=self.TAVILY_API_KEY,
+        from src.utils.search import SearxngSearchClient
+
+        return SearxngSearchClient(
+            base_url=self.SEARXNG_BASE_URL,
+            engines=self.SEARXNG_ENGINES,
+            timeout_seconds=self.SEARCH_TIMEOUT_SECONDS,
+            max_results=self.SEARCH_MAX_RESULTS,
+            cache_ttl_seconds=self.SEARCH_CACHE_TTL_SECONDS,
+            language=self.SEARCH_LANGUAGE,
+            safesearch=self.SEARCH_SAFESEARCH,
         )
 
     class Config:

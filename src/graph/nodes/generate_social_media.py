@@ -5,7 +5,7 @@ from src.models.MainWorkflowState import MainWorkflowState
 from src.models.SocialCaptionModel import SocialCaptionModel
 from src.configs.settings import settings
 
-def generate_social_media(state: MainWorkflowState) -> MainWorkflowState:
+async def generate_social_media(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: GENERATE SOCIAL MEDIA CAPTION
     Role: Master Copywriter (Conversion Focused)
@@ -44,7 +44,7 @@ def generate_social_media(state: MainWorkflowState) -> MainWorkflowState:
 
         # 4. Invoke LLM
         pprint("[NODE: SOCIAL MEDIA] Invoking Copywriter LLM...")
-        caption_result: SocialCaptionModel = model.invoke(messages)
+        caption_result: SocialCaptionModel = await model.ainvoke(messages)
 
         pprint(f"[NODE: SOCIAL MEDIA] Generated Hook: {caption_result.headline}")
 

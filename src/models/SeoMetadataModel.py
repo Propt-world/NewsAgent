@@ -4,6 +4,10 @@ from typing import List, Optional, Dict, Any
 # 1. NEW: Create a specific model for the LLM Generation
 # This contains ONLY the fields the AI should generate.
 class SeoLLMOutput(BaseModel):
+    article_title: str = Field(
+        ...,
+        description="Original SEO-compatible display title for the article, max 75 chars"
+    )
     meta_title: str = Field(..., description="SEO optimized title, max 60 chars")
     meta_description: str = Field(..., description="SEO optimized description, max 160 chars")
     slug: str = Field(..., description="URL-friendly slug")
@@ -21,5 +25,10 @@ class SeoMetadataModel(SeoLLMOutput):
     """
     The complete model used in the application state.
     """
+    article_title: Optional[str] = Field(
+        None,
+        description="Original SEO-compatible display title for the article, max 75 chars"
+    )
+
     # This field is excluded from the LLM generation step
     json_ld_schema: Dict[str, Any] = Field(default_factory=dict)

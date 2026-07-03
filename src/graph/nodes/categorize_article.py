@@ -9,7 +9,7 @@ from langchain_core.prompts import PromptTemplate
 # Import the prompts for this node
 # from src.prompts.CategorizationPrompts import SYSTEM_PROMPT, USER_PROMPT
 
-def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
+async def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
     """
     Assigns a list of categories (max 3) to the article.
     """
@@ -53,7 +53,7 @@ def categorize_article(state: MainWorkflowState) -> MainWorkflowState:
         pprint("[NODE 8: CATEGORIZE ARTICLE] Invoking classifier LLM...")
 
         # 4. Call the LLM
-        response: CategorizationModel = structured_llm.invoke(messages)
+        response: CategorizationModel = await structured_llm.ainvoke(messages)
 
         predicted_categories = response.categories
         pprint(f"[NODE 8: CATEGORIZE ARTICLE] LLM Raw Output: {predicted_categories}")

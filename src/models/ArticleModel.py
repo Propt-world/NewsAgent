@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from src.models.EmbeddedLinkModel import EmbeddedLinkModel
 from src.models.SeoMetadataModel import SeoMetadataModel
 from src.models.SocialCaptionModel import SocialCaptionModel
+from src.models.WhyThisMattersModel import WhyThisMattersModel
 
 
 class ArticleModel(BaseModel):
@@ -10,6 +11,10 @@ class ArticleModel(BaseModel):
     # If these can't be extracted, the node should fail.
     title: str
     content: str
+    source_title: Optional[str] = Field(
+        None,
+        description="Original article title captured from the source publication."
+    )
 
     top_image: Optional[str] = None
 
@@ -43,6 +48,9 @@ class ArticleModel(BaseModel):
 
     # Social Media Caption Data
     social_media: Optional[SocialCaptionModel] = None
+
+    # Contextual enrichment section
+    why_this_matters: Optional[WhyThisMattersModel] = None
     
     # SEO Data
     seo: Optional[SeoMetadataModel] = None

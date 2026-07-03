@@ -17,22 +17,23 @@ NewsAgent operates as a distributed system designed for resilience and observabi
 * **Resilience**: Implements Dead Letter Queues (DLQ) and automatic retries for failed jobs.
 * **Governance**: Distributed rate limiting and `robots.txt` compliance to respect source policies.
 * **Observability**: Integrated with **Opik** for tracing AI logic and **SMTP** for critical error alerting.
-* **Search & SEO**: Auto-generates SEO metadata and finds corroborating sources via **Tavily**.
+* **Search & SEO**: Auto-generates SEO metadata and finds corroborating sources via self-hosted **SearXNG**.
 
 ---
 
 ## 🏗️ Architecture
 
-The system is composed of six Dockerized services:
+The system is composed of seven Dockerized services:
 
 | Service | Port | Description |
 | :--- | :--- | :--- |
-| **API** (`api`) | `8000` | The entry point. Accepts job submissions, manages configuration (Prompts/Categories), and provides queue metrics. |
+| **API** (`api`) | `8003` | The entry point. Accepts job submissions, manages configuration (Prompts/Categories), and provides queue metrics. |
 | **Scheduler** (`scheduler`) | `8001` | The "Pulse". Runs background cron jobs to crawl listing pages and submits unique URLs to the API. |
 | **Worker** (`worker`) | *N/A* | The consumer. Pulls jobs from Redis, executes the LangGraph workflow, and posts results. |
 | **Redis** (`redis`) | `6379` | Message broker for job queues (`newsagent_jobs`) and distributed rate-limiting locks. |
 | **MongoDB** (`mongo`) | `27017` | Persistent storage for prompts, source configs, processed article archives, and email recipients. |
 | **Browserless** (`browserless`) | `3000` | Headless Chromium instance used by workers and the scheduler for rendering JavaScript. |
+| **SearXNG** (`searxng`) | `8080` | Self-hosted search context service restricted to DuckDuckGo and Brave engines. |
 
 ---
 
@@ -41,7 +42,6 @@ The system is composed of six Dockerized services:
 * **Docker** & **Docker Compose**
 * **API Keys**:
     * **OpenAI API Key** (LLM operations)
-    * **Tavily API Key** (Web search)
     * **Opik** (Optional - for observability)
     * **SMTP Credentials** (For error alerting)
 
@@ -63,7 +63,9 @@ The system is composed of six Dockerized services:
 
     **Critical Variables:**
     * `OPENAI_API_KEY`: Required for all AI nodes.
-    * `TAVILY_API_KEY`: Required for the "Find Other Sources" node.
+    * `SEARCH_PROVIDER`: Defaults to `searxng`.
+    * `SEARXNG_BASE_URL`: Use `http://localhost:8080` for local Python runs.
+    * `SEARXNG_INTERNAL_URL`: Use `http://searxng:8080` for Docker Compose service discovery.
     * `NEWSAGENT_API_KEY`: A secure key you generate to protect your internal API endpoints.
     * `BROWSERLESS_TOKEN`: Secure token for the browserless service.
     * `WEBHOOK_SECRET`: Shared secret for verifying webhook payloads.
@@ -82,15 +84,21 @@ This brings up the entire stack, including the database and browser services.
     ```
 
 2.  **Initialize Database**:
-    The `db-init` container runs automatically on the first start to seed Prompts, Categories, and default configurations. You can check its logs to ensure success:
+    Run the initializer as a one-shot command. The default `upsert` mode is safe for an existing database: it adds or updates required prompts, categories, recipients, and indexes without deleting articles.
     ```bash
-    docker-compose logs db-init
+    docker-compose run --rm api python src/scripts/init_db.py --mode upsert
+    ```
+
+    For a fresh development database, use the destructive `fresh` mode. This drops NewsAgent application collections, including articles, archives, trash, and vector data, then recreates the seed data.
+    ```bash
+    docker-compose run --rm api python src/scripts/init_db.py --mode fresh --yes
     ```
 
 3.  **Verify Services**:
-    * **Main API**: Visit `http://localhost:8000/docs`
+    * **Main API**: Visit `http://localhost:8003/docs` (`http://api:8003` from other Compose services)
     * **Scheduler API**: Visit `http://localhost:8001/docs`
     * **Browserless Debugger**: Visit `http://localhost:3000`
+    * **SearXNG**: Visit `http://localhost:8080`
 
 ### Method 2: Local Development (Python)
 
@@ -98,14 +106,18 @@ If you need to run the Python code locally while keeping infrastructure (Redis/M
 
 1.  **Start Infrastructure**:
     ```bash
-    docker-compose up -d redis mongo browserless
+    docker-compose up -d redis mongo browserless searxng
     ```
 2.  **Install Dependencies**:
     ```bash
     pip install -r requirements.txt
     ```
-3.  **Run Services** (in separate terminals):
-    * **API**: `uvicorn src.main:api --port 8000 --reload`
+3.  **Initialize or update MongoDB**:
+    ```bash
+    python src/scripts/init_db.py --mode upsert
+    ```
+4.  **Run Services** (in separate terminals):
+    * **API**: `uvicorn src.main:api --port 8003 --reload`
     * **Scheduler**: `uvicorn src.scheduler.main:app --port 8001 --reload`
     * **Worker**: `python src/worker.py`
 
@@ -134,10 +146,10 @@ curl -X POST "http://localhost:8001/sources" \
 The scheduler will now check this URL every 60 minutes, filter links matching /business/, and submit them to the processing pipeline.
 
 ### 2. Manual Job Submission
-You can manually trigger processing for a specific URL via the Main API (Port 8000).
+You can manually trigger processing for a specific URL via the Main API on port 8003.
 
 ```bash
-curl -X POST "http://localhost:8000/submit-job" \
+curl -X POST "http://localhost:8003/submit-job" \
   -H "X-API-Key: <YOUR_NEWSAGENT_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -147,13 +159,13 @@ curl -X POST "http://localhost:8000/submit-job" \
 
 ### 3. Monitoring & Debugging
 Queue Status: Check pending jobs and Dead Letter Queue counts.  
-`GET http://localhost:8000/queue/status`
+`GET http://localhost:8003/queue/status`
 
 Visualizing the Graph: Download the current LangGraph workflow diagram.  
-`GET http://localhost:8000/debug/draw-graph`
+`GET http://localhost:8003/debug/draw-graph`
 
 Job Status: Check the realtime status of a specific job ID.  
-`GET http://localhost:8000/jobs/{job_id}`
+`GET http://localhost:8003/jobs/{job_id}`
 
 ### 4. Handling Failures (Dead Letter Queue)
 If a job crashes (e.g., parsing error), it moves to the DLQ. You can inspect and requeue it via the API.

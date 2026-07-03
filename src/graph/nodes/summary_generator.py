@@ -5,7 +5,7 @@ from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
 #from src.prompts.SummaryPrompts import SYSTEM_PROMPT, INITIAL_USER_PROMPT, RETRY_USER_PROMPT
 
-def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
+async def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
     Generates a summary of the 'cleaned_article_text' using the
     LLM configured in settings.
@@ -65,7 +65,7 @@ def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
             ("user", formatted_prompt)
         ]
 
-        response = model.invoke(messages)
+        response = await model.ainvoke(messages)
         summary_text = response.content # .content has the string output
 
         # 6. Update the state

@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 from pymongo import MongoClient, ASCENDING
 from datetime import datetime, timezone
 import uuid
@@ -10,36 +11,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from src.db.enums import PromptStatus
 from src.configs.settings import settings
 
+PROMPT_VERSION = "v1.0"
+
 # --- PROMPT DEFINITIONS ---
 INITIAL_DATA = [
-    # --- 1. CONTENT EXTRACTION ---
-    {
-        "name": "content_extractor",
-        "content": """You are a content extractor that analyzes raw text content and extracts structured article information.
-
-Extract the following information from the provided text:
-- title: The main headline or title of the article
-- content: The main body text content (cleaned and formatted)
-- summary: A brief summary of the article (2-3 sentences)
-- url: The source URL if mentioned
-- published_date: The publication date in YYYY-MM-DD format if available
-- author: The author's name if mentioned
-- category: A list of relevant categories/topics for the article
-- keywords: A list of 3-5 key terms that describe the article
-- embedded_links: A list of relevant links found in the content with their titles
-
-Text to analyze:
-{raw_content}
-
-Please respond with a JSON object matching this schema:
-{schema}
-
-Extract as much information as possible from the text. If information is not available, use null for that field.""",
-        "input_variables": ["raw_content", "schema"],
-        "description": "Initial extraction of structured data from raw text."
-    },
-
-    # --- 2. SUMMARY GENERATOR ---
+    # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
         "content": """You are an expert news summarizer. Your goal is to create a concise,
@@ -73,7 +49,7 @@ FEEDBACK:
         "description": "Retry prompt used when validation fails."
     },
 
-    # --- 3. VALIDATION (CRITIC) ---
+    # --- 2. VALIDATION (CRITIC) ---
     {
         "name": "validation_system",
         "content": """You are an expert "Critic" and "Editor". Your task is to evaluate a generated
@@ -106,7 +82,7 @@ Finally, provide feedback. If 'is_valid' is 'false', provide actionable feedback
         "description": "User prompt submitting the summary for validation."
     },
 
-    # --- 4. LINK RELEVANCE CHECK ---
+    # --- 3. LINK RELEVANCE CHECK ---
     {
         "name": "relevance_system",
         "content": """You are an expert "Relevance Analyzer". Your task is to evaluate how
@@ -137,7 +113,7 @@ Base your score on the provided content from the linked page and the context."""
         "description": "User prompt for scoring a specific link."
     },
 
-    # --- 5. SEARCH QUERY GENERATION ---
+    # --- 4. SEARCH QUERY GENERATION ---
     {
         "name": "search_system",
         "content": """You are an expert search query generator. Your task is to analyze an
@@ -167,7 +143,7 @@ list of 3-5 diverse, high-quality search queries.
         "description": "User prompt for search query generation."
     },
 
-    # --- 6. CATEGORIZATION ---
+    # --- 5. CATEGORIZATION ---
     {
         "name": "categorization_system",
         "content": """You are an expert "Article Classifier" for a real estate news service.
@@ -229,18 +205,20 @@ You MUST choose from the following predefined "Knowledge Base":
         "description": "User prompt for categorization."
     },
 
-    # --- 7. SEO GENERATION ---
+    # --- 6. SEO GENERATION ---
     {
         "name": "seo_system",
         "content": """You are an expert SEO Meta Data Extractor.
 Your task is to read news content and generate optimized metadata.
 
 RULES:
-1. SEO Meta Title: Max 60 chars, click-enticing, no keyword stuffing.
-2. SEO Meta Description: Max 160 chars, natural keyword placement.
-3. Slug: Max 7-9 relevant words, lowercase, hyphen-separated.
-4. Keywords: 3-5 strictly based on content.
-5. Tone: Neutral, authoritative (BBC/Reuters style).
+1. Article Title: Create an original display headline, max 75 chars, that accurately reflects the article topic without copying the source title.
+2. SEO Meta Title: Max 60 chars, distinct from the source title and article title when possible, no keyword stuffing.
+3. SEO Meta Description: Max 160 chars, natural keyword placement.
+4. Slug: Max 7-9 relevant words, lowercase, hyphen-separated.
+5. Keywords: 3-5 strictly based on content.
+6. Tone: Neutral, authoritative (BBC/Reuters style).
+7. Avoid clickbait, hype, promotional wording, and unsupported claims.
 
 Do NOT invent information. Optimized for Search Engines.""",
         "input_variables": [],
@@ -257,12 +235,14 @@ Do NOT invent information. Optimized for Search Engines.""",
 {summary}
 
 ---CONTENT SNIPPET---
-{content_snippet}""",
+{content_snippet}
+
+Generate a unique article title suitable for our publication, plus SEO metadata. The article title must preserve the factual meaning of the source title while using original wording.""",
         "input_variables": ["title", "summary", "content_snippet"],
         "description": "User prompt for SEO metadata."
     },
 
-    # --- 8. COUNTRY EXTRACTION ---
+    # --- 7. COUNTRY EXTRACTION ---
     {
         "name": "country_extraction_system",
         "content": """You are an expert in geographical entity extraction.
@@ -294,7 +274,64 @@ RULES:
         "description": "User prompt for country extraction."
     },
 
-    # --- 8. ARABIC TRANSLATION ---
+    # --- 8. CONTENT ENRICHMENT ---
+    {
+        "name": "content_enrichment_system",
+        "content": """You are an impartial real estate market editor.
+Your task is to write a single contextual paragraph for a section titled "Why this matters".
+
+RULES:
+1. Be thoughtful, neutral, and evidence-aware.
+2. Use the article facts first, then the supplied contextual sources when useful.
+3. Do not hype the story, make investment recommendations, or imply certainty beyond the evidence.
+4. Do not invent statistics, forecasts, company claims, or market movements.
+5. Distinguish broad context from confirmed article facts.
+6. Do not include the section heading in the response.""",
+        "input_variables": [],
+        "description": "System instruction for the Why this matters content enrichment section."
+    },
+    {
+        "name": "content_enrichment_user",
+        "content": """Create the "Why this matters" paragraph for this article.
+
+---TITLE---
+{title}
+
+---SUMMARY---
+{summary}
+
+---CATEGORIES---
+{categories}
+
+---COUNTRIES---
+{countries}
+
+---ARTICLE EXCERPT---
+{article_excerpt}
+---END ARTICLE EXCERPT---
+
+---CONTEXTUAL SOURCES---
+{contextual_sources}
+---END CONTEXTUAL SOURCES---
+
+REQUIREMENTS:
+1. Write one paragraph only, 80-120 words.
+2. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
+3. Include a contextual reference from the provided sources when it is relevant.
+4. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
+5. Avoid promotional language and avoid direct financial advice.""",
+        "input_variables": [
+            "title",
+            "summary",
+            "categories",
+            "countries",
+            "article_excerpt",
+            "contextual_sources",
+        ],
+        "description": "User prompt for the Why this matters content enrichment section."
+    },
+
+    # --- 9. ARABIC TRANSLATION ---
     {
         "name": "translation_system",
         "content": """You are a professional news translator fluent in English and Modern Standard Arabic (MSA).
@@ -322,6 +359,41 @@ RULES:
 {content}""",
         "input_variables": ["title", "summary", "content"],
         "description": "User prompt for translating the full article."
+    },
+
+    # --- 10. SOCIAL MEDIA CAPTION ---
+    {
+        "name": "social_caption_system",
+        "content": """You are a world-class Direct Response Copywriter and Social Media Strategist.
+Your goal is to drive high click-through rates (CTR) and App Downloads.
+
+TONE:
+- Urgent, engaging, and professional but accessible.
+- Use psychological triggers (FOMO, curiosity, value).
+- Avoid passive voice. Be punchy.
+
+OBJECTIVE:
+- Summarize the news hook instantly.
+- Make the reader feel they must read the full story or use the app to stay ahead.
+- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").""",
+        "input_variables": [],
+        "description": "System instruction for social media copywriter."
+    },
+    {
+        "name": "social_caption_user",
+        "content": """Create a high-conversion social media post for this article:
+
+TITLE: {title}
+SUMMARY: {summary}
+READING TIME: {reading_time} mins
+
+REQUIREMENTS:
+1. HEADLINE: A scroll-stopping hook (max 10 words).
+2. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
+3. CTA: Direct users to download the Propt App for the full analysis.
+4. HASHTAGS: Mix of broad and niche real estate/business tags.""",
+        "input_variables": ["title", "summary", "reading_time"],
+        "description": "User prompt for generating social media captions."
     },
 ]
 
@@ -359,155 +431,219 @@ INITIAL_CATEGORIES = [
     {"name": "Affordable & Mid-Market", "external_id": "3b8ff43b-9c24-4af8-ae73-885fa66c9edb"}
 ]
 
+INITIAL_RECIPIENTS = [
+    {"email": "khizer.saleem@11prop.com", "name": "Khizer Saleem Malik"},
+    {"email": "hammad@11prop.com", "name": "Syed Hammad Shah"},
+    {"email": "anfal@11prop.com", "name": "Anfal Gul"},
+    {"email": "hassaan@11prop.com", "name": "Hassaan Sajid"},
+    {"email": "maliha.khan@11prop.com", "name": "Maliha Khan"},
+]
 
-def init_db():
-    print(f"--- Connecting to MongoDB at: {settings.DATABASE_URL} ---")
 
-    try:
-        client = MongoClient(settings.DATABASE_URL)
-        db = client[settings.MONGO_DB_NAME]
+def _application_collection_names():
+    return list(dict.fromkeys([
+        "prompts",
+        "email_recipients",
+        "categories",
+        "sources",
+        "processed_articles",
+        "archived_articles",
+        "deleted_articles",
+        settings.MONGO_DB_COLLECTION,
+        settings.MONGO_DB_BIO_COLLECTION,
+        "checkpoints",
+    ]))
 
-        # ==========================================
-        # 1. PROMPTS COLLECTION
-        # ==========================================
-        print("--- Setting up Prompts ---")
-        prompts_col = db["prompts"]
-        prompts_col.create_index([("name", ASCENDING)], unique=False)
 
-        for data in INITIAL_DATA:
-            existing = prompts_col.find_one({
-                "name": data["name"],
-                "status": PromptStatus.ACTIVE
-            })
-            if not existing:
-                new_prompt = {
-                    "_id": str(uuid.uuid4()),
+def reset_application_collections(db):
+    print("--- Fresh mode: dropping NewsAgent application collections ---")
+    for collection_name in _application_collection_names():
+        db.drop_collection(collection_name)
+        print(f"  [-] Dropped collection: {collection_name}")
+
+
+def seed_prompts(db):
+    print("--- Setting up Prompts ---")
+    prompts_col = db["prompts"]
+    prompts_col.create_index([("name", ASCENDING)], unique=False)
+
+    active_status = PromptStatus.ACTIVE.value
+    for data in INITIAL_DATA:
+        now = datetime.now(timezone.utc)
+        result = prompts_col.update_one(
+            {"name": data["name"], "status": active_status},
+            {
+                "$set": {
                     "name": data["name"],
                     "content": data["content"],
                     "description": data["description"],
                     "input_variables": data["input_variables"],
-                    "version": "v1.0",
-                    "status": PromptStatus.ACTIVE,
-                    "created_at": datetime.now(timezone.utc)
-                }
-                prompts_col.insert_one(new_prompt)
-                print(f"  [+] Added Active Prompt: {data['name']}")
-            else:
-                print(f"  [~] Skipped (Already Active): {data['name']}")
-
-        # ==========================================
-        # 2. EMAIL RECIPIENTS COLLECTION
-        # ==========================================
-        print("--- Setting up Email Recipients ---")
-        recipients_col = db["email_recipients"]
-        recipients_col.create_index([("email", ASCENDING)], unique=True)
-
-        # List of recipients to seed
-        recipients_to_add = [
-            {"email": "khizer.saleem@11prop.com", "name": "Khizer Saleem Malik"},
-            {"email": "hammad@11prop.com", "name": "Syed Hammad Shah"},
-            {"email": "anfal@11prop.com", "name": "Anfal Gul"},
-            {"email": "hassaan@11prop.com", "name": "Hassaan Sajid"},
-            {"email": "maliha.khan@11prop.com", "name": "Maliha Khan"}
-        ]
-
-        for recipient_data in recipients_to_add:
-            email = recipient_data["email"]
-            name = recipient_data["name"]
-
-            if not recipients_col.find_one({"email": email}):
-                recipients_col.insert_one({
+                    "version": PROMPT_VERSION,
+                    "status": active_status,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
                     "_id": str(uuid.uuid4()),
-                    "email": email,
-                    "name": name,
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+
+        if result.upserted_id:
+            print(f"  [+] Added Active Prompt: {data['name']}")
+        else:
+            print(f"  [>] Upserted Active Prompt: {data['name']}")
+
+
+def seed_email_recipients(db):
+    print("--- Setting up Email Recipients ---")
+    recipients_col = db["email_recipients"]
+    recipients_col.create_index([("email", ASCENDING)], unique=True)
+
+    for recipient_data in INITIAL_RECIPIENTS:
+        now = datetime.now(timezone.utc)
+        result = recipients_col.update_one(
+            {"email": recipient_data["email"]},
+            {
+                "$set": {"name": recipient_data["name"]},
+                "$setOnInsert": {
+                    "_id": str(uuid.uuid4()),
+                    "email": recipient_data["email"],
                     "is_active": True,
-                    "created_at": datetime.now(timezone.utc)
-                })
-                print(f"  [+] Added Recipient: {email} ({name})")
-            else:
-                print(f"  [~] Skipped Recipient (Already Exists): {email}")
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
 
-        # ==========================================
-        # 3. CATEGORIES COLLECTION (UPDATED)
-        # ==========================================
-        print("--- Setting up Categories ---")
-        categories_col = db["categories"]
-        categories_col.create_index([("name", ASCENDING)], unique=True)
-        # Add index for external_id for faster lookups
-        categories_col.create_index([("external_id", ASCENDING)])
+        if result.upserted_id:
+            print(f"  [+] Added Recipient: {recipient_data['email']}")
+        else:
+            print(f"  [>] Upserted Recipient: {recipient_data['email']}")
 
-        for cat_data in INITIAL_CATEGORIES:
-            existing = categories_col.find_one({"name": cat_data["name"]})
-            
-            if not existing:
-                # Insert new category with ID
-                new_cat = {
-                    "_id": str(uuid.uuid4()),
+
+def seed_categories(db):
+    print("--- Setting up Categories ---")
+    categories_col = db["categories"]
+    categories_col.create_index([("name", ASCENDING)], unique=True)
+    categories_col.create_index([("external_id", ASCENDING)])
+
+    for cat_data in INITIAL_CATEGORIES:
+        now = datetime.now(timezone.utc)
+        result = categories_col.update_one(
+            {"name": cat_data["name"]},
+            {
+                "$set": {
                     "name": cat_data["name"],
-                    "external_id": cat_data.get("external_id"), # Store Postgres ID
-                    "created_at": datetime.now(timezone.utc)
-                }
-                categories_col.insert_one(new_cat)
-                print(f"  [+] Added Category: {cat_data['name']}")
-            
-            elif existing.get("external_id") != cat_data.get("external_id"):
-                # Update existing category if the external_id is missing or different
-                categories_col.update_one(
-                    {"_id": existing["_id"]},
-                    {"$set": {"external_id": cat_data.get("external_id")}}
-                )
-                print(f"  [>] Updated ID for Category: {cat_data['name']}")
-            
-            else:
-                print(f"  [~] Skipped Category (Unchanged): {cat_data['name']}")
+                    "external_id": cat_data.get("external_id"),
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "_id": str(uuid.uuid4()),
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
 
-        # ==========================================
-        # 4. SCHEDULER: SOURCES COLLECTION
-        # ==========================================
-        print("--- Setting up Scheduler Sources ---")
-        sources_col = db["sources"]
-        # Index on 'is_active' because the scheduler queries specifically for active sources every loop
-        sources_col.create_index([("is_active", ASCENDING)])
-        # Index on 'listing_url' for uniqueness checks when adding sources
-        sources_col.create_index([("listing_url", ASCENDING)], unique=True)
-        print("  [+] Sources collection ready (empty - add sources via API)")
+        if result.upserted_id:
+            print(f"  [+] Added Category: {cat_data['name']}")
+        else:
+            print(f"  [>] Upserted Category: {cat_data['name']}")
 
-        # ==========================================
-        # 5. SCHEDULER: PROCESSED ARTICLES
-        # ==========================================
-        print("--- Setting up Processed Articles ---")
-        articles_col = db["processed_articles"]
-        articles_col.create_index([("url", ASCENDING)], unique=True)
-        articles_col.create_index([("discovered_at", -1)])
-        articles_col.create_index([("status", ASCENDING)])
-        
-        # ==========================================
-        # 6. ARCHIVE & TRASH COLLECTIONS (NEW)
-        # ==========================================
-        print("--- Setting up Archive & Trash ---")
-        
-        # A. Archived Articles
-        archive_col = db["archived_articles"]
-        # Ensure URLs are unique in archive too
-        archive_col.create_index([("url", ASCENDING)], unique=True)
-        # Index for sorting by when it was archived
-        archive_col.create_index([("archived_at", -1)])
-        # Useful if you want to search archives by source
-        archive_col.create_index([("source_id", ASCENDING)])
 
-        # B. Deleted Articles (Soft Delete)
-        deleted_col = db["deleted_articles"]
-        # Ensure URLs are unique in trash (prevents double-deleting issues)
-        deleted_col.create_index([("url", ASCENDING)], unique=True)
-        # Index for expiration policies (e.g., delete items older than 30 days)
-        deleted_col.create_index([("deleted_at", -1)])
+def ensure_operational_indexes(db):
+    print("--- Setting up Scheduler Sources ---")
+    sources_col = db["sources"]
+    sources_col.create_index([("is_active", ASCENDING)])
+    sources_col.create_index([("listing_url", ASCENDING)], unique=True)
+    print("  [+] Sources collection ready")
+
+    print("--- Setting up Processed Articles ---")
+    articles_col = db["processed_articles"]
+    articles_col.create_index([("url", ASCENDING)], unique=True)
+    articles_col.create_index([("discovered_at", -1)])
+    articles_col.create_index([("status", ASCENDING)])
+    print("  [+] Processed articles collection ready")
+
+    print("--- Setting up Archive & Trash ---")
+    archive_col = db["archived_articles"]
+    archive_col.create_index([("url", ASCENDING)], unique=True)
+    archive_col.create_index([("archived_at", -1)])
+    archive_col.create_index([("source_id", ASCENDING)])
+
+    deleted_col = db["deleted_articles"]
+    deleted_col.create_index([("url", ASCENDING)], unique=True)
+    deleted_col.create_index([("deleted_at", -1)])
+    print("  [+] Archive and trash collections ready")
+
+    print("--- Setting up Vector Support Collections ---")
+    vector_col = db[settings.MONGO_DB_COLLECTION]
+    vector_col.create_index([("source_id", ASCENDING)])
+    vector_col.create_index([("created_at", -1)])
+
+    bio_col = db[settings.MONGO_DB_BIO_COLLECTION]
+    bio_col.create_index([("type", ASCENDING)], unique=True)
+    print("  [+] Vector support collections ready")
+
+
+def init_db(mode: str = "upsert", yes: bool = False):
+    mode = mode.lower()
+    if mode == "fresh" and not yes:
+        raise SystemExit(
+            "Fresh mode drops NewsAgent application collections, including "
+            "article/archive/trash/vector data. Re-run with --yes to confirm."
+        )
+
+    print(f"--- Connecting to MongoDB at: {settings.DATABASE_URL} ---")
+    print(f"--- Database: {settings.MONGO_DB_NAME} | Mode: {mode} ---")
+
+    client = None
+    try:
+        client = MongoClient(settings.DATABASE_URL)
+        client.admin.command("ping")
+        db = client[settings.MONGO_DB_NAME]
+
+        if mode == "fresh":
+            reset_application_collections(db)
+
+        seed_prompts(db)
+        seed_email_recipients(db)
+        seed_categories(db)
+        ensure_operational_indexes(db)
 
         print("--- Initialization Complete ---")
-        client.close()
 
     except Exception as e:
         print(f"[FATAL] Database initialization failed: {e}")
+        raise
+    finally:
+        if client:
+            client.close()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Initialize or refresh NewsAgent MongoDB collections."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["upsert", "fresh"],
+        default="upsert",
+        help=(
+            "upsert safely updates seed prompts/categories/indexes in an existing DB; "
+            "fresh drops NewsAgent application collections first."
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required with --mode fresh to confirm destructive collection drops.",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    init_db()
+    args = parse_args()
+    init_db(mode=args.mode, yes=args.yes)

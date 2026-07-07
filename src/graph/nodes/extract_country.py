@@ -5,7 +5,7 @@ from src.models.MainWorkflowState import MainWorkflowState
 from src.models.CountryExtractionModel import CountryExtractionModel
 from src.configs.settings import settings
 
-def extract_country(state: MainWorkflowState) -> MainWorkflowState:
+async def extract_country(state: MainWorkflowState) -> MainWorkflowState:
     """
     Extracts the country or countries relevant to the article.
     """
@@ -45,7 +45,7 @@ def extract_country(state: MainWorkflowState) -> MainWorkflowState:
         pprint("[NODE: EXTRACT COUNTRY] Invoking LLM...")
 
         # 4. Call the LLM
-        response: CountryExtractionModel = structured_llm.invoke(messages)
+        response: CountryExtractionModel = await structured_llm.ainvoke(messages)
         
         extracted_countries = response.countries
         pprint(f"[NODE: EXTRACT COUNTRY] Extracted countries: {extracted_countries}")

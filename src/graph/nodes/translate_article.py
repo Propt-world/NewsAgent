@@ -5,7 +5,7 @@ from src.models.MainWorkflowState import MainWorkflowState
 from src.models.TranslationModel import TranslationModel
 from src.configs.settings import settings
 
-def translate_article(state: MainWorkflowState) -> MainWorkflowState:
+async def translate_article(state: MainWorkflowState) -> MainWorkflowState:
     """
     Translates the title, summary, and content of the article into Arabic.
     """
@@ -42,7 +42,7 @@ def translate_article(state: MainWorkflowState) -> MainWorkflowState:
         # 4. Invoke LLM
         # Note: If content is very long, this might take a moment.
         pprint("[NODE: TRANSLATE] Invoking LLM for translation...")
-        translation_result: TranslationModel = model.invoke(messages)
+        translation_result: TranslationModel = await model.ainvoke(messages)
 
         pprint(f"[NODE: TRANSLATE] Translation complete. Title: {translation_result.title_ar}")
 

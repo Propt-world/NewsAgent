@@ -1,102 +1,151 @@
+import inspect
+import logging
+import os
 import traceback
-import certifi
 from pprint import pprint
-from pymongo import MongoClient
-from src.db.enums import PromptStatus
-from src.models.MainWorkflowState import MainWorkflowState
-from src.models.AgentPromptsModel import AgentPromptsModel
-from src.configs.settings import settings
 
-def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
+import certifi
+from pymongo import AsyncMongoClient
+
+from src.configs.settings import settings
+from src.db.enums import PromptStatus
+from src.models.AgentPromptsModel import AgentPromptsModel
+from src.models.MainWorkflowState import MainWorkflowState
+
+
+logger = logging.getLogger(__name__)
+_async_config_client = None
+
+REQUIRED_PROMPTS = [
+    "summary_system",
+    "summary_initial_user",
+    "summary_retry_user",
+    "validation_system",
+    "validation_user",
+    "relevance_system",
+    "relevance_user",
+    "search_system",
+    "search_user",
+    "categorization_system",
+    "categorization_user",
+    "seo_system",
+    "seo_user",
+    "translation_system",
+    "translation_user",
+    "country_extraction_system",
+    "country_extraction_user",
+    "content_enrichment_system",
+    "content_enrichment_user",
+    "social_caption_system",
+    "social_caption_user",
+]
+
+
+def _mongo_client_options() -> dict:
+    options = {
+        "connectTimeoutMS": int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "5000")),
+        "socketTimeoutMS": int(os.getenv("MONGO_SOCKET_TIMEOUT_MS", "5000")),
+        "serverSelectionTimeoutMS": int(
+            os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000")
+        ),
+        "retryWrites": True,
+        "retryReads": True,
+        "maxPoolSize": int(os.getenv("MONGO_MAX_POOL_SIZE", "100")),
+        "minPoolSize": int(os.getenv("MONGO_MIN_POOL_SIZE", "0")),
+        "maxIdleTimeMS": int(os.getenv("MONGO_MAX_IDLE_TIME_MS", "50000")),
+        "waitQueueTimeoutMS": int(os.getenv("MONGO_WAIT_QUEUE_TIMEOUT_MS", "2000")),
+    }
+
+    if "mongodb.net" in settings.DATABASE_URL or settings.DATABASE_URL.startswith(
+        "mongodb+srv://"
+    ):
+        options["tls"] = True
+        options["tlsCAFile"] = certifi.where()
+
+    return options
+
+
+def get_async_config_database():
+    global _async_config_client
+
+    if _async_config_client is None:
+        logger.info("Initializing async graph configuration MongoDB client.")
+        _async_config_client = AsyncMongoClient(
+            settings.DATABASE_URL,
+            **_mongo_client_options(),
+        )
+
+    return _async_config_client[settings.MONGO_DB_NAME]
+
+
+async def close_async_config_client() -> None:
+    global _async_config_client
+
+    if _async_config_client is None:
+        return
+
+    result = _async_config_client.close()
+    if inspect.isawaitable(result):
+        await result
+    _async_config_client = None
+
+
+async def load_agent_configuration(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: LOAD AGENT CONFIGURATION
 
     Responsibilities:
     1. Connects to MongoDB.
-    2. Fetches the 'ACTIVE' version of every prompt required by the system.
-    3. Fetches the category mapping (Name -> External ID) for the Postgres sync.
+    2. Fetches the active version of every prompt required by the system.
+    3. Fetches the category mapping (Name -> External ID).
     4. Validates that no required prompts are missing.
-    5. Populates 'state.active_prompts' and 'state.category_mapping'.
+    5. Populates state.active_prompts and state.category_mapping.
     """
     pprint("[NODE: LOAD CONFIG] Starting configuration load...")
 
-    # The list of logical names the system expects.
-    # These must match the fields in src/models/AgentPromptsModel.py
-    REQUIRED_PROMPTS = [
-        "content_extractor",
-        "summary_system",
-        "summary_initial_user",
-        "summary_retry_user",
-        "validation_system",
-        "validation_user",
-        "relevance_system",
-        "relevance_user",
-        "search_system",
-        "search_user",
-        "categorization_system",
-        "categorization_user",
-        "seo_system",
-        "seo_user",
-        "translation_system",
-        "translation_user",
-        "country_extraction_system",
-        "country_extraction_user",
-        "social_caption_system",
-        "social_caption_user"
-        ]
-
     try:
-        # 1. Establish Database Connection
-        client = MongoClient(settings.DATABASE_URL, tlsCAFile=certifi.where())
-        db = client[settings.MONGO_DB_NAME]
-        
-        # --- A. PROMPTS LOADING ---
-        prompts_collection = db["prompts"]
+        db = get_async_config_database()
 
-        # fetch all prompts where name is in REQUIRED_PROMPTS and status is ACTIVE
-        results = prompts_collection.find({
-            "name": {"$in": REQUIRED_PROMPTS},
-            "status": PromptStatus.ACTIVE
-        })
+        prompts_cursor = db["prompts"].find(
+            {
+                "name": {"$in": REQUIRED_PROMPTS},
+                "status": PromptStatus.ACTIVE,
+            }
+        )
 
-        # Convert List of Docs to Dictionary
         raw_prompts_dict = {}
-        for doc in results:
+        async for doc in prompts_cursor:
             raw_prompts_dict[doc["name"]] = doc["content"]
 
-        # --- B. CATEGORIES LOADING (NEW) ---
-        cat_collection = db["categories"]
-        # We only need the 'name' and 'external_id' fields
-        cat_results = cat_collection.find({}, {"name": 1, "external_id": 1})
+        cat_cursor = db["categories"].find({}, {"name": 1, "external_id": 1})
 
-        # Build dictionary: { "Market News": "0598752f-fe7b...", ... }
         cat_map = {}
-        for doc in cat_results:
+        async for doc in cat_cursor:
             if doc.get("name") and doc.get("external_id"):
                 cat_map[doc["name"]] = doc["external_id"]
 
         pprint(f"[NODE: LOAD CONFIG] Loaded {len(cat_map)} category mappings.")
-
-        client.close()
-
-        # 4. Strict Validation (The "Guard Rail")
-        pprint(f"[NODE: LOAD CONFIG] Found {len(raw_prompts_dict)} active prompts. Validating...")
+        pprint(
+            f"[NODE: LOAD CONFIG] Found {len(raw_prompts_dict)} active prompts. Validating..."
+        )
 
         prompts_model = AgentPromptsModel(**raw_prompts_dict)
 
         pprint("[NODE: LOAD CONFIG] Configuration validated successfully.")
 
-        # 5. Update State
-        return state.model_copy(update={
-            "active_prompts": prompts_model,
-            "category_mapping": cat_map  # <--- Storing the map in state
-        })
+        return state.model_copy(
+            update={
+                "active_prompts": prompts_model,
+                "category_mapping": cat_map,
+            }
+        )
 
     except Exception as e:
         pprint(f"[NODE: LOAD CONFIG] Critical Configuration Error: {e}")
         traceback.print_exc()
 
-        # We return the error state so the graph can handle it gracefully (or stop)
-        return state.model_copy(update={
-            "error_message": f"Failed to load agent configuration: {str(e)}"
-        })
+        return state.model_copy(
+            update={
+                "error_message": f"Failed to load agent configuration: {str(e)}"
+            }
+        )

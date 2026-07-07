@@ -8,7 +8,7 @@ from langchain_core.prompts import PromptTemplate
 #from src.prompts.ValidationPrompts import SYSTEM_PROMPT, USER_PROMPT
 
 
-def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
+async def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
     Validates the generated summary against the original text.
     - Uses an LLM with structured output to populate ValidationResultModel.
@@ -54,7 +54,9 @@ def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
             ("user", formatted_prompt)
         ]
         pprint("[NODE: VALIDATE SUMMARY] Invoking critic LLM...")
-        validation_response: ValidationResultModel = structured_llm.invoke(messages)
+        validation_response: ValidationResultModel = await structured_llm.ainvoke(
+            messages
+        )
         pprint(validation_response.model_dump())
 
         # 6. Record this attempt

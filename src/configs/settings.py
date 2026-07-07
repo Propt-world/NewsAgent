@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "News Article Extractor"
     
     # CORS Configuration
-    CORS_ORIGINS: str = "https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:8003,http://localhost:8001,https://backoffice.propt.global"
+    CORS_ORIGINS: str = "https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:3003,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:5173,http://localhost:8003,http://localhost:8001,https://backoffice.propt.global"
 
     @property
     def cors_origins_list(self) -> List[str]:

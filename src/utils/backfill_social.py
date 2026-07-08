@@ -40,6 +40,8 @@ def _format_social_messages(
         title=final_output.get("title", ""),
         summary=final_output.get("summary", ""),
         reading_time=reading_time,
+        platforms=settings.SOCIAL_PLATFORMS,
+        cta_target=settings.SOCIAL_CTA_TARGET,
     )
 
     return [

@@ -29,7 +29,7 @@ class ArticleModel(BaseModel):
     # categorization
     category: List[str] = Field(
         default_factory=list,
-        description="A list of up to 3 main categories."
+        description="A list of 3 to 4 main categories."
     )
 
     countries: List[str] = Field(

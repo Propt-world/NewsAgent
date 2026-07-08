@@ -14,7 +14,11 @@ class WhyThisMattersModel(BaseModel):
     heading: str = "Why this matters"
     content: str = Field(
         ...,
-        description="A neutral contextual paragraph explaining why the article matters."
+        description="A neutral contextual sentence explaining why the article matters."
+    )
+    content_ar: Optional[str] = Field(
+        None,
+        description="Arabic translation of the Why this matters content."
     )
     references: List[ContextualReferenceModel] = Field(default_factory=list)
 
@@ -22,5 +26,5 @@ class WhyThisMattersModel(BaseModel):
 class WhyThisMattersLLMOutput(BaseModel):
     content: str = Field(
         ...,
-        description="A single neutral paragraph for the 'Why this matters' section."
+        description="A single neutral sentence for the 'Why this matters' section."
     )

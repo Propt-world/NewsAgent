@@ -34,7 +34,9 @@ async def generate_social_media(state: MainWorkflowState) -> MainWorkflowState:
         formatted_prompt = prompt.format(
             title=state.news_article.title,
             summary=state.news_article.summary,
-            reading_time=reading_time
+            reading_time=reading_time,
+            platforms=settings.SOCIAL_PLATFORMS,
+            cta_target=settings.SOCIAL_CTA_TARGET
         )
 
         messages = [
@@ -46,7 +48,11 @@ async def generate_social_media(state: MainWorkflowState) -> MainWorkflowState:
         pprint("[NODE: SOCIAL MEDIA] Invoking Copywriter LLM...")
         caption_result: SocialCaptionModel = await model.ainvoke(messages)
 
-        pprint(f"[NODE: SOCIAL MEDIA] Generated Hook: {caption_result.headline}")
+        variant_count = len(caption_result.platform_captions)
+        pprint(
+            f"[NODE: SOCIAL MEDIA] Generated Hook: {caption_result.headline} "
+            f"({variant_count} platform variants)"
+        )
 
         # 5. Update State
         updated_article = state.news_article.model_copy(update={

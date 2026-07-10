@@ -89,6 +89,12 @@ This brings up the entire stack, including the database and browser services.
     docker-compose run --rm api python src/scripts/init_db.py --mode upsert
     ```
 
+2.  **Initialize Database**:
+    Run the initializer as a one-shot command. The default `upsert` mode is safe for an existing database: it adds or updates required prompts, categories, recipients, and indexes without deleting articles.
+    ```bash
+    docker-compose run --rm api python src/scripts/init_db.py --mode upsert
+    ```
+
     For a fresh development database, use the destructive `fresh` mode. This drops NewsAgent application collections, including articles, archives, trash, and vector data, then recreates the seed data.
     ```bash
     docker-compose run --rm api python src/scripts/init_db.py --mode fresh --yes

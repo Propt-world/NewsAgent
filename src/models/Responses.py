@@ -57,6 +57,20 @@ class SchedulerDatabaseHealthResponse(BaseModel):
     database: str = Field(..., example="connected")
     timestamp: datetime
 
+class SchedulerStandardHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
+    scheduler: str = Field(..., example="running")
+    database: str = Field(..., example="last_known_connected")
+    database_checked_at: Optional[datetime] = None
+    timestamp: datetime
+
+class SchedulerDatabaseHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
+    database: str = Field(..., example="connected")
+    timestamp: datetime
+
 class SchedulerHealthResponse(BaseModel):
     status: str = Field(..., example="healthy")
     service: str = Field(default="scheduler", example="scheduler")

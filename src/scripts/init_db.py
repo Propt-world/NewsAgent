@@ -333,6 +333,63 @@ REQUIREMENTS:
 
     # --- 9. ARABIC TRANSLATION ---
     {
+        "name": "content_enrichment_system",
+        "content": """You are an impartial real estate market editor.
+Your task is to write a single contextual paragraph for a section titled "Why this matters".
+
+RULES:
+1. Be thoughtful, neutral, and evidence-aware.
+2. Use the article facts first, then the supplied contextual sources when useful.
+3. Do not hype the story, make investment recommendations, or imply certainty beyond the evidence.
+4. Do not invent statistics, forecasts, company claims, or market movements.
+5. Distinguish broad context from confirmed article facts.
+6. Do not include the section heading in the response.""",
+        "input_variables": [],
+        "description": "System instruction for the Why this matters content enrichment section."
+    },
+    {
+        "name": "content_enrichment_user",
+        "content": """Create the "Why this matters" paragraph for this article.
+
+---TITLE---
+{title}
+
+---SUMMARY---
+{summary}
+
+---CATEGORIES---
+{categories}
+
+---COUNTRIES---
+{countries}
+
+---ARTICLE EXCERPT---
+{article_excerpt}
+---END ARTICLE EXCERPT---
+
+---CONTEXTUAL SOURCES---
+{contextual_sources}
+---END CONTEXTUAL SOURCES---
+
+REQUIREMENTS:
+1. Write one paragraph only, 80-120 words.
+2. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
+3. Include a contextual reference from the provided sources when it is relevant.
+4. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
+5. Avoid promotional language and avoid direct financial advice.""",
+        "input_variables": [
+            "title",
+            "summary",
+            "categories",
+            "countries",
+            "article_excerpt",
+            "contextual_sources",
+        ],
+        "description": "User prompt for the Why this matters content enrichment section."
+    },
+
+    # --- 9. ARABIC TRANSLATION ---
+    {
         "name": "translation_system",
         "content": """You are a professional news translator fluent in English and Modern Standard Arabic (MSA).
 Your task is to translate real estate news articles from English to Arabic.
@@ -360,6 +417,42 @@ RULES:
         "input_variables": ["title", "summary", "content"],
         "description": "User prompt for translating the full article."
     },
+
+    # --- 10. SOCIAL MEDIA CAPTION ---
+    {
+        "name": "social_caption_system",
+        "content": """You are a world-class Direct Response Copywriter and Social Media Strategist.
+Your goal is to drive high click-through rates (CTR) and App Downloads.
+
+TONE:
+- Urgent, engaging, and professional but accessible.
+- Use psychological triggers (FOMO, curiosity, value).
+- Avoid passive voice. Be punchy.
+
+OBJECTIVE:
+- Summarize the news hook instantly.
+- Make the reader feel they must read the full story or use the app to stay ahead.
+- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").""",
+        "input_variables": [],
+        "description": "System instruction for social media copywriter."
+    },
+    {
+        "name": "social_caption_user",
+        "content": """Create a high-conversion social media post for this article:
+
+TITLE: {title}
+SUMMARY: {summary}
+READING TIME: {reading_time} mins
+
+REQUIREMENTS:
+1. HEADLINE: A scroll-stopping hook (max 10 words).
+2. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
+3. CTA: Direct users to download the Propt App for the full analysis.
+4. HASHTAGS: Mix of broad and niche real estate/business tags.""",
+        "input_variables": ["title", "summary", "reading_time"],
+        "description": "User prompt for generating social media captions."
+    },
+]
 
     # --- 10. SOCIAL MEDIA CAPTION ---
     {

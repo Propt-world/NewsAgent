@@ -619,7 +619,10 @@ def seed_categories(db):
     print("--- Setting up Categories ---")
     categories_col = db["categories"]
     categories_col.create_index([("name", ASCENDING)], unique=True)
-    categories_col.create_index([("external_id", ASCENDING)])
+    # Only create external_id index if it doesn't already exist
+    existing_indexes = {idx["name"] for idx in categories_col.list_indexes()}
+    if "external_id_1" not in existing_indexes:
+        categories_col.create_index([("external_id", ASCENDING)])
 
     for cat_data in INITIAL_CATEGORIES:
         now = datetime.now(timezone.utc)

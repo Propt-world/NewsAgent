@@ -4,7 +4,7 @@ from typing import Set
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from src.utils.browser import get_async_browser_context
-from src.utils.governance import GovernanceGatekeeper
+from src.utils.governance import AsyncGovernanceGatekeeper
 from src.configs.settings import settings
 
 # --- FILTERS ---
@@ -32,14 +32,14 @@ async def fetch_listing_page(url: str) -> str:
     """
 
     # 0. GOVERNANCE CHECK
-    gatekeeper = GovernanceGatekeeper()
+    gatekeeper = AsyncGovernanceGatekeeper()
     
-    if not gatekeeper.can_fetch(url):
+    if not await gatekeeper.can_fetch(url):
         print(f"[LINK DISCOVERY] 🛑 Blocked by robots.txt: {url}")
         return ""
 
-    # Blocking call to wait for slot (DB-configured delay)
-    gatekeeper.wait_for_slot(url)
+    # Wait for a domain slot without blocking the event loop.
+    await gatekeeper.wait_for_slot(url)
 
     playwright = None
     browser = None

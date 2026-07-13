@@ -25,12 +25,15 @@ class JobSubmissionResponse(BaseModel):
 class JobStatusResponse(BaseModel):
     job_id: str
     status: str = Field(..., example="processing", description="Current state: queued, processing, completed, failed")
-    source_url: str
-    created_at: str
+    source_url: Optional[str] = None
+    created_at: Optional[str] = None
     result: Optional[Dict[str, Any]] = Field(None, description="The final processed article data")
     error: Optional[str] = None
 
 # --- QUEUE RELATED ---
+class DLQCountResponse(BaseModel):
+    dlq_count: int
+
 class QueueInfo(BaseModel):
     name: str
     count: int
@@ -40,9 +43,39 @@ class QueueStatusResponse(BaseModel):
     main_queue: QueueInfo
     dead_letter_queue: QueueInfo
 
+class SchedulerStandardHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
+    scheduler: str = Field(..., example="running")
+    database: str = Field(..., example="last_known_connected")
+    database_checked_at: Optional[datetime] = None
+    timestamp: datetime
+
+class SchedulerDatabaseHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
+    database: str = Field(..., example="connected")
+    timestamp: datetime
+
+class SchedulerStandardHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
+    scheduler: str = Field(..., example="running")
+    database: str = Field(..., example="last_known_connected")
+    database_checked_at: Optional[datetime] = None
+    timestamp: datetime
+
+class SchedulerDatabaseHealthResponse(BaseModel):
+    status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
+    database: str = Field(..., example="connected")
+    timestamp: datetime
+
 class SchedulerHealthResponse(BaseModel):
     status: str = Field(..., example="healthy")
+    service: str = Field(default="scheduler", example="scheduler")
     database: str = Field(..., example="connected")
+    redis: str = Field(..., example="connected")
     browserless: str = Field(..., example="connected")
     scheduler: str = Field(..., example="running")
     main_api: str = Field(..., example="reachable")

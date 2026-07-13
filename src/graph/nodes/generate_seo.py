@@ -8,7 +8,7 @@ from src.models.SeoMetadataModel import SeoMetadataModel, SeoLLMOutput
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
 
-def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
+async def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
     """
     Generates SEO Metadata (Title, Description, Slug) and constructs
     a valid NewsArticle JSON-LD schema.
@@ -43,7 +43,7 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
         ]
 
         # 3. Invoke LLM (Returns SeoLLMOutput)
-        llm_result: SeoLLMOutput = model.invoke(messages)
+        llm_result: SeoLLMOutput = await model.ainvoke(messages)
 
         # 4. Construct JSON-LD Programmatically
         # (This block remains exactly the same as your original code)
@@ -58,7 +58,7 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
                 "@type": "WebPage",
                 "@id": state.source_url
             },
-            "headline": llm_result.meta_title,
+            "headline": llm_result.article_title,
             "description": llm_result.meta_description,
             "image": image_url,
             "author": {
@@ -89,12 +89,22 @@ def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
         pprint(f"[NODE: SEO] Generated Slug: {final_seo_model.slug}")
 
         # 6. Update State
+        source_title = state.news_article.source_title or state.news_article.title
         updated_article = state.news_article.model_copy(update={
+            "source_title": source_title,
+            "title": llm_result.article_title,
             "seo": final_seo_model
         })
 
         return state.model_copy(update={
             "news_article": updated_article
+        })
+
+    except Exception as e:
+        pprint(f"[NODE: SEO] Error: {e}")
+        traceback.print_exc()
+        return state.model_copy(update={
+            "error_message": f"SEO generation failed: {e}"
         })
 
     except Exception as e:

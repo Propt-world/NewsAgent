@@ -4,10 +4,8 @@ import traceback
 import uuid
 import boto3
 import re
-import certifi
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import logging
 import sys
@@ -22,22 +20,34 @@ from fastapi import (
     status,
     File,
     UploadFile,
-    Query
+    Query,
+    Response
 )
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
-from bson import ObjectId
 import httpx
+import redis.asyncio as aioredis
 
 from src.configs.settings import settings
+from src.scheduler.db import (
+    close_async_mongo_client,
+    close_legacy_mongo_client,
+    get_async_scheduler_collections,
+    ping_async_database,
+)
 from src.scheduler.models import SourceConfig, ProcessedArticle, PaginatedArticleResponse
 from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
-from src.utils.email_utils import send_error_email
+from src.utils.email_utils import close_async_email_client, send_error_email_async
+from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
-from src.models.Responses import GenericResponse, SchedulerHealthResponse
+from src.models.Responses import (
+    GenericResponse,
+    SchedulerDatabaseHealthResponse,
+    SchedulerHealthResponse,
+    SchedulerStandardHealthResponse,
+)
 from src.utils.image_compressor import compress_image
 from src.utils.mongo_store import get_mongo_store
 from src.utils.chunker import Chunker
@@ -51,16 +61,122 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logging.getLogger("pymongo").setLevel(logging.WARNING)  # ponytail: silences noisy heartbeat/topology DEBUG spam
 logger = logging.getLogger("scheduler")
 
-# DATABASE SETUP
-logger.info(f"🔌 Connecting to MongoDB at: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
-client = MongoClient(settings.DATABASE_URL, tlsCAFile=certifi.where())
-db = client[settings.MONGO_DB_NAME]
-sources_col = db["sources"]
-articles_col = db["processed_articles"]
-archive_col = db["archived_articles"]
-deleted_col = db["deleted_articles"]
+# HEALTH CHECK SETUP
+HEALTH_CHECK_TIMEOUT_SECONDS = float(os.getenv("HEALTH_CHECK_TIMEOUT_SECONDS", "3.0"))
+_dependency_status_cache: Dict[str, Dict[str, Any]] = {
+    "database": {"status": "unknown", "checked_at": None},
+    "redis": {"status": "unknown", "checked_at": None},
+    "main_api": {"status": "unknown", "checked_at": None},
+    "browserless": {"status": "unknown", "checked_at": None},
+}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _remember_dependency_status(name: str, status_value: str) -> str:
+    _dependency_status_cache[name] = {
+        "status": status_value,
+        "checked_at": _utc_now(),
+    }
+    return status_value
+
+
+def _last_known_dependency_status(name: str) -> str:
+    status_value = _dependency_status_cache.get(name, {}).get("status", "unknown")
+    if status_value == "unknown":
+        return "unknown"
+    return f"last_known_{status_value}"
+
+
+def _scheduler_status() -> str:
+    return "running" if scheduler.running else "stopped"
+
+
+async def check_database_dependency() -> str:
+    try:
+        await asyncio.wait_for(
+            ping_async_database(),
+            timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
+        )
+        return _remember_dependency_status("database", "connected")
+    except asyncio.TimeoutError:
+        logger.warning("[HEALTH] MongoDB ping timed out.")
+        return _remember_dependency_status("database", "timeout")
+    except Exception as e:
+        logger.warning(f"[HEALTH] MongoDB ping failed: {e}")
+        return _remember_dependency_status("database", "disconnected")
+
+
+async def check_redis_dependency() -> str:
+    redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        await asyncio.wait_for(
+            redis_client.ping(),
+            timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
+        )
+        return _remember_dependency_status("redis", "connected")
+    except asyncio.TimeoutError:
+        logger.warning("[HEALTH] Redis ping timed out.")
+        return _remember_dependency_status("redis", "timeout")
+    except Exception as e:
+        logger.warning(f"[HEALTH] Redis ping failed: {e}")
+        return _remember_dependency_status("redis", "disconnected")
+    finally:
+        try:
+            await redis_client.aclose()
+        except Exception:
+            pass
+
+
+async def check_main_api_dependency() -> str:
+    try:
+        async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as http:
+            resp = await http.get(
+                f"{settings.MAIN_API_URL}/health",
+                params={"check_external": "false"},
+            )
+
+        if resp.status_code == 200:
+            return _remember_dependency_status("main_api", "reachable")
+        return _remember_dependency_status("main_api", f"degraded_{resp.status_code}")
+    except httpx.TimeoutException:
+        logger.warning("[HEALTH] Main API health check timed out.")
+        return _remember_dependency_status("main_api", "timeout")
+    except Exception as e:
+        logger.warning(f"[HEALTH] Main API health check failed: {e}")
+        return _remember_dependency_status("main_api", "unreachable")
+
+
+async def check_browserless_dependency() -> str:
+    if not settings.BROWSERLESS_URL:
+        return _remember_dependency_status("browserless", "unconfigured")
+
+    try:
+        params = {}
+        if settings.BROWSERLESS_TOKEN:
+            params["token"] = settings.BROWSERLESS_TOKEN
+
+        async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as http:
+            resp = await http.get(
+                f"{settings.BROWSERLESS_URL}/pressure",
+                params=params,
+            )
+
+        if resp.status_code == 200:
+            return _remember_dependency_status("browserless", "connected")
+        return _remember_dependency_status("browserless", f"degraded_{resp.status_code}")
+    except httpx.TimeoutException:
+        logger.warning("[HEALTH] Browserless health check timed out.")
+        return _remember_dependency_status("browserless", "timeout")
+    except Exception as e:
+        logger.warning(f"[HEALTH] Browserless health check failed: {e}")
+        return _remember_dependency_status("browserless", "unreachable")
+
 
 # SCHEDULER SETUP
 scheduler = AsyncIOScheduler()
@@ -78,9 +194,14 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
+async def cursor_to_list(cursor):
+    return [doc async for doc in cursor]
+
+
 async def check_single_source(source: dict):
     # Acquire semaphore
     async with CONCURRENCY_LIMIT:
+        collections = get_async_scheduler_collections()
         source_id = source["_id"]
         name = source["name"]
         url = source["listing_url"]
@@ -95,18 +216,18 @@ async def check_single_source(source: dict):
 
             if not found_urls:
                 logger.info(f"No URLs found for {name}.")
-                sources_col.update_one(
+                await collections.sources.update_one(
                     {"_id": source_id},
                     {"$set": {"last_run_at": datetime.now(timezone.utc)}}
                 )
                 return
 
             # 2. Deduplicate
-            existing_docs = articles_col.find(
+            existing_docs = collections.processed_articles.find(
                 {"url": {"$in": list(found_urls)}},
                 {"url": 1}
             )
-            existing_urls = {doc["url"] for doc in existing_docs}
+            existing_urls = {doc["url"] async for doc in existing_docs}
             new_urls = found_urls - existing_urls
 
             logger.info(f"Found {len(found_urls)} links. {len(new_urls)} are new.")
@@ -122,12 +243,12 @@ async def check_single_source(source: dict):
                         "discovered_at": datetime.now(timezone.utc)
                     }
                     try:
-                        articles_col.insert_one(new_article)
+                        await collections.processed_articles.insert_one(new_article)
                     except Exception:
                         continue
 
                     # PREPARE API REQUEST
-                    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8000")
+                    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
                     api_url = f"{api_base}/submit-job"
 
                     # [FIX] ADD SECURITY HEADERS
@@ -145,13 +266,13 @@ async def check_single_source(source: dict):
                         logger.info(f"🚀 Submitted: {link}")
                     except Exception as e:
                         logger.error(f"❌ Failed to submit {link}: {e}")
-                        articles_col.update_one(
+                        await collections.processed_articles.update_one(
                             {"_id": new_article["_id"]},
                             {"$set": {"status": "submission_failed"}}
                         )
 
             # 4. Update Source Last Run
-            sources_col.update_one(
+            await collections.sources.update_one(
                 {"_id": source_id},
                 {"$set": {"last_run_at": datetime.now(timezone.utc)}}
             )
@@ -159,7 +280,7 @@ async def check_single_source(source: dict):
         except Exception as e:
             error_msg = f"Error processing source {name}: {e}"
             logger.error(error_msg, exc_info=True)
-            send_error_email(
+            await send_error_email_async(
                 job_id=f"scheduler-{source_id}",
                 source_url=url,
                 error_details=error_msg,
@@ -172,11 +293,12 @@ async def run_scheduler_cycle():
     """
     try:
         logger.info("⏰ Cycle starting...")
-        active_sources = sources_col.find({"is_active": True})
+        collections = get_async_scheduler_collections()
+        active_sources = collections.sources.find({"is_active": True})
 
         current_time = datetime.now(timezone.utc)
 
-        for source_doc in active_sources:
+        async for source_doc in active_sources:
             last_run = ensure_utc(source_doc.get("last_run_at"))
             interval_mins = source_doc.get("fetch_interval_minutes", 60)
 
@@ -198,21 +320,24 @@ async def run_scheduler_cycle():
 # FASTAPI APP
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Database Connectivity Check
-    logger.info("📡 Pinging MongoDB Atlas...")
-    try:
-        client.admin.command('ping')
-        logger.info("✅ MongoDB Connection Successful.")
-    except Exception as e:
-        logger.error(f"❌ MongoDB Connection Failed: {e}", exc_info=True)
-        # We don't necessarily exit here as some endpoints might work, 
-        # but the scheduler will likely fail.
+    logger.info("Pinging MongoDB Atlas...")
+    db_status = await check_database_dependency()
+    if db_status == "connected":
+        logger.info("MongoDB connection successful.")
+    else:
+        logger.error(f"MongoDB connection check failed: {db_status}")
+        # Do not block startup. /health stays ALB-safe and /health/db or
+        # /health/full exposes the live dependency state.
 
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()
     logger.info("--- 🗓️ Scheduler Service Started ---")
     yield
     scheduler.shutdown()
+    await close_async_governance_clients()
+    await close_async_email_client()
+    await close_async_mongo_client()
+    close_legacy_mongo_client()
 
 
 app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan, root_path="/newscheduler")
@@ -228,93 +353,87 @@ app.add_middleware(
 
 @app.get(
     "/health",
-    response_model=SchedulerHealthResponse,
-    description="Check the health of the scheduler service and its dependencies.",
+    response_model=SchedulerStandardHealthResponse,
+    description="ALB-safe liveness check. Does not perform live dependency checks.",
     tags=["System"],
 )
-async def health_check(check_external: bool = True):
-    # 1. Database Check
-    db_status = "disconnected"
-    try:
-        # Using the global 'client' to ping
-        client.admin.command('ping')
-        db_status = "connected"
-    except Exception:
-        db_status = "disconnected"
+async def health_check(response: Response):
+    scheduler_state = _scheduler_status()
+    overall = "healthy" if scheduler_state == "running" else "unhealthy"
+    if overall != "healthy":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
-    # 2. Scheduler Check
-    sched_status = "stopped"
-    if scheduler.running:
-        sched_status = "running"
+    return SchedulerStandardHealthResponse(
+        status=overall,
+        scheduler=scheduler_state,
+        database=_last_known_dependency_status("database"),
+        database_checked_at=_dependency_status_cache["database"]["checked_at"],
+        timestamp=_utc_now(),
+    )
 
-    # 3. Main API Check
-    api_status = "skipped"
-    if check_external:
-        api_status = "unreachable"
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as http:
-                # Attempt to hit the Main API health endpoint with recursion breaker
-                resp = await http.get(f"{settings.MAIN_API_URL}/health", params={"check_external": "false"})
-                if resp.status_code == 200:
-                    api_status = "connected"
-                else:
-                    api_status = f"degraded ({resp.status_code})"
-        except Exception:
-            api_status = "unreachable"
 
-    # 4. Browserless Check
-    browser_status = "unconfigured"
-    if settings.BROWSERLESS_URL:
-        # Browserless is a leaf dependency (doesn't check us), so we can always check it,
-        # but for speed in 'shallow' mode we could skip it too. 
-        # However, check_external usually implies "services that depend on us or we depend on in a cycle".
-        # Browserless is a pure dependency. Let's keep verifying it unless strict speed is needed.
-        # Check if browserless is valid
-        try:
-            url = f"{settings.BROWSERLESS_URL}/pressure"
-            params = {}
-            if settings.BROWSERLESS_TOKEN:
-                params["token"] = settings.BROWSERLESS_TOKEN
+@app.get(
+    "/health/db",
+    response_model=SchedulerDatabaseHealthResponse,
+    description="Live database health check with a bounded non-blocking scheduler route.",
+    tags=["System"],
+)
+async def database_health_check(response: Response):
+    db_status = await check_database_dependency()
+    overall = "healthy" if db_status == "connected" else "unhealthy"
+    if overall != "healthy":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
-            async with httpx.AsyncClient(timeout=3.0) as http:
-                resp = await http.get(url, params=params)
-                if resp.status_code == 200:
-                    browser_status = "connected"
-                else:
-                    browser_status = f"degraded ({resp.status_code})"
-        except Exception:
-            browser_status = "unreachable"
+    return SchedulerDatabaseHealthResponse(
+        status=overall,
+        database=db_status,
+        timestamp=_utc_now(),
+    )
 
-    # Overall Status
-    # Any major component failure = unhealthy
-    # We now count browserless as a major component
-    if db_status != "connected" or sched_status != "running" or browser_status == "unreachable":
-        # Note: browserless "unconfigured" is technically healthy-ish if optional, but here we treat it as mandatory per plan.
-        # But if unconfigured is NOT possible due to settings choice, we assume mandatory.
-        # If browser_status is 'degraded', we might still say healthy or degraded.
+
+@app.get(
+    "/health/full",
+    response_model=SchedulerHealthResponse,
+    description="Full operational dependency health check.",
+    tags=["System"],
+)
+async def full_health_check(response: Response):
+    db_status, redis_status, main_api_status, browserless_status = await asyncio.gather(
+        check_database_dependency(),
+        check_redis_dependency(),
+        check_main_api_dependency(),
+        check_browserless_dependency(),
+    )
+    scheduler_state = _scheduler_status()
+
+    critical_statuses = [
+        scheduler_state,
+        db_status,
+        redis_status,
+        main_api_status,
+        browserless_status,
+    ]
+    if any(
+        value in {"stopped", "disconnected", "timeout", "unreachable", "unconfigured"}
+        for value in critical_statuses
+    ):
         overall = "unhealthy"
-    elif api_status == "unreachable":
-        # If Main API is down, Scheduler is degraded but still running
+    elif any(str(value).startswith("degraded") for value in critical_statuses):
         overall = "degraded"
     else:
         overall = "healthy"
-    
-    # If skipping external, we shouldn't mark as degraded just because api_status is 'skipped'
-    if check_external is False and api_status == "skipped":
-        # If everything else is fine
-        if overall == "degraded": 
-            # Was degraded only due to api?
-            # Re-evaluate
-            if db_status == "connected" and sched_status == "running" and browser_status != "unreachable":
-                overall = "healthy"
+
+    if overall != "healthy":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return SchedulerHealthResponse(
         status=overall,
         database=db_status,
-        scheduler=sched_status,
-        main_api=api_status,
-        browserless=browser_status,
-        timestamp=datetime.now(timezone.utc)
+        redis=redis_status,
+        scheduler=scheduler_state,
+        main_api=main_api_status,
+        browserless=browserless_status,
+        timestamp=_utc_now(),
     )
 
 # 1. WEBHOOK ENDPOINT
@@ -348,7 +467,8 @@ async def store_result(payload: Dict[str, Any]):
 
     logger.info(f"[WEBHOOK] 📥 Received result for: {url}")
 
-    result = articles_col.update_one(
+    collections = get_async_scheduler_collections()
+    result = await collections.processed_articles.update_one(
         {"url": url},
         {
             "$set": {
@@ -361,7 +481,7 @@ async def store_result(payload: Dict[str, Any]):
 
     if result.matched_count == 0:
         logger.info("[WEBHOOK] URL not in scheduler DB. Creating new record.")
-        articles_col.insert_one(
+        await collections.processed_articles.insert_one(
             {
                 "_id": str(uuid.uuid4()),
                 "source_id": "manual_submission",
@@ -395,6 +515,7 @@ async def store_result(payload: Dict[str, Any]):
     dependencies=[Depends(verify_api_key)],
 )
 async def add_source(source: SourceConfig):
+    collections = get_async_scheduler_collections()
     source_dict = source.dict(by_alias=True)
     if "created_at" in source_dict and source_dict["created_at"].tzinfo is None:
         source_dict["created_at"] = source_dict["created_at"].replace(
@@ -402,7 +523,7 @@ async def add_source(source: SourceConfig):
         )
 
     try:
-        sources_col.insert_one(source_dict)
+        await collections.sources.insert_one(source_dict)
         return {
             "status": "created",
             "message": "Source added successfully",
@@ -441,7 +562,8 @@ async def add_source(source: SourceConfig):
     dependencies=[Depends(verify_api_key)],
 )
 async def list_sources():
-    return list(sources_col.find())
+    collections = get_async_scheduler_collections()
+    return await cursor_to_list(collections.sources.find())
 
 
 @app.get(
@@ -465,7 +587,8 @@ async def list_sources():
     dependencies=[Depends(verify_api_key)],
 )
 async def get_source(source_id: str):
-    source = sources_col.find_one({"_id": source_id})
+    collections = get_async_scheduler_collections()
+    source = await collections.sources.find_one({"_id": source_id})
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
     return source
@@ -492,10 +615,11 @@ async def get_source(source_id: str):
     dependencies=[Depends(verify_api_key)],
 )
 async def update_source(source_id: str, updates: Dict[str, Any] = Body(...)):
+    collections = get_async_scheduler_collections()
     if "_id" in updates:
         del updates["_id"]
 
-    result = sources_col.update_one({"_id": source_id}, {"$set": updates})
+    result = await collections.sources.update_one({"_id": source_id}, {"$set": updates})
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -524,13 +648,14 @@ async def update_source(source_id: str, updates: Dict[str, Any] = Body(...)):
     dependencies=[Depends(verify_api_key)],
 )
 async def toggle_source_status(source_id: str):
-    source = sources_col.find_one({"_id": source_id})
+    collections = get_async_scheduler_collections()
+    source = await collections.sources.find_one({"_id": source_id})
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
     new_status = not source.get("is_active", False)
 
-    sources_col.update_one({"_id": source_id}, {"$set": {"is_active": new_status}})
+    await collections.sources.update_one({"_id": source_id}, {"$set": {"is_active": new_status}})
 
     return {"status": "success", "message": f"Source status toggled to {'active' if new_status else 'inactive'}", "is_active": new_status}
 
@@ -556,7 +681,8 @@ async def toggle_source_status(source_id: str):
     dependencies=[Depends(verify_api_key)],
 )
 async def delete_source(source_id: str):
-    result = sources_col.delete_one({"_id": source_id})
+    collections = get_async_scheduler_collections()
+    result = await collections.sources.delete_one({"_id": source_id})
 
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -590,7 +716,8 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
     bypassing the time interval check.
     """
     # 1. Find the source
-    source = sources_col.find_one({"_id": source_id})
+    collections = get_async_scheduler_collections()
+    source = await collections.sources.find_one({"_id": source_id})
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
@@ -627,12 +754,13 @@ async def list_articles(
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
     status: Optional[str] = None
 ):
+    collections = get_async_scheduler_collections()
     query = {}
     if status:
         query["status"] = status
 
     # 1. Get Total Count
-    total_count = articles_col.count_documents(query)
+    total_count = await collections.processed_articles.count_documents(query)
 
     # 2. Calculate Skip
     skip = (page - 1) * limit
@@ -641,8 +769,8 @@ async def list_articles(
     total_pages = (total_count + limit - 1) // limit
 
     # 4. Fetch Data
-    cursor = articles_col.find(query).sort("discovered_at", -1).skip(skip).limit(limit)
-    items = list(cursor)
+    cursor = collections.processed_articles.find(query).sort("discovered_at", -1).skip(skip).limit(limit)
+    items = await cursor_to_list(cursor)
 
     return PaginatedArticleResponse(
         total=total_count,
@@ -674,7 +802,8 @@ async def list_articles(
     dependencies=[Depends(verify_api_key)],
 )
 async def get_article(article_id: str):
-    article = articles_col.find_one({"_id": article_id})
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id})
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
     return article
@@ -702,6 +831,7 @@ async def get_article(article_id: str):
 async def update_article_status(
     article_id: str, status_update: Dict[str, str] = Body(...)
 ):
+    collections = get_async_scheduler_collections()
     new_status = status_update.get("status")
     allowed_statuses = ["processed", "approved", "rejected", "duplicated"]
 
@@ -715,7 +845,7 @@ async def update_article_status(
     if new_status == "approved":
         try:
             # 1. Fetch full article
-            article = articles_col.find_one({"_id": article_id})
+            article = await collections.processed_articles.find_one({"_id": article_id})
             if not article:
                 raise HTTPException(status_code=404, detail="Article not found")
 
@@ -771,7 +901,7 @@ async def update_article_status(
             # However, if we fail here, status isn't updated. 
             # I will allow status update to proceed but log error strongly.
 
-    result = articles_col.update_one(
+    result = await collections.processed_articles.update_one(
         {"_id": article_id}, {"$set": {"status": new_status}}
     )
 
@@ -833,7 +963,8 @@ async def update_article_image(
         )
 
     # 3. Fetch Article (Needed for SEO Title)
-    article = articles_col.find_one({"_id": article_id})
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id})
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
@@ -852,7 +983,7 @@ async def update_article_image(
         # Temp file handling for compression
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_input:
             # Write uploaded content to temp file
-            shutil.copyfileobj(file.file, tmp_input)
+            await asyncio.to_thread(shutil.copyfileobj, file.file, tmp_input)
             tmp_input_path = tmp_input.name
         
         compressed_path = None
@@ -865,7 +996,7 @@ async def update_article_image(
             # Attempt Compression
             logger.info(f"Compressing image: {tmp_input_path}")
             # Target 1.5MB as per default
-            result = compress_image(tmp_input_path, target_size_mb=1.5)
+            result = await asyncio.to_thread(compress_image, tmp_input_path, target_size_mb=1.5)
             
             if result['success']:
                 compressed_path = result['output_path']
@@ -887,20 +1018,23 @@ async def update_article_image(
                     s3_key = f"{prefix}/{key_path}"
 
             # 5. Upload to S3
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                region_name=settings.AWS_REGION
-            )
-
-            with open(final_file_path, "rb") as f:
-                s3_client.upload_fileobj(
-                    f, 
-                    settings.S3_BUCKET_NAME, 
-                    s3_key,
-                    ExtraArgs={'ContentType': final_content_type}
+            def upload_to_s3():
+                s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                    region_name=settings.AWS_REGION
                 )
+
+                with open(final_file_path, "rb") as f:
+                    s3_client.upload_fileobj(
+                        f,
+                        settings.S3_BUCKET_NAME,
+                        s3_key,
+                        ExtraArgs={'ContentType': final_content_type}
+                    )
+
+            await asyncio.to_thread(upload_to_s3)
 
             # 6. Construct Public URLs
             new_image_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{s3_key}"
@@ -922,7 +1056,7 @@ async def update_article_image(
                 }
             }
 
-            result = articles_col.update_one(
+            result = await collections.processed_articles.update_one(
                 {"_id": article_id}, 
                 update_op
             )
@@ -981,7 +1115,8 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
     new_slug = re.sub(r'[-\s]+', '-', clean_title).strip('-')
 
     # The title is stored inside the 'final_output' object
-    result = articles_col.update_one(
+    collections = get_async_scheduler_collections()
+    result = await collections.processed_articles.update_one(
         {"_id": article_id},
         {"$set": {
             "final_output.title": new_title.strip(),
@@ -1020,6 +1155,7 @@ async def search_articles_text(
     Standard Regex Search. Looks for the keyword in the URL, Title, Summary, and Full Content.
     """
     try:
+        collections = get_async_scheduler_collections()
         query = {}
         if status_filter:
             query["status"] = status_filter
@@ -1034,7 +1170,7 @@ async def search_articles_text(
         ]
 
         # 1. Get Total Count
-        total_count = articles_col.count_documents(query)
+        total_count = await collections.processed_articles.count_documents(query)
 
         # 2. Calculate Skip
         skip = (page - 1) * limit
@@ -1043,8 +1179,8 @@ async def search_articles_text(
         total_pages = (total_count + limit - 1) // limit if limit > 0 else 0
 
         # 4. Fetch Data
-        cursor = articles_col.find(query).sort("discovered_at", -1).skip(skip).limit(limit)
-        items = list(cursor)
+        cursor = collections.processed_articles.find(query).sort("discovered_at", -1).skip(skip).limit(limit)
+        items = await cursor_to_list(cursor)
 
         return PaginatedArticleResponse(
             total=total_count,
@@ -1138,7 +1274,8 @@ async def archive_article(article_id: str):
     Typically used for successfully processed items.
     """
     # 1. Find the article
-    article = articles_col.find_one({"_id": article_id})
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id})
     if not article:
         raise HTTPException(status_code=404, detail="Article not found in active list")
 
@@ -1146,7 +1283,7 @@ async def archive_article(article_id: str):
     # Add a metadata field for when it was archived
     article["archived_at"] = datetime.now(timezone.utc)
     try:
-        archive_col.insert_one(article)
+        await collections.archived_articles.insert_one(article)
     except Exception as e:
         # If it already exists in archive, strictly speaking we can proceed to delete,
         # but let's warn if it's a real error.
@@ -1154,7 +1291,7 @@ async def archive_article(article_id: str):
             raise HTTPException(status_code=500, detail=f"Failed to archive: {str(e)}")
 
     # 3. Delete from Active
-    articles_col.delete_one({"_id": article_id})
+    await collections.processed_articles.delete_one({"_id": article_id})
 
     return {"status": "archived", "message": "Article archived successfully", "id": article_id}
 
@@ -1185,14 +1322,15 @@ async def soft_delete_article(article_id: str):
     Typically used for queued, failed, or unwanted items.
     """
     # 1. Find the article
-    article = articles_col.find_one({"_id": article_id})
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id})
     if not article:
         raise HTTPException(status_code=404, detail="Article not found in active list")
 
     # 2. Insert into Deleted Table
     article["deleted_at"] = datetime.now(timezone.utc)
     try:
-        deleted_col.insert_one(article)
+        await collections.deleted_articles.insert_one(article)
     except Exception as e:
         if "duplicate key" not in str(e).lower():
             raise HTTPException(
@@ -1200,7 +1338,7 @@ async def soft_delete_article(article_id: str):
             )
 
     # 3. Delete from Active
-    articles_col.delete_one({"_id": article_id})
+    await collections.processed_articles.delete_one({"_id": article_id})
 
     return {"status": "soft_deleted", "message": "Article soft deleted successfully", "id": article_id}
 
@@ -1231,18 +1369,18 @@ async def trigger_backfill_reading_time(background_tasks: BackgroundTasks):
     return {"status": "triggered", "message": "Reading time backfill started in background."}
 
 
-def run_reading_time_backfill():
+async def run_reading_time_backfill():
     import math
     logger.info("[OPS] 🔄 Starting Reading Time Backfill...")
     try:
-        # Re-use global 'articles_col'
-        cursor = articles_col.find({"final_output": {"$ne": None}})
+        collections = get_async_scheduler_collections()
+        cursor = collections.processed_articles.find({"final_output": {"$ne": None}})
         
         updated_count = 0
         skipped_count = 0
         wpm = 200
 
-        for doc in cursor:
+        async for doc in cursor:
             article_id = doc["_id"]
             final_output = doc.get("final_output", {})
             
@@ -1268,7 +1406,7 @@ def run_reading_time_backfill():
                     updates["final_output.reading_time_ar"] = math.ceil(word_count_ar / wpm)
 
             if updates:
-                articles_col.update_one({"_id": article_id}, {"$set": updates})
+                await collections.processed_articles.update_one({"_id": article_id}, {"$set": updates})
                 updated_count += 1
             else:
                 skipped_count += 1

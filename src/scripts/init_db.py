@@ -452,7 +452,6 @@ REQUIREMENTS:
         "input_variables": ["title", "summary", "reading_time"],
         "description": "User prompt for generating social media captions."
     },
-]
 
     # --- 10. SOCIAL MEDIA CAPTION ---
     {

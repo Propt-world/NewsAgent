@@ -176,17 +176,40 @@ async def run_worker():
                             result=article_data,
                         )
 
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.CancelledError:
+                    print(f"[JOB {job_id}] Cancelled (Spot termination / shutdown). Re-queueing job unconditionally...")
                     await update_job_status(r, job_id, "queued")
                     await r.lpush(settings.REDIS_QUEUE_NAME, job_data_raw)
+                    break
+
+                except asyncio.TimeoutError:
+                    attempt = job_data.get("attempt", 0) + 1
+                    error_msg = f"Workflow exceeded {WORKFLOW_TIMEOUT_SECONDS}s timeout (attempt {attempt}/{max_retries})"
+                    print(f"[JOB {job_id}] {error_msg}")
+
+                    if attempt >= max_retries:
+                        print(f"[JOB {job_id}] Max retries reached on timeout. Moving to DLQ.")
+                        await update_job_status(r, job_id, "failed", error=error_msg)
+
+                        job_data["attempt"] = attempt
+                        job_data["error"] = error_msg
+                        await r.lpush(settings.REDIS_DLQ_NAME, json.dumps(job_data))
+
+                        await send_error_email_async(
+                            job_id=job_id,
+                            source_url=source_url,
+                            error_details=error_msg,
+                        )
+                    else:
+                        print(f"[JOB {job_id}] Re-queueing job for retry {attempt}/{max_retries}...")
+                        job_data["attempt"] = attempt
+                        await update_job_status(r, job_id, "queued")
+                        await r.lpush(settings.REDIS_QUEUE_NAME, json.dumps(job_data))
 
                     if shutdown_requested.is_set():
-                        # Real Fargate Spot SIGTERM — exit the loop cleanly
-                        print(f"[JOB {job_id}] Spot termination confirmed. Re-queued and shutting down.")
+                        print(f"[JOB {job_id}] Shutdown requested while handling timeout. Exiting loop.")
                         break
                     else:
-                        # Workflow just took too long — re-queued, keep worker alive
-                        print(f"[JOB {job_id}] Workflow exceeded {WORKFLOW_TIMEOUT_SECONDS}s timeout. Re-queued, continuing...")
                         continue
 
                 except Exception as execution_error:

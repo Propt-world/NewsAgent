@@ -16,9 +16,9 @@ from src.utils.email_utils import close_async_email_client, send_error_email_asy
 from src.utils.governance import close_async_governance_clients
 
 # Spot grace period execution budget (seconds)
-# Fargate Spot gives 120s from SIGTERM to SIGKILL. We limit workflow execution to 100s
-# to leave 20s for DB/Redis status updates, re-queueing, and clean resource teardown.
-WORKFLOW_TIMEOUT_SECONDS = 100.0
+# Fargate Spot gives 120s from SIGTERM to SIGKILL. We limit workflow execution to 110s
+# to leave 10s for DB/Redis status updates, re-queueing, and clean resource teardown.
+WORKFLOW_TIMEOUT_SECONDS = 110.0
 
 
 async def update_job_status(r, job_id, status, result=None, error=None):
@@ -177,10 +177,17 @@ async def run_worker():
                         )
 
                 except (asyncio.TimeoutError, asyncio.CancelledError):
-                    print(f"[JOB {job_id}] Interrupted by Spot termination timeout. Re-queuing job...")
                     await update_job_status(r, job_id, "queued")
                     await r.lpush(settings.REDIS_QUEUE_NAME, job_data_raw)
-                    break
+
+                    if shutdown_requested.is_set():
+                        # Real Fargate Spot SIGTERM — exit the loop cleanly
+                        print(f"[JOB {job_id}] Spot termination confirmed. Re-queued and shutting down.")
+                        break
+                    else:
+                        # Workflow just took too long — re-queued, keep worker alive
+                        print(f"[JOB {job_id}] Workflow exceeded {WORKFLOW_TIMEOUT_SECONDS}s timeout. Re-queued, continuing...")
+                        continue
 
                 except Exception as execution_error:
                     error_msg_str = str(execution_error)
@@ -204,11 +211,15 @@ async def run_worker():
                 if not shutdown_requested.is_set():
                     print("[ERROR] Lost connection to Redis. Retrying in 5s...")
                     await asyncio.sleep(5)
+                else:
+                    break
             except Exception as e:
                 if not shutdown_requested.is_set():
                     print(f"[ERROR] Worker loop error: {e}")
                     traceback.print_exc()
                     await asyncio.sleep(1)
+                else:
+                    break
     finally:
         print("[WORKER] Cleaning up resources before shutdown...")
         await close_async_config_client()

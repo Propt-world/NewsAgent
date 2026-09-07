@@ -1,5 +1,7 @@
 import asyncio
 import json
+import signal
+import sys
 import traceback
 from pprint import pprint
 
@@ -12,6 +14,11 @@ from src.graph.nodes.load_agent_configuration import close_async_config_client
 from src.models.MainWorkflowState import MainWorkflowState
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
+
+# Spot grace period execution budget (seconds)
+# Fargate Spot gives 120s from SIGTERM to SIGKILL. We limit workflow execution to 100s
+# to leave 20s for DB/Redis status updates, re-queueing, and clean resource teardown.
+WORKFLOW_TIMEOUT_SECONDS = 100.0
 
 
 async def update_job_status(r, job_id, status, result=None, error=None):
@@ -35,9 +42,27 @@ async def update_job_status(r, job_id, status, result=None, error=None):
 async def run_worker():
     """
     Continuous loop that listens to Redis for new jobs and processes them using
-    the LangGraph workflow.
+    the LangGraph workflow. Includes resilient SIGTERM/SIGINT signal handling for
+    AWS Fargate Spot termination notices with in-flight task protection and re-queueing.
     """
     r = None
+    shutdown_requested = asyncio.Event()
+
+    def request_shutdown(signum=None, frame=None):
+        print("\n[WORKER] Signal received (SIGTERM/SIGINT). Initiating graceful shutdown...")
+        shutdown_requested.set()
+
+    # Register OS signal handlers (works on POSIX/Linux and handles Windows gracefully)
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, request_shutdown)
+            except NotImplementedError:
+                # Windows event loop fallback
+                signal.signal(sig, request_shutdown)
+    except Exception as sig_err:
+        print(f"[WORKER] Signal handler registration warning: {sig_err}")
 
     try:
         r = redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -63,9 +88,39 @@ async def run_worker():
             except Exception as e:
                 print(f"[WORKER] Could not initialize Opik: {e}")
 
-        while True:
+        while not shutdown_requested.is_set():
             try:
-                result = await r.blpop(settings.REDIS_QUEUE_NAME, timeout=0)
+                # 1. Wait for either a new job or the shutdown signal concurrently
+                blpop_task = asyncio.create_task(r.blpop(settings.REDIS_QUEUE_NAME, timeout=10))
+                shutdown_task = asyncio.create_task(shutdown_requested.wait())
+
+                done, pending = await asyncio.wait(
+                    [blpop_task, shutdown_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+                # If shutdown was signaled while waiting
+                if shutdown_requested.is_set():
+                    # Check if blpop happened to return a job right before/during shutdown
+                    if blpop_task in done:
+                        try:
+                            blpop_res = blpop_task.result()
+                            if blpop_res:
+                                _, job_data_raw = blpop_res
+                                print("[WORKER] Shutdown active. Re-queueing job back to Redis...")
+                                await r.lpush(settings.REDIS_QUEUE_NAME, job_data_raw)
+                        except Exception:
+                            pass
+                    break
+
+                result = blpop_task.result()
                 if not result:
                     continue
 
@@ -88,9 +143,13 @@ async def run_worker():
                     if opik_tracer:
                         run_config["callbacks"] = [opik_tracer]
 
-                    final_state = await app_graph.ainvoke(
-                        initial_state,
-                        config=run_config,
+                    # Execute workflow with timeout to guarantee room for graceful Spot teardown
+                    final_state = await asyncio.wait_for(
+                        app_graph.ainvoke(
+                            initial_state,
+                            config=run_config,
+                        ),
+                        timeout=WORKFLOW_TIMEOUT_SECONDS,
                     )
 
                     error_message = final_state.get("error_message")
@@ -117,6 +176,12 @@ async def run_worker():
                             result=article_data,
                         )
 
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    print(f"[JOB {job_id}] Interrupted by Spot termination timeout. Re-queuing job...")
+                    await update_job_status(r, job_id, "queued")
+                    await r.lpush(settings.REDIS_QUEUE_NAME, job_data_raw)
+                    break
+
                 except Exception as execution_error:
                     error_msg_str = str(execution_error)
                     print(f"[JOB {job_id}] Critical execution error: {error_msg_str}")
@@ -136,19 +201,24 @@ async def run_worker():
                     )
 
             except RedisConnectionError:
-                print("[ERROR] Lost connection to Redis. Retrying in 5s...")
-                await asyncio.sleep(5)
+                if not shutdown_requested.is_set():
+                    print("[ERROR] Lost connection to Redis. Retrying in 5s...")
+                    await asyncio.sleep(5)
             except Exception as e:
-                print(f"[ERROR] Worker loop error: {e}")
-                traceback.print_exc()
-                await asyncio.sleep(1)
+                if not shutdown_requested.is_set():
+                    print(f"[ERROR] Worker loop error: {e}")
+                    traceback.print_exc()
+                    await asyncio.sleep(1)
     finally:
+        print("[WORKER] Cleaning up resources before shutdown...")
         await close_async_config_client()
         await close_async_email_client()
         await close_async_governance_clients()
         if r is not None:
             await r.aclose()
+        print("[WORKER] Worker shutdown complete.")
 
 
 if __name__ == "__main__":
     asyncio.run(run_worker())
+

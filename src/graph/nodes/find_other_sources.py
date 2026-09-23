@@ -94,3 +94,10 @@ async def find_other_sources(state: MainWorkflowState) -> MainWorkflowState:
         return state.model_copy(update={
             "error_message": f"Error in find_other_sources: {e}"
         })
+
+    except Exception as e:
+        pprint(f"[NODE: FIND OTHER SOURCES] Error during web search: {e}")
+        traceback.print_exc()
+        return state.model_copy(update={
+            "error_message": f"Error in find_other_sources: {e}"
+        })

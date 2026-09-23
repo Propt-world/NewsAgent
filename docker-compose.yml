@@ -63,6 +63,7 @@ services:
 
   # --- 6. The API (Producer) ---
   api:
+    image: newsagent-api
     build: .
     container_name: newsagent_api
     # Internal callers use the Docker service name: http://api:8003
@@ -159,9 +160,8 @@ services:
       - .:/app
     environment:
       # Connects to the same DB to store sources/archives
-      - DATABASE_URL=mongodb://mongo:27017
-      - MONGO_DB_NAME=${MONGO_DB_NAME:-newsagent}
-      - CORS_ORIGINS=${CORS_ORIGINS:-https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:3003,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:5173,http://localhost:8003,http://localhost:8001,https://backoffice.propt.global}
+      - DATABASE_URL=${DATABASE_URL}
+      - MONGO_DB_NAME=${MONGO_DB_NAME}
       # Needs to know where the main API is to submit jobs
       - MAIN_API_URL=http://api:8003
       # Source ID for manually submitted articles (can be overridden via .env)

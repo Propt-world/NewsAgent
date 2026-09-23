@@ -106,3 +106,10 @@ async def generate_seo(state: MainWorkflowState) -> MainWorkflowState:
         return state.model_copy(update={
             "error_message": f"SEO generation failed: {e}"
         })
+
+    except Exception as e:
+        pprint(f"[NODE: SEO] Error: {e}")
+        traceback.print_exc()
+        return state.model_copy(update={
+            "error_message": f"SEO generation failed: {e}"
+        })

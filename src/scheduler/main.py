@@ -61,6 +61,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+logging.getLogger("pymongo").setLevel(logging.WARNING)  # ponytail: silences noisy heartbeat/topology DEBUG spam
 logger = logging.getLogger("scheduler")
 
 # HEALTH CHECK SETUP

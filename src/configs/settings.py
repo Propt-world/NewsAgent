@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     SEARCH_LANGUAGE: str = os.getenv("SEARCH_LANGUAGE", "en")
     SEARCH_SAFESEARCH: int = int(os.getenv("SEARCH_SAFESEARCH", "1"))
 
+    # Social caption defaults used when prompts request platform variants.
+    SOCIAL_PLATFORMS: str = os.getenv("SOCIAL_PLATFORMS", "X, Instagram, LinkedIn, Facebook")
+    SOCIAL_CTA_TARGET: str = os.getenv("SOCIAL_CTA_TARGET", "download the Propt App for the full analysis")
+
     # Scraping Configuration
     # Generic User Agent to mimic a real browser/user to avoid bot blocks
     USER_AGENT: str = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")

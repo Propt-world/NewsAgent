@@ -20,3 +20,7 @@ class ValidationResultModel(BaseModel):
         None,
         description="Score (0.0-10.0) for tone alignment with the original article."
     )
+    format_check_passed: Optional[bool] = Field(
+        None,
+        description="Whether the summary satisfies the configured length and text-to-speech formatting rules."
+    )

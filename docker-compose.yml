@@ -13,21 +13,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # --- 2. The Application Database (MongoDB) ---
-  mongo:
-    image: ${MONGO_IMAGE:-mongo:7}
-    container_name: newsagent_mongo
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # --- 4. The Browser Fleet ---
   browserless:
     image: ${BROWSERLESS_IMAGE:-ghcr.io/browserless/chromium:v2.54.1}
@@ -75,7 +60,7 @@ services:
     environment:
       # Network: Service names are hostnames
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=mongodb://mongo:27017
+      - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-newsagent}
       - CORS_ORIGINS=${CORS_ORIGINS:-https://main.d211u21suwdysn.amplifyapp.com,http://localhost:3000,http://localhost:3003,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:5173,http://localhost:8003,http://localhost:8001,https://backoffice.propt.global}
       # Pass through keys from your local machine
@@ -101,8 +86,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      mongo:
-        condition: service_healthy
       searxng:
         condition: service_started
 
@@ -116,7 +99,7 @@ services:
     environment:
       - BROWSER_WS_ENDPOINT=ws://browserless:3000?token=${BROWSERLESS_TOKEN}
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=mongodb://mongo:27017
+      - DATABASE_URL=${DATABASE_URL}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-newsagent}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - SEARCH_PROVIDER=${SEARCH_PROVIDER:-searxng}
@@ -140,9 +123,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      mongo:
-        condition: service_healthy
-
       browserless:
         condition: service_healthy
       searxng:
@@ -183,14 +163,11 @@ services:
       api:
         # Scheduler needs API to be up to submit jobs
         condition: service_started
-      mongo:
-        condition: service_healthy
       browserless:
         condition: service_healthy
 
 volumes:
   redis_data:
-  mongo_data:
   searxng_cache:
 
 

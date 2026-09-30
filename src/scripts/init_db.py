@@ -18,10 +18,20 @@ INITIAL_DATA = [
     # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
-        "content": """You are an expert news summarizer. Your goal is to create a concise,
-accurate summary of a news article in less than 100 words.
-You must not change the tone, add any information (hallucinate),
-or alter the semantic meaning of the original text.""",
+        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 190-210 words.
+
+The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
+
+TTS FORMATTING RULES:
+1. Plain flowing prose only: no bullet points, markdown, headings, emojis, or special characters.
+2. Short, declarative sentences with a natural spoken rhythm.
+3. Write numbers, currencies, and units in speakable form: "1.2 billion dollars" not "$1.2B"; "45 percent" not "45%"; "square feet" not "sq ft".
+4. Expand acronyms and abbreviations on first mention (e.g., "return on investment" not "ROI"), unless the short form is the common spoken usage (e.g., "UAE").
+5. Avoid parentheses, slashes, and mid-sentence asides.
+
+CONTENT RULES:
+1. Lead with the core news event in the first sentence.
+2. You must not change the tone, add any information (hallucinate), or alter the semantic meaning of the original text.""",
         "input_variables": [],
         "description": "System instruction for the summarizer."
     },
@@ -38,6 +48,8 @@ or alter the semantic meaning of the original text.""",
     {
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
+
+Remember the hard constraints: 190-210 words, plain flowing prose written to be heard as well as read, numbers, currencies, and units in speakable form, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -59,8 +71,11 @@ You will score the summary on two metrics:
 1.  **Semantic Score (0.0-10.0):** How semantically similar is the summary to the original?
 2.  **Tone Score (0.0-10.0):** How well does the summary's tone match the original article?
 
+You will also run one formatting check:
+-   **Format Check (pass/fail):** The summary is 190-210 words, written as plain flowing prose with no bullets, markdown, emojis, or special characters, and numbers, currencies, and units are written in speakable form for text-to-speech.
+
 You will then decide if the summary is valid:
--   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND zero hallucinations.
+-   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND the Format Check passes AND zero hallucinations.
 -   Otherwise, set to 'false'.
 
 Finally, provide feedback. If 'is_valid' is 'false', provide actionable feedback.""",
@@ -211,14 +226,27 @@ You MUST choose from the following predefined "Knowledge Base":
         "content": """You are an expert SEO Meta Data Extractor.
 Your task is to read news content and generate optimized metadata.
 
-RULES:
+OUTPUT FIELDS:
 1. Article Title: Create an original display headline, max 75 chars, that accurately reflects the article topic without copying the source title.
-2. SEO Meta Title: Max 60 chars, distinct from the source title and article title when possible, no keyword stuffing.
-3. SEO Meta Description: Max 160 chars, natural keyword placement.
-4. Slug: Max 7-9 relevant words, lowercase, hyphen-separated.
-5. Keywords: 3-5 strictly based on content.
-6. Tone: Neutral, authoritative (BBC/Reuters style).
-7. Avoid clickbait, hype, promotional wording, and unsupported claims.
+2. H1: Exactly one H1 of 40-80 characters. Same topic and intent as the SEO Meta Title but not a word-for-word copy; write a natural variation in news-headline style.
+3. SEO Meta Title: 50-60 characters. Primary keyword near the beginning. Reads like a news headline, not a blog title or marketing copy. Distinct from the source title and the Article Title. Punctuation sparingly: a colon, dash, or pipe only when it improves readability. Question-style titles only when the article genuinely answers the question.
+4. SEO Meta Description: 140-160 characters. Front-load the key information in the first 120 characters. Say what happened and why it matters in one or two tight sentences. Complement the SEO Meta Title; never repeat it word for word. Primary keyword near the front; one secondary keyword only if it fits naturally. Its job is to earn the click.
+5. Slug: Max 7-9 relevant words, lowercase, hyphen-separated.
+6. Primary Keyword: The single main search term for the article. Use it exactly once in each of the Meta Title, Meta Description, and H1, near the front, worded naturally. No stuffing or repetition.
+7. Keywords: 3-5 strictly based on content, including the Primary Keyword.
+
+UNIVERSAL RULES (apply to the Article Title, H1, Meta Title, and Meta Description):
+1. Accuracy first: reflect the article exactly; never exaggerate or mislead.
+2. Unique every time: never reuse or duplicate metadata across articles.
+3. Match the search intent: breaking news, update, analysis, guide, opinion, or interview.
+4. Name the specifics: the exact event, company, person, product, or location central to the story.
+5. Active voice; concrete over vague.
+6. Timing terms ("2026", "Today", "Live Updates") only when they add real context or search value.
+7. Region-fit language: terminology a GCC (UAE / Saudi / Qatar) reader actually searches and uses.
+8. No clickbait: never use "You Won't Believe", "Shocking", "Must See", "Must Read", or similar.
+9. No filler phrases: avoid "Everything You Need to Know", "Read More", "Learn More".
+10. Clean mechanics: no emojis, no excessive special characters, perfect grammar, spelling, and punctuation.
+11. Tone: Neutral, authoritative (BBC/Reuters style).
 
 Do NOT invent information. Optimized for Search Engines.""",
         "input_variables": [],
@@ -237,7 +265,7 @@ Do NOT invent information. Optimized for Search Engines.""",
 ---CONTENT SNIPPET---
 {content_snippet}
 
-Generate a unique article title suitable for our publication, plus SEO metadata. The article title must preserve the factual meaning of the source title while using original wording.""",
+Generate a unique article title suitable for our publication, plus the H1 and SEO metadata. The article title must preserve the factual meaning of the source title while using original wording.""",
         "input_variables": ["title", "summary", "content_snippet"],
         "description": "User prompt for SEO metadata."
     },
@@ -278,7 +306,7 @@ RULES:
     {
         "name": "content_enrichment_system",
         "content": """You are an impartial real estate market editor.
-Your task is to write a single contextual paragraph for a section titled "Why this matters".
+Your task is to write a single-sentence contextual insight of 40-60 words for a section titled "Why this matters".
 
 RULES:
 1. Be thoughtful, neutral, and evidence-aware.
@@ -292,7 +320,7 @@ RULES:
     },
     {
         "name": "content_enrichment_user",
-        "content": """Create the "Why this matters" paragraph for this article.
+        "content": """Create the "Why this matters" sentence for this article.
 
 ---TITLE---
 {title}
@@ -315,76 +343,13 @@ RULES:
 ---END CONTEXTUAL SOURCES---
 
 REQUIREMENTS:
-1. Write one paragraph only, 80-120 words.
-2. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
-3. Include a contextual reference from the provided sources when it is relevant.
-4. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
-5. Avoid promotional language and avoid direct financial advice.""",
-        "input_variables": [
-            "title",
-            "summary",
-            "categories",
-            "countries",
-            "article_excerpt",
-            "contextual_sources",
-        ],
-        "description": "User prompt for the Why this matters content enrichment section."
-    },
-
-    # --- 9. ARABIC TRANSLATION ---
-    {
-        "name": "content_enrichment_system",
-        "content": """You are an impartial real estate market editor.
-Your task is to write a single contextual paragraph for a section titled "Why this matters".
-
-RULES:
-1. Be thoughtful, neutral, and evidence-aware.
-2. Use the article facts first, then the supplied contextual sources when useful.
-3. Do not hype the story, make investment recommendations, or imply certainty beyond the evidence.
-4. Do not invent statistics, forecasts, company claims, or market movements.
-5. Distinguish broad context from confirmed article facts.
-6. Do not include the section heading in the response.""",
-        "input_variables": [],
-        "description": "System instruction for the Why this matters content enrichment section."
-    },
-    {
-        "name": "content_enrichment_user",
-        "content": """Create the "Why this matters" paragraph for this article.
-
----TITLE---
-{title}
-
----SUMMARY---
-{summary}
-
----CATEGORIES---
-{categories}
-
----COUNTRIES---
-{countries}
-
----ARTICLE EXCERPT---
-{article_excerpt}
----END ARTICLE EXCERPT---
-
----CONTEXTUAL SOURCES---
-{contextual_sources}
----END CONTEXTUAL SOURCES---
-
-REQUIREMENTS:
-1. Write one paragraph only, 80-120 words.
-2. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
-3. Include a contextual reference from the provided sources when it is relevant.
-4. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
-5. Avoid promotional language and avoid direct financial advice.""",
-        "input_variables": [
-            "title",
-            "summary",
-            "categories",
-            "countries",
-            "article_excerpt",
-            "contextual_sources",
-        ],
+1. Write exactly one sentence of 40-60 words.
+2. Keep the combined length of the provided summary and this sentence within 250 words in total; if the summary runs long, stay at the lower end of the range.
+3. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
+4. Include a contextual reference from the provided sources when it is relevant.
+5. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
+6. Avoid promotional language and avoid direct financial advice.""",
+        "input_variables": ["title", "summary", "categories", "countries", "article_excerpt", "contextual_sources"],
         "description": "User prompt for the Why this matters content enrichment section."
     },
 
@@ -398,7 +363,9 @@ RULES:
 1. Maintain a professional, journalistic tone (similar to Al Arabiya / Asharq Business).
 2. Translate specific real estate terminology accurately (e.g., "Off-plan", "Freehold", "ROI").
 3. Do not summarize; provide a faithful, full translation of the content.
-4. Ensure the Arabic text flows naturally and is grammatically correct.""",
+4. Ensure the Arabic text flows naturally and is grammatically correct.
+5. Translate every provided section, including the "Why this matters" sentence; keep it a single sentence in Arabic.
+6. The Arabic summary is played aloud through the app's text-to-speech feature: write numbers, currencies, and units as fully speakable Arabic words (e.g., "مليار دولار" not "$1B"), avoid Latin abbreviations and symbols, and keep sentences short with a natural spoken rhythm.""",
         "input_variables": [],
         "description": "System instruction for Arabic translation."
     },
@@ -412,9 +379,12 @@ RULES:
 ---SUMMARY---
 {summary}
 
+---WHY THIS MATTERS---
+{why_this_matters}
+
 ---FULL CONTENT---
 {content}""",
-        "input_variables": ["title", "summary", "content"],
+        "input_variables": ["title", "summary", "why_this_matters", "content"],
         "description": "User prompt for translating the full article."
     },
 
@@ -432,63 +402,37 @@ TONE:
 OBJECTIVE:
 - Summarize the news hook instantly.
 - Make the reader feel they must read the full story or use the app to stay ahead.
-- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").""",
+- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").
+
+PLATFORM VARIANTS:
+Produce one caption per requested platform, adapted to its norms:
+- X (Twitter): max 280 characters including hashtags; punchy hook; 1-2 hashtags.
+- Instagram: 1-2 short paragraphs with line breaks; 5-10 hashtags at the end.
+- LinkedIn: professional angle, 2-3 sentences; no more than 3 hashtags.
+- Facebook: conversational, 1-2 sentences; hashtags optional.""",
         "input_variables": [],
         "description": "System instruction for social media copywriter."
     },
     {
         "name": "social_caption_user",
-        "content": """Create a high-conversion social media post for this article:
+        "content": """Create high-conversion social media posts for this article:
 
 TITLE: {title}
 SUMMARY: {summary}
 READING TIME: {reading_time} mins
+PLATFORMS: {platforms}
+CTA TARGET: {cta_target}
 
 REQUIREMENTS:
-1. HEADLINE: A scroll-stopping hook (max 10 words).
-2. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
-3. CTA: Direct users to download the Propt App for the full analysis.
-4. HASHTAGS: Mix of broad and niche real estate/business tags.""",
-        "input_variables": ["title", "summary", "reading_time"],
+1. Produce one caption per platform listed in PLATFORMS, following that platform's variant rules.
+2. HEADLINE: A scroll-stopping hook (max 10 words).
+3. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
+4. CTA: Direct users to {cta_target}.
+5. HASHTAGS: Mix of broad and niche real estate/business tags, per platform norms.""",
+        "input_variables": ["title", "summary", "reading_time", "platforms", "cta_target"],
         "description": "User prompt for generating social media captions."
-    },
-
-    # --- 10. SOCIAL MEDIA CAPTION ---
-    {
-        "name": "social_caption_system",
-        "content": """You are a world-class Direct Response Copywriter and Social Media Strategist.
-Your goal is to drive high click-through rates (CTR) and App Downloads.
-
-TONE:
-- Urgent, engaging, and professional but accessible.
-- Use psychological triggers (FOMO, curiosity, value).
-- Avoid passive voice. Be punchy.
-
-OBJECTIVE:
-- Summarize the news hook instantly.
-- Make the reader feel they must read the full story or use the app to stay ahead.
-- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").""",
-        "input_variables": [],
-        "description": "System instruction for social media copywriter."
-    },
-    {
-        "name": "social_caption_user",
-        "content": """Create a high-conversion social media post for this article:
-
-TITLE: {title}
-SUMMARY: {summary}
-READING TIME: {reading_time} mins
-
-REQUIREMENTS:
-1. HEADLINE: A scroll-stopping hook (max 10 words).
-2. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
-3. CTA: Direct users to download the Propt App for the full analysis.
-4. HASHTAGS: Mix of broad and niche real estate/business tags.""",
-        "input_variables": ["title", "summary", "reading_time"],
-        "description": "User prompt for generating social media captions."
-    },
+    }
 ]
-
 # --- CATEGORIES (WITH EXTERNAL IDS) ---
 INITIAL_CATEGORIES = [
     {"name": "Architecture & Design Trends", "external_id": "0598752f-fe7b-46c4-adb2-d0a120ac7ba4"},

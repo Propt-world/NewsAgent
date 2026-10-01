@@ -18,7 +18,7 @@ INITIAL_DATA = [
     # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
-        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 190-210 words.
+        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 210-230 words.
 
 The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
 
@@ -49,7 +49,7 @@ CONTENT RULES:
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
 
-Remember the hard constraints: 190-210 words, plain flowing prose written to be heard as well as read, numbers, currencies, and units in speakable form, and no bullets, markdown, emojis, or special characters.
+Remember the hard constraints: 210-230 words, plain flowing prose written to be heard as well as read, numbers, currencies, and units in speakable form, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -72,7 +72,7 @@ You will score the summary on two metrics:
 2.  **Tone Score (0.0-10.0):** How well does the summary's tone match the original article?
 
 You will also run one formatting check:
--   **Format Check (pass/fail):** The summary is 190-210 words, written as plain flowing prose with no bullets, markdown, emojis, or special characters, and numbers, currencies, and units are written in speakable form for text-to-speech.
+-   **Format Check (pass/fail):** The summary is 210-230 words, written as plain flowing prose with no bullets, markdown, emojis, or special characters, and numbers, currencies, and units are written in speakable form for text-to-speech.
 
 You will then decide if the summary is valid:
 -   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND the Format Check passes AND zero hallucinations.
@@ -306,7 +306,7 @@ RULES:
     {
         "name": "content_enrichment_system",
         "content": """You are an impartial real estate market editor.
-Your task is to write a single-sentence contextual insight of 40-60 words for a section titled "Why this matters".
+Your task is to write a single-sentence contextual insight of MAXIMUM 60 words for a section titled "Why this matters".
 
 RULES:
 1. Be thoughtful, neutral, and evidence-aware.
@@ -314,7 +314,8 @@ RULES:
 3. Do not hype the story, make investment recommendations, or imply certainty beyond the evidence.
 4. Do not invent statistics, forecasts, company claims, or market movements.
 5. Distinguish broad context from confirmed article facts.
-6. Do not include the section heading in the response.""",
+6. Do not include the section heading in the response.
+7. CRITICAL: Write exactly ONE sentence. Do not write multiple sentences.""",
         "input_variables": [],
         "description": "System instruction for the Why this matters content enrichment section."
     },
@@ -343,8 +344,8 @@ RULES:
 ---END CONTEXTUAL SOURCES---
 
 REQUIREMENTS:
-1. Write exactly one sentence of 40-60 words.
-2. Keep the combined length of the provided summary and this sentence within 250 words in total; if the summary runs long, stay at the lower end of the range.
+1. Write EXACTLY ONE sentence of MAXIMUM 60 words. Do not write multiple sentences under any circumstances.
+2. Keep the combined length of the provided summary and this sentence within 300 words in total.
 3. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
 4. Include a contextual reference from the provided sources when it is relevant.
 5. If sources are weak or unavailable, stay limited to cautious implications from the article itself.

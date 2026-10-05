@@ -103,6 +103,15 @@ class Settings(BaseSettings):
     WEBHOOK_URL: Optional[str] = os.getenv('WEBHOOK_URL')
     WEBHOOK_SECRET: Optional[str] = os.getenv('WEBHOOK_SECRET')
 
+    # Newsroom Configuration
+    # Off unless explicitly enabled; when off no /newsroom routes are mounted.
+    # Kept as a string so an empty or unexpected value means "off" instead of a startup error.
+    NEWSROOM_ENABLED: str = os.getenv('NEWSROOM_ENABLED', 'false')
+
+    @property
+    def newsroom_enabled(self) -> bool:
+        return self.NEWSROOM_ENABLED.strip().lower() in ("1", "true", "yes", "on")
+
     # Scheduler Configuration
     # Main API URL for submitting jobs (used by scheduler service)
     MAIN_API_URL: str = os.getenv('MAIN_API_URL', 'http://localhost:8003')

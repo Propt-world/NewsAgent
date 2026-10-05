@@ -42,6 +42,7 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
+from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
     SchedulerDatabaseHealthResponse,
@@ -350,6 +351,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Newsroom API: mounted only when NEWSROOM_ENABLED is true (unset = scheduler unchanged)
+if mount_newsroom(app, settings.newsroom_enabled):
+    logger.info("Newsroom API mounted at /newsroom")
 
 @app.get(
     "/health",

@@ -69,6 +69,7 @@ The system is composed of seven Dockerized services:
     * `NEWSAGENT_API_KEY`: A secure key you generate to protect your internal API endpoints.
     * `BROWSERLESS_TOKEN`: Secure token for the browserless service.
     * `WEBHOOK_SECRET`: Shared secret for verifying webhook payloads.
+    * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`). Unset or `false` leaves the scheduler unchanged.
 
 ---
 
@@ -126,6 +127,14 @@ If you need to run the Python code locally while keeping infrastructure (Redis/M
     * **API**: `uvicorn src.main:api --port 8003 --reload`
     * **Scheduler**: `uvicorn src.scheduler.main:app --port 8001 --reload`
     * **Worker**: `python src/worker.py`
+
+### Running Tests
+
+Use Python 3.11 (the version in the Docker image):
+```bash
+pip install -r requirements.txt
+pytest
+```
 
 ---
 

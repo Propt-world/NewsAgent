@@ -42,6 +42,7 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
+from src.newsroom.db import ensure_newsroom_indexes
 from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
@@ -329,6 +330,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"MongoDB connection check failed: {db_status}")
         # Do not block startup. /health stays ALB-safe and /health/db or
         # /health/full exposes the live dependency state.
+
+    if settings.newsroom_enabled:
+        # Runs in the background so startup never waits on it; failures are only logged.
+        app.state.newsroom_index_task = asyncio.create_task(ensure_newsroom_indexes())
 
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()

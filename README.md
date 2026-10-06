@@ -69,7 +69,8 @@ The system is composed of seven Dockerized services:
     * `NEWSAGENT_API_KEY`: A secure key you generate to protect your internal API endpoints.
     * `BROWSERLESS_TOKEN`: Secure token for the browserless service.
     * `WEBHOOK_SECRET`: Shared secret for verifying webhook payloads.
-    * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`). Unset or `false` leaves the scheduler unchanged.
+    * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`) and creates its indexes at startup. Unset or `false` leaves the scheduler unchanged.
+    * `NEWSROOM_DB_NAME`: Database for the Newsroom knowledge graph (default `newsroom`).
 
 ---
 
@@ -134,6 +135,20 @@ Use Python 3.11 (the version in the Docker image):
 ```bash
 pip install -r requirements.txt
 pytest
+```
+
+Tests that need MongoDB are skipped unless `TEST_MONGO_URL` points at a throwaway server (each test creates and drops its own `newsroom_test_*` database). Never point it at a shared or production cluster:
+```bash
+docker run -d -p 27017:27017 mongo:8
+TEST_MONGO_URL=mongodb://localhost:27017 pytest
+```
+
+### Newsroom Starting Lists
+
+`src/newsroom/seed/` holds the starting entity, location and ignore lists. The loader is a dry run by default (checks the lists and compares them with the database, writes nothing); `--apply` inserts only what is missing and never changes existing records:
+```bash
+python src/scripts/newsroom_seed.py
+python src/scripts/newsroom_seed.py --apply
 ```
 
 ---

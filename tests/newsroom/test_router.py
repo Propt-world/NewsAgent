@@ -99,4 +99,6 @@ def test_scheduler_has_no_newsroom_routes_by_default():
 
 
 def test_scheduler_mounts_newsroom_when_enabled():
-    assert _scheduler_newsroom_paths("true") == "['/newsroom/health']"
+    paths = _scheduler_newsroom_paths("true")
+    assert "'/newsroom/health'" in paths
+    assert "'/newsroom/entities'" in paths

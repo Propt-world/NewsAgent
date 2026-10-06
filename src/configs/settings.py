@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     # Off unless explicitly enabled; when off no /newsroom routes are mounted.
     # Kept as a string so an empty or unexpected value means "off" instead of a startup error.
     NEWSROOM_ENABLED: str = os.getenv('NEWSROOM_ENABLED', 'false')
+    # Database holding the Newsroom knowledge graph (same cluster as DATABASE_URL)
+    NEWSROOM_DB_NAME: str = os.getenv('NEWSROOM_DB_NAME', 'newsroom')
 
     @property
     def newsroom_enabled(self) -> bool:

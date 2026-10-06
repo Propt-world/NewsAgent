@@ -22,7 +22,7 @@ Majid Al Futtaim,developer,active,Majid Al Futtaim,,,UAE,majid-al-futtaim,15,0,
 Dubai Properties,developer,active,Dubai Properties,,Dubai Holding,UAE,,14,0,
 Diriyah Company,developer,active,Diriyah Company,,,Saudi Arabia,diriyah-company,13,0,
 Ministry of Housing and Urban Planning,government,active,Ministry of Housing and Urban Planning | Housing and Urban Planning Ministry,,,,,13,0,Country not stated in the data (probably Oman) - please confirm; 'Housing and Urban Planning Ministry' merged in as an alias.
-Wasl Properties,developer,active,Wasl Properties,Wasl,,UAE,wasl-properties,1,10,"'Wasl' alone is ambiguous (group or properties). Wasl Group is staged as the parent. Rev 2026-10-06: 'Wasl Group' removed from the ambiguous list (it is its own entity, exact alias of Wasl Group)."
+Wasl Properties,developer,active,Wasl Properties,Wasl,Wasl Group,UAE,wasl-properties,1,10,"'Wasl' alone is ambiguous (group or properties). Wasl Group is staged as the parent. Rev 2026-10-06: 'Wasl Group' removed from the ambiguous list (it is its own entity, exact alias of Wasl Group). Rev 2026-10-06: parent set to Wasl Group (user)."
 Omniyat,developer,active,Omniyat | OMNIYAT,,,UAE,omniyat,10,0,
 Dubai Land Department,government,active,DLD | Dubai Land Department | Dubai Land Department (DLD),,,UAE,dubai-land-department,10,0,
 Omran Group,government,active,Omran | OMRAN Group | Omran Group,,,Oman,omran-group-oman,10,0,

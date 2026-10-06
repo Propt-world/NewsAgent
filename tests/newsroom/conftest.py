@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from pymongo import AsyncMongoClient, MongoClient
 
 from src.configs.settings import settings
-from src.newsroom.db import ensure_indexes_sync, get_newsroom_db
+from src.newsroom.db import ItemSources, ensure_indexes_sync, get_item_sources, get_newsroom_db
 from src.newsroom.router import mount_newsroom
 
 API_KEY = "test-key"
@@ -56,8 +56,34 @@ def api(mongo_url, db_name, sync_db, monkeypatch):
         finally:
             await client.close()
 
+    async def test_sources():
+        # Articles and signals live in the same throwaway database in tests.
+        client = AsyncMongoClient(mongo_url, serverSelectionTimeoutMS=3000)
+        try:
+            yield ItemSources(articles=client[db_name]["processed_articles"], signals=client[db_name]["signals"])
+        finally:
+            await client.close()
+
     app = FastAPI()
     mount_newsroom(app, True)
     app.dependency_overrides[get_newsroom_db] = test_db
+    app.dependency_overrides[get_item_sources] = test_sources
     with TestClient(app, headers={"X-API-Key": API_KEY, "X-Newsroom-User": "tester@propt.global"}) as client:
         yield client
+
+
+@pytest.fixture
+def run_async(mongo_url, db_name):
+    """Runs an async service function against the throwaway database: run_async(fn, *args)."""
+    import asyncio
+
+    def runner(fn, *args, **kwargs):
+        async def go():
+            client = AsyncMongoClient(mongo_url, serverSelectionTimeoutMS=3000)
+            try:
+                return await fn(client[db_name], *args, **kwargs)
+            finally:
+                await client.close()
+        return asyncio.run(go())
+
+    return runner

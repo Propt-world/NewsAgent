@@ -1,0 +1,359 @@
+"""
+Suggestion-first entity linking.
+
+- suggest(): names found on an article or signal become suggestions. Exact
+  alias matches only; ambiguous aliases, ignored strings, websites/handles and
+  switched-off ("ignored") entities produce nothing. Unknown names become
+  "not in the list" suggestions. Nothing is written to the graph.
+- link(): only an explicit reviewer action writes an entity_mentions record.
+- unlink(): marks the link removed and dismisses its suggestions, so it is
+  never suggested again for that item (a reviewer may still re-link by hand).
+- Unknown names from approved items go to the "new names" queue.
+"""
+import uuid
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
+from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
+
+from src.newsroom import db as ndb
+from src.newsroom import entities as ent
+from src.newsroom.entities import Conflict, Invalid, NotFound
+from src.newsroom.locations import refresh_item_locations
+from src.newsroom.models import EntityUpdate
+from src.newsroom.normalize import looks_like_handle, normalize_alias, raw_key
+
+SOURCE_TYPES = ("article", "signal")
+FIELDS = ("organisation", "location")
+SNIPPET_CHARS = 300
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_date(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+async def item_info(sources: ndb.ItemSources, source_type: str, source_id: str) -> Optional[dict]:
+    """Title, snippet, url, date and status of an article or signal, or None if it does not exist."""
+    if source_type == "article":
+        doc = await sources.articles.find_one({"_id": source_id})
+        if doc is None:
+            return None
+        final = doc.get("final_output") or {}
+        return {
+            "title": final.get("title") or final.get("article_title") or "",
+            "snippet": (final.get("summary") or "")[:SNIPPET_CHARS],
+            "url": doc.get("url"),
+            # 30% of articles have no published date: fall back to when we processed/found them.
+            "timestamp": _parse_date(final.get("published_date")) or doc.get("processed_at") or doc.get("discovered_at"),
+            "item_status": doc.get("status"),
+        }
+    if source_type == "signal":
+        if not ObjectId.is_valid(source_id):
+            return None
+        doc = await sources.signals.find_one({"_id": ObjectId(source_id)})
+        if doc is None:
+            return None
+        text = doc.get("summary_en") or doc.get("summary") or ""
+        evidence = doc.get("evidence") or []
+        return {
+            "title": text[:120],
+            "snippet": text[:SNIPPET_CHARS],
+            "url": evidence[0].get("url") if evidence and isinstance(evidence[0], dict) else None,
+            "timestamp": doc.get("generated_at") or doc.get("updated_at"),
+            "item_status": doc.get("status"),
+        }
+    raise Invalid(f"Unknown source type '{source_type}'")
+
+
+def _check_source_type(source_type: str) -> None:
+    if source_type not in SOURCE_TYPES:
+        raise Invalid(f"source_type must be one of {SOURCE_TYPES}")
+
+
+def _out(doc: dict) -> dict:
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["id"] = doc["_id"]
+    return out
+
+
+# --- Suggestions ---------------------------------------------------------------
+
+async def suggest(db, source_type: str, source_id: str, organisations: List[str], locations: List[str],
+                  actor: str = "system") -> Dict[str, int]:
+    """Creates suggestions for the names found on an item. Safe to call again: existing ones are kept as they are."""
+    _check_source_type(source_type)
+    counts = {"created": 0, "existing": 0, "skipped_ignored": 0, "skipped_handle": 0,
+              "skipped_ambiguous": 0, "skipped_switched_off": 0, "skipped_linked_or_removed": 0}
+
+    names, seen = [], set()
+    for field, values in (("organisation", organisations), ("location", locations)):
+        for name in values or []:
+            name = (name or "").strip()
+            norm = normalize_alias(name)
+            if not norm or (field, norm) in seen:
+                continue
+            seen.add((field, norm))
+            names.append((field, name, norm))
+    if not names:
+        return counts
+
+    ignored = {d["string_key"] for d in await db[ndb.ENTITY_IGNORE].find({}, {"string_key": 1}).to_list(length=None)}
+    mentions = {m["entity_id"]: m["status"] async for m in db[ndb.ENTITY_MENTIONS].find(
+        {"source_type": source_type, "source_id": source_id}, {"entity_id": 1, "status": 1})}
+
+    for field, name, norm in names:
+        if looks_like_handle(name):
+            counts["skipped_handle"] += 1
+            continue
+        if raw_key(name) in ignored:
+            counts["skipped_ignored"] += 1
+            continue
+        aliases = await db[ndb.ENTITY_ALIASES].find({"kind": field, "alias_norm": norm}).to_list(length=None)
+        exact = next((a for a in aliases if not a.get("ambiguous")), None)
+        if aliases and exact is None:
+            counts["skipped_ambiguous"] += 1
+            continue
+
+        entity = None
+        if exact is not None:
+            entity = await db[ndb.ENTITIES].find_one({"_id": exact["entity_id"]})
+            if entity is None or entity["status"] == "ignored":
+                counts["skipped_switched_off"] += 1
+                continue
+            if entity["_id"] in mentions:
+                counts["skipped_linked_or_removed"] += 1
+                continue
+
+        if entity is None:
+            reason = "not in the list"
+        elif entity["status"] == "staged":
+            reason = f"exact match on alias '{exact['alias']}' (entity is switched off)"
+        else:
+            reason = f"exact match on alias '{exact['alias']}'"
+        doc = {
+            "_id": str(uuid.uuid4()),
+            "source_type": source_type,
+            "source_id": source_id,
+            "field": field,
+            "name": name,
+            "name_norm": norm,
+            "entity_id": entity["_id"] if entity else None,
+            "entity_status": entity["status"] if entity else None,
+            "matched_alias": exact["alias"] if exact else None,
+            "reason": reason,
+            "status": "open",
+            "in_new_names_queue": False,
+            "created_at": _now(),
+            "created_by": actor,
+            "decided_at": None,
+            "decided_by": None,
+        }
+        try:
+            await db[ndb.ENTITY_SUGGESTIONS].insert_one(doc)
+            counts["created"] += 1
+        except DuplicateKeyError:
+            counts["existing"] += 1
+    return counts
+
+
+async def item_entities(db, source_type: str, source_id: str) -> dict:
+    """Linked entities and open suggestions for one item."""
+    _check_source_type(source_type)
+    mentions = await db[ndb.ENTITY_MENTIONS].find(
+        {"source_type": source_type, "source_id": source_id, "status": "linked"}).to_list(length=None)
+    entity_ids = [m["entity_id"] for m in mentions]
+    entities = {e["_id"]: e async for e in db[ndb.ENTITIES].find({"_id": {"$in": entity_ids}})}
+    links = []
+    for m in mentions:
+        e = entities.get(m["entity_id"], {})
+        links.append({**_out(m), "canonical_name": e.get("canonical_name"), "entity_type": e.get("type"),
+                      "entity_status": e.get("status")})
+    suggestions = await db[ndb.ENTITY_SUGGESTIONS].find(
+        {"source_type": source_type, "source_id": source_id, "status": "open"}).sort("name_norm", 1).to_list(length=None)
+    return {"links": links, "suggestions": [_out(s) for s in suggestions]}
+
+
+# --- Link / unlink / dismiss ----------------------------------------------------
+
+async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, entity_id: str,
+               actor: str, suggestion_id: Optional[str] = None, activate: bool = False) -> dict:
+    _check_source_type(source_type)
+    entity = await db[ndb.ENTITIES].find_one({"_id": entity_id})
+    if entity is None:
+        raise NotFound(f"Entity {entity_id} not found")
+    if entity["status"] == "ignored":
+        raise Invalid("This entity is set to ignored and cannot be linked")
+
+    suggestion = None
+    if suggestion_id:
+        suggestion = await db[ndb.ENTITY_SUGGESTIONS].find_one(
+            {"_id": suggestion_id, "source_type": source_type, "source_id": source_id})
+        if suggestion is None:
+            raise NotFound(f"Suggestion {suggestion_id} not found on this item")
+        if suggestion["field"] != entity["kind"]:
+            raise Invalid(f"A {suggestion['field']} name cannot be linked to a {entity['kind']}")
+
+    info = await item_info(sources, source_type, source_id)
+    if info is None:
+        raise NotFound(f"{source_type} {source_id} not found")
+
+    if entity["status"] == "staged":
+        if not activate:
+            raise Conflict("This entity is switched off; link with activate=true to switch it on")
+        await ent.update_entity(db, entity_id, EntityUpdate(status="active"), actor)
+
+    now = _now()
+    existing = await db[ndb.ENTITY_MENTIONS].find_one(
+        {"entity_id": entity_id, "source_type": source_type, "source_id": source_id})
+    if existing is None or existing["status"] != "linked":
+        fields = {
+            "kind": entity["kind"],
+            "status": "linked",
+            "link_source": "reviewer",
+            "matched_alias": suggestion.get("matched_alias") if suggestion else None,
+            "suggestion_id": suggestion_id,
+            "title": info["title"],
+            "snippet": info["snippet"],
+            "url": info["url"],
+            "timestamp": info["timestamp"],
+            "item_status": info["item_status"],
+            "linked_by": actor,
+            "linked_at": now,
+            "removed_by": None,
+            "removed_at": None,
+        }
+        try:
+            await db[ndb.ENTITY_MENTIONS].update_one(
+                {"entity_id": entity_id, "source_type": source_type, "source_id": source_id},
+                {"$set": fields, "$setOnInsert": {"_id": str(uuid.uuid4()), "topics": [], "location_ids": []}},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            pass  # Linked at the same moment by another request; the result is the same.
+        await ent.audit(db, actor, "link", entity_id, None, {"source_type": source_type, "source_id": source_id})
+
+    # The chosen suggestion, and any other open one for this entity on the item, are now done.
+    decided = {"status": "linked", "decided_at": now, "decided_by": actor}
+    if suggestion is not None:
+        await db[ndb.ENTITY_SUGGESTIONS].update_one(
+            {"_id": suggestion_id}, {"$set": {**decided, "entity_id": entity_id, "in_new_names_queue": False}})
+    await db[ndb.ENTITY_SUGGESTIONS].update_many(
+        {"source_type": source_type, "source_id": source_id, "entity_id": entity_id, "status": "open"}, {"$set": decided})
+
+    await refresh_item_locations(db, source_type, source_id)
+    return await item_entities(db, source_type, source_id)
+
+
+async def link_all(db, sources: ndb.ItemSources, source_type: str, source_id: str, actor: str) -> dict:
+    """Links every open suggestion that points at a switched-on entity (the reviewer's bulk action)."""
+    _check_source_type(source_type)
+    open_ids = await db[ndb.ENTITY_SUGGESTIONS].find(
+        {"source_type": source_type, "source_id": source_id, "status": "open",
+         "entity_id": {"$ne": None}}, {"entity_id": 1}).to_list(length=None)
+    active = {e["_id"] async for e in db[ndb.ENTITIES].find(
+        {"_id": {"$in": [s["entity_id"] for s in open_ids]}, "status": "active"}, {"_id": 1})}
+    result = None
+    for s in open_ids:
+        if s["entity_id"] in active:
+            result = await link(db, sources, source_type, source_id, s["entity_id"], actor, suggestion_id=s["_id"])
+    return result or await item_entities(db, source_type, source_id)
+
+
+async def unlink(db, source_type: str, source_id: str, entity_id: str, actor: str) -> dict:
+    _check_source_type(source_type)
+    now = _now()
+    res = await db[ndb.ENTITY_MENTIONS].update_one(
+        {"entity_id": entity_id, "source_type": source_type, "source_id": source_id, "status": "linked"},
+        {"$set": {"status": "removed", "removed_by": actor, "removed_at": now}},
+    )
+    if res.matched_count == 0:
+        raise NotFound("This entity is not linked to this item")
+    # Remembered: suggestions for this entity on this item are dismissed and never come back.
+    await db[ndb.ENTITY_SUGGESTIONS].update_many(
+        {"source_type": source_type, "source_id": source_id, "entity_id": entity_id},
+        {"$set": {"status": "dismissed", "decided_at": now, "decided_by": actor}},
+    )
+    await ent.audit(db, actor, "unlink", entity_id, {"source_type": source_type, "source_id": source_id}, None)
+    await refresh_item_locations(db, source_type, source_id)
+    return await item_entities(db, source_type, source_id)
+
+
+async def dismiss(db, suggestion_id: str, actor: str) -> dict:
+    doc = await db[ndb.ENTITY_SUGGESTIONS].find_one({"_id": suggestion_id})
+    if doc is None:
+        raise NotFound(f"Suggestion {suggestion_id} not found")
+    if doc["status"] != "open":
+        raise Conflict(f"Suggestion is already {doc['status']}")
+    await db[ndb.ENTITY_SUGGESTIONS].update_one(
+        {"_id": suggestion_id},
+        {"$set": {"status": "dismissed", "in_new_names_queue": False, "decided_at": _now(), "decided_by": actor}})
+    return _out({**doc, "status": "dismissed", "in_new_names_queue": False})
+
+
+# --- Item status and the new-names queue ---------------------------------------
+
+async def on_item_status(db, source_type: str, source_id: str, new_status: str) -> None:
+    """Keeps links' item status current; approval puts the item's unknown names into the new-names queue."""
+    _check_source_type(source_type)
+    await db[ndb.ENTITY_MENTIONS].update_many(
+        {"source_type": source_type, "source_id": source_id}, {"$set": {"item_status": new_status}})
+    queued = new_status == "approved"
+    await db[ndb.ENTITY_SUGGESTIONS].update_many(
+        {"source_type": source_type, "source_id": source_id, "status": "open", "entity_id": None},
+        {"$set": {"in_new_names_queue": queued}},
+    )
+
+
+async def list_new_names(db, limit: int = 100) -> List[dict]:
+    """Unknown names from approved items, grouped by name, most frequent first."""
+    pipeline = [
+        {"$match": {"status": "open", "entity_id": None, "in_new_names_queue": True}},
+        {"$sort": {"created_at": 1}},
+        {"$group": {
+            "_id": {"field": "$field", "name_norm": "$name_norm"},
+            "name": {"$first": "$name"},
+            "count": {"$sum": 1},
+            "items": {"$push": {"source_type": "$source_type", "source_id": "$source_id", "suggestion_id": "$_id"}},
+        }},
+        {"$sort": {"count": -1, "_id.name_norm": 1}},
+        {"$limit": limit},
+    ]
+    groups = await (await db[ndb.ENTITY_SUGGESTIONS].aggregate(pipeline)).to_list(length=limit)
+    return [{"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
+             "count": g["count"], "items": g["items"]} for g in groups]
+
+
+async def link_new_name(db, sources: ndb.ItemSources, field: str, name_norm: str, entity_id: str, actor: str,
+                        activate: bool = False) -> int:
+    """Links every queued item carrying this unknown name to the chosen entity. Returns the number linked."""
+    queued = await db[ndb.ENTITY_SUGGESTIONS].find(
+        {"status": "open", "entity_id": None, "in_new_names_queue": True, "field": field, "name_norm": name_norm}
+    ).to_list(length=None)
+    if not queued:
+        raise NotFound("No queued items carry that name")
+    for s in queued:
+        await link(db, sources, s["source_type"], s["source_id"], entity_id, actor, suggestion_id=s["_id"], activate=activate)
+    return len(queued)
+
+
+async def dismiss_new_name(db, field: str, name_norm: str, actor: str) -> int:
+    res = await db[ndb.ENTITY_SUGGESTIONS].update_many(
+        {"status": "open", "entity_id": None, "in_new_names_queue": True, "field": field, "name_norm": name_norm},
+        {"$set": {"status": "dismissed", "in_new_names_queue": False, "decided_at": _now(), "decided_by": actor}},
+    )
+    if res.modified_count == 0:
+        raise NotFound("No queued items carry that name")
+    return res.modified_count

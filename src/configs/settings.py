@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     NEWSROOM_ENABLED: str = os.getenv('NEWSROOM_ENABLED', 'false')
     # Database holding the Newsroom knowledge graph (same cluster as DATABASE_URL)
     NEWSROOM_DB_NAME: str = os.getenv('NEWSROOM_DB_NAME', 'newsroom')
+    # social_scrapper's signals collection in that database (read-only for NewsAgent)
+    NEWSROOM_SIGNALS_COLLECTION: str = os.getenv('NEWSROOM_SIGNALS_COLLECTION', 'signals')
 
     @property
     def newsroom_enabled(self) -> bool:

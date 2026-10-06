@@ -87,6 +87,96 @@ class IgnoreCreate(BaseModel):
     reason: Optional[str] = Field(None, max_length=500)
 
 
+SourceType = Literal["article", "signal"]
+SuggestionField = Literal["organisation", "location"]
+
+
+class SuggestRequest(BaseModel):
+    source_type: SourceType
+    source_id: str = Field(..., min_length=1, max_length=100)
+    organisations: List[str] = Field(default_factory=list, max_length=100)
+    locations: List[str] = Field(default_factory=list, max_length=100)
+
+
+class SuggestResponse(BaseModel):
+    created: int
+    existing: int
+    skipped_ignored: int
+    skipped_handle: int
+    skipped_ambiguous: int
+    skipped_switched_off: int
+    skipped_linked_or_removed: int
+
+
+class SuggestionOut(BaseModel):
+    id: str
+    source_type: SourceType
+    source_id: str
+    field: SuggestionField
+    name: str
+    entity_id: Optional[str] = None
+    entity_status: Optional[str] = None
+    matched_alias: Optional[str] = None
+    reason: str
+    status: str
+    in_new_names_queue: bool = False
+
+
+class LinkOut(BaseModel):
+    id: str
+    entity_id: str
+    kind: SuggestionField
+    canonical_name: Optional[str] = None
+    entity_type: Optional[str] = None
+    entity_status: Optional[str] = None
+    matched_alias: Optional[str] = None
+    topics: List[str] = []
+    location_ids: List[str] = []
+    linked_by: Optional[str] = None
+    linked_at: Optional[datetime] = None
+
+
+class ItemEntitiesResponse(BaseModel):
+    links: List[LinkOut]
+    suggestions: List[SuggestionOut]
+
+
+class LinkRequest(BaseModel):
+    entity_id: str
+    suggestion_id: Optional[str] = None
+    activate: bool = Field(False, description="Required to link an entity that is switched off; it is switched on.")
+
+
+class NewNameItem(BaseModel):
+    source_type: SourceType
+    source_id: str
+    suggestion_id: str
+
+
+class NewNameGroup(BaseModel):
+    field: SuggestionField
+    name_norm: str
+    name: str
+    count: int
+    items: List[NewNameItem]
+
+
+class NewNameLinkRequest(BaseModel):
+    field: SuggestionField
+    name_norm: str
+    entity_id: str
+    activate: bool = False
+
+
+class NewNameDismissRequest(BaseModel):
+    field: SuggestionField
+    name_norm: str
+
+
+class CountResponse(BaseModel):
+    count: int
+
+
 class AuditOut(BaseModel):
     id: str
     at: datetime

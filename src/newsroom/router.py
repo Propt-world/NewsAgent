@@ -14,17 +14,28 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Response, status
 
 from src.newsroom import entities as svc
-from src.newsroom.db import get_newsroom_db
+from src.newsroom import links as lnk
+from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.newsroom.models import (
     AliasCreate,
     AuditOut,
+    CountResponse,
     EntityCreate,
     EntityListResponse,
     EntityOut,
     EntityUpdate,
     IgnoreCreate,
     IgnoreOut,
+    ItemEntitiesResponse,
+    LinkRequest,
+    NewNameDismissRequest,
+    NewNameGroup,
+    NewNameLinkRequest,
     NewsroomHealthResponse,
+    SourceType,
+    SuggestionOut,
+    SuggestRequest,
+    SuggestResponse,
 )
 from src.utils.security import verify_api_key
 
@@ -126,6 +137,69 @@ async def add_ignore(payload: IgnoreCreate, db=Depends(get_newsroom_db), actor: 
 async def delete_ignore(ignore_id: str, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     await _call(svc.delete_ignore(db, ignore_id, actor))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Suggestions and links ---------------------------------------------------
+
+@router.post("/suggest", response_model=SuggestResponse,
+             description="Turns names found on an article or signal into suggestions (exact matches only). "
+                         "Writes nothing to the graph. Safe to call again.")
+async def suggest(payload: SuggestRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+    return await _call(lnk.suggest(db, payload.source_type, payload.source_id, payload.organisations,
+                                   payload.locations, actor if actor != "unknown" else "system"))
+
+
+@router.get("/items/{source_type}/{source_id}/entities", response_model=ItemEntitiesResponse,
+            description="Linked entities and open suggestions for one article or signal.")
+async def item_entities(source_type: SourceType, source_id: str, db=Depends(get_newsroom_db)):
+    return await _call(lnk.item_entities(db, source_type, source_id))
+
+
+@router.post("/items/{source_type}/{source_id}/links", response_model=ItemEntitiesResponse,
+             description="Reviewer links an entity to the item (the only way a link is created).")
+async def link_entity(source_type: SourceType, source_id: str, payload: LinkRequest, db=Depends(get_newsroom_db),
+                      sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
+    return await _call(lnk.link(db, sources, source_type, source_id, payload.entity_id, actor,
+                                suggestion_id=payload.suggestion_id, activate=payload.activate))
+
+
+@router.post("/items/{source_type}/{source_id}/links/all", response_model=ItemEntitiesResponse,
+             description="Links every open suggestion that points at a switched-on entity.")
+async def link_all(source_type: SourceType, source_id: str, db=Depends(get_newsroom_db),
+                   sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
+    return await _call(lnk.link_all(db, sources, source_type, source_id, actor))
+
+
+@router.delete("/items/{source_type}/{source_id}/links/{entity_id}", response_model=ItemEntitiesResponse,
+               description="Removes a link. It is remembered and never suggested again for this item.")
+async def unlink_entity(source_type: SourceType, source_id: str, entity_id: str, db=Depends(get_newsroom_db),
+                        actor: str = Depends(get_actor)):
+    return await _call(lnk.unlink(db, source_type, source_id, entity_id, actor))
+
+
+@router.post("/suggestions/{suggestion_id}/dismiss", response_model=SuggestionOut)
+async def dismiss_suggestion(suggestion_id: str, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+    return await _call(lnk.dismiss(db, suggestion_id, actor))
+
+
+@router.get("/new-names", response_model=List[NewNameGroup],
+            description="Names not in the list, from approved items, grouped and most frequent first.")
+async def list_new_names(limit: int = Query(100, ge=1, le=500), db=Depends(get_newsroom_db)):
+    return await _call(lnk.list_new_names(db, limit))
+
+
+@router.post("/new-names/link", response_model=CountResponse,
+             description="Links every queued item carrying this name to an entity (for example one just created).")
+async def link_new_name(payload: NewNameLinkRequest, db=Depends(get_newsroom_db), sources=Depends(get_item_sources),
+                        actor: str = Depends(get_actor)):
+    count = await _call(lnk.link_new_name(db, sources, payload.field, payload.name_norm, payload.entity_id, actor,
+                                          activate=payload.activate))
+    return {"count": count}
+
+
+@router.post("/new-names/dismiss", response_model=CountResponse)
+async def dismiss_new_name(payload: NewNameDismissRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+    return {"count": await _call(lnk.dismiss_new_name(db, payload.field, payload.name_norm, actor))}
 
 
 def mount_newsroom(app: FastAPI, enabled: bool) -> bool:

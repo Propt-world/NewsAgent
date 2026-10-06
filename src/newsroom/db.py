@@ -5,6 +5,8 @@ NewsAgent is the only writer of these collections. Indexes are created here
 (idempotently) because init_db.py is not run on every deploy.
 """
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import ConnectionFailure
@@ -20,6 +22,7 @@ ENTITY_RELATIONS = "entity_relations"
 ENTITY_MENTIONS = "entity_mentions"
 ENTITY_IGNORE = "entity_ignore"
 ENTITY_AUDIT = "entity_audit"
+ENTITY_SUGGESTIONS = "entity_suggestions"
 
 # (collection, keys, options)
 INDEX_SPECS = [
@@ -40,6 +43,12 @@ INDEX_SPECS = [
     (ENTITY_MENTIONS, [("source_type", ASCENDING), ("source_id", ASCENDING), ("status", ASCENDING)], {"name": "source_status"}),
     (ENTITY_MENTIONS, [("entity_id", ASCENDING), ("location_ids", ASCENDING), ("timestamp", DESCENDING)], {"name": "entity_location_time"}),
     (ENTITY_MENTIONS, [("entity_id", ASCENDING), ("topics", ASCENDING), ("timestamp", DESCENDING)], {"name": "entity_topic_time"}),
+    # One suggestion per item, field and name; dismissed ones stay so they are never shown again.
+    (ENTITY_SUGGESTIONS, [("source_type", ASCENDING), ("source_id", ASCENDING), ("field", ASCENDING), ("name_norm", ASCENDING)],
+     {"unique": True, "name": "suggestion_unique"}),
+    (ENTITY_SUGGESTIONS, [("status", ASCENDING), ("in_new_names_queue", ASCENDING), ("field", ASCENDING), ("name_norm", ASCENDING)],
+     {"name": "new_names"}),
+    (ENTITY_SUGGESTIONS, [("entity_id", ASCENDING), ("status", ASCENDING)], {"name": "entity_status"}),
     (ENTITY_IGNORE, [("string_key", ASCENDING)], {"unique": True, "name": "ignore_unique"}),
     (ENTITY_AUDIT, [("entity_id", ASCENDING), ("at", DESCENDING)], {"name": "entity_time"}),
     (ENTITY_AUDIT, [("at", DESCENDING)], {"name": "time"}),
@@ -49,6 +58,22 @@ INDEX_SPECS = [
 def get_newsroom_db():
     """FastAPI dependency: the async newsroom database (shares the scheduler's client)."""
     return get_async_mongo_client()[settings.NEWSROOM_DB_NAME]
+
+
+@dataclass(frozen=True)
+class ItemSources:
+    """Where articles and signals are read from (read-only)."""
+    articles: Any
+    signals: Any
+
+
+def get_item_sources() -> ItemSources:
+    """FastAPI dependency: NewsAgent's articles and social_scrapper's signals."""
+    client = get_async_mongo_client()
+    return ItemSources(
+        articles=client[settings.MONGO_DB_NAME]["processed_articles"],
+        signals=client[settings.NEWSROOM_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
+    )
 
 
 def ensure_indexes_sync(db) -> list:

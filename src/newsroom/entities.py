@@ -18,6 +18,7 @@ from typing import List, Optional
 from pymongo.errors import DuplicateKeyError
 
 from src.newsroom import db as ndb
+from src.newsroom.locations import refresh_items_for_places
 from src.newsroom.models import AliasCreate, EntityCreate, EntityUpdate, IgnoreCreate
 from src.newsroom.normalize import looks_like_handle, normalize_alias, raw_key
 
@@ -55,7 +56,7 @@ def _entity_out(doc: dict, aliases: List[dict]) -> dict:
     return out
 
 
-async def _audit(db, actor: str, action: str, entity_id: Optional[str], before=None, after=None) -> None:
+async def audit(db, actor: str, action: str, entity_id: Optional[str], before=None, after=None) -> None:
     await db[ndb.ENTITY_AUDIT].insert_one({
         "_id": str(uuid.uuid4()),
         "at": _now(),
@@ -258,7 +259,7 @@ async def create_entity(db, payload: EntityCreate, actor: str) -> dict:
         await db[ndb.ENTITIES].delete_one({"_id": entity_id})
         raise Conflict("One of the aliases was taken by another entity at the same time; try again")
 
-    await _audit(db, actor, "create", entity_id, None, {
+    await audit(db, actor, "create", entity_id, None, {
         "canonical_name": name, "kind": payload.kind, "type": doc["type"], "status": payload.status,
         "parent_id": doc["parent_id"], "country_id": doc["country_id"],
         "aliases": [a["alias"] for a in alias_docs if not a["ambiguous"]],
@@ -315,14 +316,18 @@ async def update_entity(db, entity_id: str, payload: EntityUpdate, actor: str) -
     if parent_changed:
         # Rewrite the ancestor path of every descendant (they all contain this entity's id).
         new_prefix = changes["path_ids"]
+        moved = [entity_id]
         async for child in db[ndb.ENTITIES].find({"path_ids": entity_id, "_id": {"$ne": entity_id}}):
             old = child["path_ids"]
             new_path = new_prefix + old[old.index(entity_id) + 1:]
             await db[ndb.ENTITIES].update_one({"_id": child["_id"]}, {"$set": {"path_ids": new_path}})
-        # Step 3 adds entity_mentions.location_ids, which must be recomputed here as well.
+            moved.append(child["_id"])
+        if current["kind"] == "location":
+            # Links store each place's ancestors, so items with any moved place are recomputed.
+            await refresh_items_for_places(db, moved)
 
     audited = {k: v for k, v in changes.items() if k not in ("updated_at", "updated_by", "canonical_norm", "path_ids")}
-    await _audit(db, actor, "update", entity_id, {k: current.get(k) for k in audited}, audited)
+    await audit(db, actor, "update", entity_id, {k: current.get(k) for k in audited}, audited)
     return await get_entity(db, entity_id)
 
 
@@ -334,7 +339,7 @@ async def add_alias(db, entity_id: str, payload: AliasCreate, actor: str) -> dic
         await db[ndb.ENTITY_ALIASES].insert_one(doc)
     except DuplicateKeyError:
         raise Conflict(f"'{payload.alias}' was taken by another entity at the same time")
-    await _audit(db, actor, "add_alias", entity_id, None, {"alias": doc["alias"], "ambiguous": doc["ambiguous"]})
+    await audit(db, actor, "add_alias", entity_id, None, {"alias": doc["alias"], "ambiguous": doc["ambiguous"]})
     return await get_entity(db, entity_id)
 
 
@@ -344,7 +349,7 @@ async def delete_alias(db, entity_id: str, alias_id: str, actor: str) -> dict:
     if alias is None:
         raise NotFound(f"Alias {alias_id} not found on entity {entity_id}")
     await db[ndb.ENTITY_ALIASES].delete_one({"_id": alias_id})
-    await _audit(db, actor, "delete_alias", entity_id, {"alias": alias["alias"], "ambiguous": alias.get("ambiguous", False)}, None)
+    await audit(db, actor, "delete_alias", entity_id, {"alias": alias["alias"], "ambiguous": alias.get("ambiguous", False)}, None)
     return await get_entity(db, entity_id)
 
 
@@ -385,7 +390,7 @@ async def add_ignore(db, payload: IgnoreCreate, actor: str) -> dict:
         await db[ndb.ENTITY_IGNORE].insert_one(doc)
     except DuplicateKeyError:
         raise Conflict(f"'{string}' is already on the ignore list")
-    await _audit(db, actor, "add_ignore", None, None, {"string": string, "reason": payload.reason})
+    await audit(db, actor, "add_ignore", None, None, {"string": string, "reason": payload.reason})
     return _ignore_out(doc)
 
 
@@ -394,4 +399,4 @@ async def delete_ignore(db, ignore_id: str, actor: str) -> None:
     if doc is None:
         raise NotFound(f"Ignore entry {ignore_id} not found")
     await db[ndb.ENTITY_IGNORE].delete_one({"_id": ignore_id})
-    await _audit(db, actor, "delete_ignore", None, {"string": doc["string"]}, None)
+    await audit(db, actor, "delete_ignore", None, {"string": doc["string"]}, None)

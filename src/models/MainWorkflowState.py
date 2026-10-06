@@ -34,6 +34,11 @@ class MainWorkflowState(BaseModel):
     # --- Fields for Search Query Generation ---
     search_query_data: Optional[SearchQueryModel] = None
 
+    # --- Newsroom (only set when NEWSROOM_ENABLED) ---
+    # Names found by extract_country: {"companies": [...], "projects": [...], "places": [...]}.
+    # Sent with the webhook result, never stored on the article itself.
+    newsroom_names: Optional[Dict[str, List[str]]] = None
+
     # --- Global Error & Config Fields ---
     max_retries: int = 3
     error_message: Optional[str] = None

@@ -43,6 +43,7 @@ from src.utils.email_utils import close_async_email_client, send_error_email_asy
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.db import ensure_newsroom_indexes
+from src.newsroom.pipeline import article_status_changed, suggest_for_article_url
 from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
@@ -468,7 +469,7 @@ async def full_health_check(response: Response):
     },
     dependencies=[Depends(verify_webhook_secret)],
 )
-async def store_result(payload: Dict[str, Any]):
+async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTasks):
     url = payload.get("source_url")
     data = payload.get("data")
 
@@ -502,6 +503,10 @@ async def store_result(payload: Dict[str, Any]):
                 "final_output": data,
             }
         )
+
+    # Newsroom: entity suggestions from the names the pipeline found (after the response; failures only logged)
+    if settings.newsroom_enabled and payload.get("newsroom_names"):
+        background_tasks.add_task(suggest_for_article_url, url, payload.get("newsroom_names"))
 
     return {"status": "ok", "message": "Result stored"}
 
@@ -917,6 +922,10 @@ async def update_article_status(
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
+
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the status change itself has already succeeded.
+        await article_status_changed(article_id, new_status)
 
     return {"status": "updated", "message": f"Article status updated to {new_status}", "id": article_id, "new_status": new_status}
 

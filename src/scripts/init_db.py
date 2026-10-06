@@ -282,7 +282,14 @@ RULES:
 3. If no specific country is relevant (e.g., general tech news), return an empty list.
 4. Output must be a list of country names in English.
 5. Do not include regions (like "Middle East") unless a specific country is not applicable.
-6. Normalize country names (e.g., "UAE" -> "United Arab Emirates", "US" -> "United States").""",
+6. Normalize country names (e.g., "UAE" -> "United Arab Emirates", "US" -> "United States").
+
+NAMES (only when the response has the fields companies, projects and places):
+7. companies: organisations the article is about (developers, investors, banks, government bodies, brokers), written exactly as in the article. Do not shorten, expand, translate or correct names.
+8. projects: named real-estate projects or developments, written exactly as in the article.
+9. places: cities, emirates, districts and communities, written exactly as in the article. Countries belong only in countries.
+10. Never include people, websites, social media handles, or generic phrases (for example "Dubai developers").
+11. Return empty lists when nothing is named. Never guess or invent names.""",
         "input_variables": [],
         "description": "System instruction for country extraction."
     },

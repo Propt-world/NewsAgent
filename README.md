@@ -69,7 +69,7 @@ The system is composed of seven Dockerized services:
     * `NEWSAGENT_API_KEY`: A secure key you generate to protect your internal API endpoints.
     * `BROWSERLESS_TOKEN`: Secure token for the browserless service.
     * `WEBHOOK_SECRET`: Shared secret for verifying webhook payloads.
-    * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`) and creates its indexes at startup. Unset or `false` leaves the scheduler unchanged.
+    * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`) and creates its indexes at startup; in the worker, the country step also returns company, project and place names, which become entity suggestions when the result is stored. Set it on the worker and the scheduler together. Unset or `false` leaves both unchanged.
     * `NEWSROOM_DB_NAME`: Database for the Newsroom knowledge graph (default `newsroom`).
 
 ---

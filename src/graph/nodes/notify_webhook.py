@@ -36,6 +36,9 @@ async def notify_webhook(state: MainWorkflowState) -> MainWorkflowState:
             "status": "success",
             "data": article_data,
         }
+        # Newsroom names travel next to the article, not inside it, so the stored article is unchanged.
+        if state.newsroom_names is not None:
+            payload["newsroom_names"] = state.newsroom_names
 
         headers = {
             "Content-Type": "application/json",

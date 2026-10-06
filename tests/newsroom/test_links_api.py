@@ -200,3 +200,35 @@ def test_signal_items(seeded, sync_db):
     assert mention["url"] == "https://x.example/post"
     assert mention["title"].startswith("Nakheel launches")
     assert seeded.post("/newsroom/items/signal/not-an-id/links", json={"entity_id": nakheel["entity_id"]}).status_code == 404
+
+
+def test_items_changed_refreshes_signal_links_and_queue(seeded, sync_db):
+    signal_id = ObjectId()
+    sync_db["signals"].insert_one({
+        "_id": signal_id, "summary_en": "Aldar sells out a Yas Island project", "status": "draft",
+        "generated_at": datetime(2026, 9, 3, tzinfo=timezone.utc), "evidence": [],
+    })
+    item = f"/newsroom/items/signal/{signal_id}"
+    _suggest(seeded, organisations=["Aldar", "Unknown Signal Co"], source_type="signal", source_id=str(signal_id))
+    aldar = _open(seeded, item)["Aldar"]
+    seeded.post(f"{item}/links", json={"entity_id": aldar["entity_id"]})
+
+    # social_scrapper approves and edits the signal, then sends only the id.
+    sync_db["signals"].update_one({"_id": signal_id}, {"$set": {"status": "approved", "summary_en": "Aldar sells out Yas phase 2"}})
+    resp = seeded.post("/newsroom/items/changed", json={"source_type": "signal", "source_ids": [str(signal_id), str(signal_id)]})
+    assert resp.json() == {"updated": 1, "missing": 0}
+    mention = sync_db["entity_mentions"].find_one({"source_id": str(signal_id)})
+    assert (mention["item_status"], mention["title"]) == ("approved", "Aldar sells out Yas phase 2")
+    assert [g["name"] for g in seeded.get("/newsroom/new-names").json()] == ["Unknown Signal Co"]
+
+    # Rejected later: out of the queue.
+    sync_db["signals"].update_one({"_id": signal_id}, {"$set": {"status": "rejected"}})
+    seeded.post("/newsroom/items/changed", json={"source_type": "signal", "source_ids": [str(signal_id)]})
+    assert seeded.get("/newsroom/new-names").json() == []
+
+    # Deleted in social_scrapper: links are kept but marked missing.
+    sync_db["signals"].delete_one({"_id": signal_id})
+    resp = seeded.post("/newsroom/items/changed", json={"source_type": "signal", "source_ids": [str(signal_id)]})
+    assert resp.json() == {"updated": 0, "missing": 1}
+    assert sync_db["entity_mentions"].find_one({"source_id": str(signal_id)})["item_status"] == "missing"
+    assert seeded.post("/newsroom/items/changed", json={"source_type": "signal", "source_ids": []}).status_code == 422

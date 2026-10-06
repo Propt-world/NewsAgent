@@ -317,6 +317,25 @@ async def on_item_status(db, source_type: str, source_id: str, new_status: str) 
     )
 
 
+async def item_changed(db, sources: ndb.ItemSources, source_type: str, source_id: str) -> bool:
+    """
+    Re-reads an item after another service changed it (status, text) and refreshes its links.
+    The caller sends only ids; NewsAgent reads the item itself. Returns False if the item no longer exists.
+    """
+    _check_source_type(source_type)
+    query = {"source_type": source_type, "source_id": source_id}
+    info = await item_info(sources, source_type, source_id)
+    if info is None:
+        await db[ndb.ENTITY_MENTIONS].update_many(query, {"$set": {"item_status": "missing"}})
+        await db[ndb.ENTITY_SUGGESTIONS].update_many(
+            {**query, "status": "open", "entity_id": None}, {"$set": {"in_new_names_queue": False}})
+        return False
+    await on_item_status(db, source_type, source_id, info["item_status"])
+    await db[ndb.ENTITY_MENTIONS].update_many(query, {"$set": {
+        "title": info["title"], "snippet": info["snippet"], "url": info["url"], "timestamp": info["timestamp"]}})
+    return True
+
+
 async def list_new_names(db, limit: int = 100) -> List[dict]:
     """Unknown names from approved items, grouped by name, most frequent first."""
     pipeline = [

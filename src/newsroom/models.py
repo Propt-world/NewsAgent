@@ -177,6 +177,16 @@ class CountResponse(BaseModel):
     count: int
 
 
+class ItemsChangedRequest(BaseModel):
+    source_type: SourceType
+    source_ids: List[str] = Field(..., min_length=1, max_length=500)
+
+
+class ItemsChangedResponse(BaseModel):
+    updated: int
+    missing: int
+
+
 class AuditOut(BaseModel):
     id: str
     at: datetime

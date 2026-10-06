@@ -27,6 +27,8 @@ from src.newsroom.models import (
     IgnoreCreate,
     IgnoreOut,
     ItemEntitiesResponse,
+    ItemsChangedRequest,
+    ItemsChangedResponse,
     LinkRequest,
     NewNameDismissRequest,
     NewNameGroup,
@@ -175,6 +177,19 @@ async def link_all(source_type: SourceType, source_id: str, db=Depends(get_newsr
 async def unlink_entity(source_type: SourceType, source_id: str, entity_id: str, db=Depends(get_newsroom_db),
                         actor: str = Depends(get_actor)):
     return await _call(lnk.unlink(db, source_type, source_id, entity_id, actor))
+
+
+@router.post("/items/changed", response_model=ItemsChangedResponse,
+             description="Another service changed these items (status or text). NewsAgent re-reads each one "
+                         "and refreshes its links and the new-names queue. Only ids are sent.")
+async def items_changed(payload: ItemsChangedRequest, db=Depends(get_newsroom_db), sources=Depends(get_item_sources)):
+    updated = missing = 0
+    for source_id in dict.fromkeys(payload.source_ids):
+        if await _call(lnk.item_changed(db, sources, payload.source_type, source_id)):
+            updated += 1
+        else:
+            missing += 1
+    return {"updated": updated, "missing": missing}
 
 
 @router.post("/suggestions/{suggestion_id}/dismiss", response_model=SuggestionOut)

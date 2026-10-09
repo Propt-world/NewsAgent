@@ -31,6 +31,8 @@ from src.newsroom.models import (
     ItemEntitiesResponse,
     ItemsChangedRequest,
     ItemsChangedResponse,
+    ItemsSummaryRequest,
+    ItemsSummaryResponse,
     LinkRequest,
     NewNameDismissRequest,
     NewNameGroup,
@@ -232,9 +234,17 @@ async def dismiss_suggestion(suggestion_id: str, db=Depends(get_newsroom_db), ac
 
 
 @router.get("/new-names", response_model=List[NewNameGroup],
-            description="Names not in the list, from approved items, grouped and most frequent first.")
-async def list_new_names(limit: int = Query(100, ge=1, le=500), db=Depends(get_newsroom_db)):
-    return await _call(lnk.list_new_names(db, limit))
+            description="Names not in the list, from approved items, grouped and most frequent first "
+                        "(titles for the first few items of each name).")
+async def list_new_names(limit: int = Query(100, ge=1, le=500), db=Depends(get_newsroom_db),
+                         sources=Depends(get_item_sources)):
+    return await _call(lnk.list_new_names(db, limit, sources))
+
+
+@router.post("/items/summary", response_model=ItemsSummaryResponse,
+             description="Read-only: links and open suggestions per item, for badges in list screens.")
+async def items_summary(payload: ItemsSummaryRequest, db=Depends(get_newsroom_db)):
+    return {"items": await _call(lnk.items_summary(db, payload.source_type, payload.source_ids))}
 
 
 @router.post("/new-names/link", response_model=CountResponse,

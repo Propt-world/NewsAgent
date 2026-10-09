@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Annotated, List, Literal, Optional
+from typing import Annotated, Dict, List, Literal, Optional
 
 from pydantic import AfterValidator, BaseModel, Field
 
@@ -159,6 +159,7 @@ class NewNameItem(BaseModel):
     source_type: SourceType
     source_id: str
     suggestion_id: str
+    title: Optional[str] = None
 
 
 class NewNameGroup(BaseModel):
@@ -238,6 +239,20 @@ class HistoryResponse(BaseModel):
     total: int
     limit: int
     skip: int
+
+
+class ItemsSummaryRequest(BaseModel):
+    source_type: SourceType
+    source_ids: List[str] = Field(..., min_length=1, max_length=200)
+
+
+class ItemSummary(BaseModel):
+    links: int
+    open_suggestions: int
+
+
+class ItemsSummaryResponse(BaseModel):
+    items: Dict[str, ItemSummary]
 
 
 class ItemsChangedRequest(BaseModel):

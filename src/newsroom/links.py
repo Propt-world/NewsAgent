@@ -336,7 +336,28 @@ async def item_changed(db, sources: ndb.ItemSources, source_type: str, source_id
     return True
 
 
-async def list_new_names(db, limit: int = 100) -> List[dict]:
+async def items_summary(db, source_type: str, source_ids: List[str]) -> Dict[str, dict]:
+    """Per item: number of confirmed links and of open suggestions (for badges in list screens)."""
+    _check_source_type(source_type)
+    ids = list(dict.fromkeys(source_ids))
+    summary = {i: {"links": 0, "open_suggestions": 0} for i in ids}
+    links = db[ndb.ENTITY_MENTIONS].aggregate([
+        {"$match": {"source_type": source_type, "source_id": {"$in": ids}, "status": "linked"}},
+        {"$group": {"_id": "$source_id", "n": {"$sum": 1}}},
+    ])
+    async for row in await links:
+        summary[row["_id"]]["links"] = row["n"]
+    suggestions = db[ndb.ENTITY_SUGGESTIONS].aggregate([
+        {"$match": {"source_type": source_type, "source_id": {"$in": ids}, "status": "open"}},
+        {"$group": {"_id": "$source_id", "n": {"$sum": 1}}},
+    ])
+    async for row in await suggestions:
+        summary[row["_id"]]["open_suggestions"] = row["n"]
+    return summary
+
+
+async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources] = None,
+                         titles_per_group: int = 5) -> List[dict]:
     """Unknown names from approved items, grouped by name, most frequent first."""
     pipeline = [
         {"$match": {"status": "open", "entity_id": None, "in_new_names_queue": True}},
@@ -351,8 +372,17 @@ async def list_new_names(db, limit: int = 100) -> List[dict]:
         {"$limit": limit},
     ]
     groups = await (await db[ndb.ENTITY_SUGGESTIONS].aggregate(pipeline)).to_list(length=limit)
-    return [{"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
-             "count": g["count"], "items": g["items"]} for g in groups]
+    result = []
+    for g in groups:
+        items = g["items"]
+        if sources is not None:
+            # Titles for the first few items, so a reviewer can see where the name was found.
+            for item in items[:titles_per_group]:
+                info = await item_info(sources, item["source_type"], item["source_id"])
+                item["title"] = info["title"] if info else None
+        result.append({"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
+                       "count": g["count"], "items": items})
+    return result
 
 
 async def link_new_name(db, sources: ndb.ItemSources, field: str, name_norm: str, entity_id: str, actor: str,

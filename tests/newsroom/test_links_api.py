@@ -232,3 +232,23 @@ def test_items_changed_refreshes_signal_links_and_queue(seeded, sync_db):
     assert resp.json() == {"updated": 0, "missing": 1}
     assert sync_db["entity_mentions"].find_one({"source_id": str(signal_id)})["item_status"] == "missing"
     assert seeded.post("/newsroom/items/changed", json={"source_type": "signal", "source_ids": []}).status_code == 422
+
+
+def test_items_summary_for_list_badges(seeded, sync_db):
+    _suggest(seeded, **NAMES)
+    emaar = _open(seeded)["Emaar"]
+    seeded.post(f"{ITEM}/links", json={"entity_id": emaar["entity_id"], "suggestion_id": emaar["id"]})
+    resp = seeded.post("/newsroom/items/summary", json={"source_type": "article", "source_ids": [ARTICLE, "no-such-item"]})
+    assert resp.status_code == 200
+    assert resp.json()["items"] == {
+        ARTICLE: {"links": 1, "open_suggestions": 6},
+        "no-such-item": {"links": 0, "open_suggestions": 0},
+    }
+    assert seeded.post("/newsroom/items/summary", json={"source_type": "article", "source_ids": []}).status_code == 422
+
+
+def test_new_names_show_where_they_were_found(seeded, run_async):
+    _suggest(seeded, **NAMES)
+    run_async(lnk.on_item_status, "article", ARTICLE, "approved")
+    group = seeded.get("/newsroom/new-names").json()[0]
+    assert group["items"][0]["title"] == "Emaar launches a tower"

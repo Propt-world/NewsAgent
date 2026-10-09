@@ -32,8 +32,19 @@ ACTIVE_STATUSES = ["queued", "running"]
 MIN_SOURCES, MAX_SOURCES = 2, 5
 
 
+NEEDS_IMAGE = "Add an image before approving this Propt Newsroom article."
+
+
 class TooManyRequests(Exception):
     pass
+
+
+def approval_blocked_reason(article: Optional[dict]) -> Optional[str]:
+    """Composed articles have no source image, so one must be added before they go live (user decision,
+    2026-10-10). Other articles are never blocked here."""
+    if not article or article.get("source_id") != COMPOSED_SOURCE_ID:
+        return None
+    return None if (article.get("final_output") or {}).get("top_image") else NEEDS_IMAGE
 
 
 def _now() -> datetime:

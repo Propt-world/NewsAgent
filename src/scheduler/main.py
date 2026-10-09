@@ -42,6 +42,7 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
+from src.newsroom.compose import approval_blocked_reason
 from src.newsroom.db import ensure_newsroom_indexes
 from src.newsroom.pipeline import article_edited, article_status_changed, article_stored, newsroom_composed
 from src.newsroom.router import mount_newsroom
@@ -859,6 +860,13 @@ async def update_article_status(
             status_code=400,
             detail=f"Invalid status. Must be one of: {allowed_statuses}",
         )
+
+    if new_status == "approved":
+        # Propt Newsroom articles need an image first (checked here so no screen can skip it).
+        blocked = approval_blocked_reason(await collections.processed_articles.find_one(
+            {"_id": article_id}, {"source_id": 1, "final_output.top_image": 1}))
+        if blocked:
+            raise HTTPException(status_code=422, detail=blocked)
 
     # Trigger embedding generation if approved
     if new_status == "approved":

@@ -135,6 +135,11 @@ with TestClient(app) as c:
         "data": {{"title": "Reprocessed title", "summary": "New summary."}}}})
     mention = db.entity_mentions.find_one({{"source_id": article["_id"]}})
     out["after_reprocess"] = [mention["title"], mention["item_status"]]
+    # A Propt Newsroom article without an image cannot be approved
+    db.processed_articles.insert_one({{"_id": "composed-1", "url": "newsroom://compose/run-1", "status": "processed",
+        "source_id": "newsroom_compose", "final_output": {{"title": "Composed", "top_image": None}}}})
+    r = c.patch("/articles/composed-1/status", json={{"status": "approved"}})
+    out["composed_approve"] = [r.status_code, r.json().get("detail"), db.processed_articles.find_one({{"_id": "composed-1"}})["status"]]
 print("RESULT=" + json.dumps(out))
 """
     env = {k: v for k, v in os.environ.items()}
@@ -152,3 +157,14 @@ print("RESULT=" + json.dumps(out))
     assert out["item_status"] == "rejected"
     assert out["title_after_edit"] == "Edited title"
     assert out["after_reprocess"] == ["Reprocessed title", "processed"]
+    assert out["composed_approve"] == [422, "Add an image before approving this Propt Newsroom article.", "processed"]
+
+
+def test_approval_needs_an_image_only_for_composed_articles():
+    from src.newsroom.compose import NEEDS_IMAGE, approval_blocked_reason
+    composed = {"source_id": "newsroom_compose", "final_output": {"title": "x"}}
+    assert approval_blocked_reason(composed) == NEEDS_IMAGE
+    assert approval_blocked_reason({**composed, "final_output": {"top_image": ""}}) == NEEDS_IMAGE
+    assert approval_blocked_reason({**composed, "final_output": {"top_image": "https://img.test/a.jpg"}}) is None
+    assert approval_blocked_reason({"source_id": "zawya", "final_output": {}}) is None  # scraped: unchanged
+    assert approval_blocked_reason(None) is None  # missing: the endpoint's own 404 handles it

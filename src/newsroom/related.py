@@ -265,14 +265,15 @@ async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optio
                          source_type: Optional[str] = None, item_statuses: Optional[List[str]] = None,
                          q: Optional[str] = None, limit: int = 20, skip: int = 0) -> dict:
     """Distinct items linked to an entity and/or in a place, newest first (the Newsroom list filter).
-    A place matches through the item's places and their parents, so Dubai includes Dubai communities."""
+    A place matches through the item's places and their parents, so Dubai includes Dubai communities.
+    Rejected and duplicated items are hidden unless asked for by status (the Newsroom's Rejected view)."""
     if not entity_id and not location_id:
         raise Invalid("Choose a company or a place")
     if entity_id and await db[ndb.ENTITIES].count_documents({"_id": entity_id}) == 0:
         raise NotFound(f"Entity {entity_id} not found")
     await _check_location(db, location_id)
 
-    match = _visible({})
+    match = {"status": "linked", "item_status": {"$nin": HIDDEN_ITEM_STATUSES}}
     if entity_id:
         match["entity_id"] = entity_id
     if location_id:
@@ -280,7 +281,8 @@ async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optio
     if source_type:
         match["source_type"] = source_type
     if item_statuses:
-        match["item_status"] = {"$in": [s for s in item_statuses if s not in HIDDEN_ITEM_STATUSES]}
+        # Explicit statuses are shown as asked; items whose source no longer exists never are.
+        match["item_status"] = {"$in": [s for s in item_statuses if s != "missing"]}
     if q and q.strip():
         match["title"] = {"$regex": re.escape(q.strip()), "$options": "i"}
 

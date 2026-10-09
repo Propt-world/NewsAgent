@@ -270,7 +270,8 @@ def test_newsroom_list_filter(scene):
     # Type and status, as the Newsroom toggles send them (pending signals are "draft")
     assert _ids(_filtered(scene, entity=EMAAR, source_type="signal", status=["draft"])) == [scene.s1]
     assert _ids(_filtered(scene, entity=EMAAR, source_type="article", status=["approved"])) == []
-    assert _ids(_filtered(scene, entity=EMAAR, status=["rejected"])) == []  # never shown, even if asked
+    assert "A5" not in _ids(_filtered(scene, entity=EMAAR))  # rejected: hidden by default
+    assert _ids(_filtered(scene, entity=EMAAR, status=["rejected"])) == ["A5"]  # the Rejected view asks for it
     # Title search is plain text
     assert _ids(_filtered(scene, entity=EMAAR, q="article a3")) == ["A3"]
     assert _filtered(scene, entity=EMAAR, q="(")["total"] == 0

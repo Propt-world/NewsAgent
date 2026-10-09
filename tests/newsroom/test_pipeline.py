@@ -140,6 +140,9 @@ with TestClient(app) as c:
         "source_id": "newsroom_compose", "final_output": {{"title": "Composed", "top_image": None}}}})
     r = c.patch("/articles/composed-1/status", json={{"status": "approved"}})
     out["composed_approve"] = [r.status_code, r.json().get("detail"), db.processed_articles.find_one({{"_id": "composed-1"}})["status"]]
+    db.processed_articles.update_one({{"_id": "composed-1"}}, {{"$set": {{"generated_from": "run-1"}}}})
+    out["api_generated_from"] = [c.get("/articles/composed-1").json().get("generated_from"),
+                                 c.get(f"/articles/{{article['_id']}}").json().get("generated_from")]
 print("RESULT=" + json.dumps(out))
 """
     env = {k: v for k, v in os.environ.items()}
@@ -158,6 +161,7 @@ print("RESULT=" + json.dumps(out))
     assert out["title_after_edit"] == "Edited title"
     assert out["after_reprocess"] == ["Reprocessed title", "processed"]
     assert out["composed_approve"] == [422, "Add an image before approving this Propt Newsroom article.", "processed"]
+    assert out["api_generated_from"] == ["run-1", None]  # the compose job id reaches the backoffice
 
 
 def test_approval_needs_an_image_only_for_composed_articles():

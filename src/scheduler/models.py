@@ -46,6 +46,9 @@ class ProcessedArticle(BaseModel):
     # The final output from the AI Worker (Summary, Translation, SEO, etc.)
     final_output: Optional[Dict[str, Any]] = None
 
+    # Propt Newsroom articles only: the compose job that wrote it (None for everything else)
+    generated_from: Optional[str] = None
+
     class Config:
         populate_by_name = True
 

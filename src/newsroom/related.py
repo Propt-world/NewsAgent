@@ -15,6 +15,7 @@ articles whose stored fingerprint (embedding, made at approval) is close to its
 own. No new AI call is ever made, and pending articles never use this.
 """
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -245,3 +246,51 @@ async def entity_history(db, entity_id: str, location_id: Optional[str] = None, 
         "limit": limit,
         "skip": skip,
     }
+
+
+def _history_item(d: dict) -> dict:
+    return {
+        "source_type": d["source_type"],
+        "source_id": d["source_id"],
+        "title": d.get("title"),
+        "snippet": d.get("snippet"),
+        "url": d.get("url"),
+        "timestamp": d.get("timestamp"),
+        "item_status": d.get("item_status"),
+        "location_ids": d.get("location_ids", []),
+    }
+
+
+async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optional[str] = None,
+                         source_type: Optional[str] = None, item_statuses: Optional[List[str]] = None,
+                         q: Optional[str] = None, limit: int = 20, skip: int = 0) -> dict:
+    """Distinct items linked to an entity and/or in a place, newest first (the Newsroom list filter).
+    A place matches through the item's places and their parents, so Dubai includes Dubai communities."""
+    if not entity_id and not location_id:
+        raise Invalid("Choose a company or a place")
+    if entity_id and await db[ndb.ENTITIES].count_documents({"_id": entity_id}) == 0:
+        raise NotFound(f"Entity {entity_id} not found")
+    await _check_location(db, location_id)
+
+    match = _visible({})
+    if entity_id:
+        match["entity_id"] = entity_id
+    if location_id:
+        match["location_ids"] = location_id
+    if source_type:
+        match["source_type"] = source_type
+    if item_statuses:
+        match["item_status"] = {"$in": [s for s in item_statuses if s not in HIDDEN_ITEM_STATUSES]}
+    if q and q.strip():
+        match["title"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+
+    pipeline = [
+        {"$match": match},
+        {"$sort": {"timestamp": -1, "_id": 1}},
+        {"$group": {"_id": {"t": "$source_type", "i": "$source_id"}, "doc": {"$first": "$$ROOT"}}},
+        {"$sort": {"doc.timestamp": -1, "_id.t": 1, "_id.i": 1}},
+        {"$facet": {"total": [{"$count": "n"}], "items": [{"$skip": skip}, {"$limit": limit}]}},
+    ]
+    result = (await (await db[ndb.ENTITY_MENTIONS].aggregate(pipeline)).to_list(length=1))[0]
+    total = result["total"][0]["n"] if result["total"] else 0
+    return {"items": [_history_item(r["doc"]) for r in result["items"]], "total": total, "limit": limit, "skip": skip}

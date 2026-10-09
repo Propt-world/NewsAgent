@@ -251,3 +251,33 @@ def test_missing_vector_index_shows_nothing(similar_scene, monkeypatch):
 
     monkeypatch.setattr(related, "_vector_search", broken)
     assert _related(similar_scene, item="article/S0")["basis"] == "none"
+
+
+def _filtered(api, **params):
+    resp = api.get("/newsroom/items", params=params)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_newsroom_list_filter(scene):
+    # A company: one row per item, newest first, rejected A5 hidden
+    emaar = _filtered(scene, entity=EMAAR)
+    assert _ids(emaar) == [scene.s1, "A2", "A1", "A3", "A8"] and emaar["total"] == 5
+    # A place includes its communities (A1, A2, A6 are in Dubai Creek Harbour), one row per item
+    assert _ids(_filtered(scene, location=DUBAI)) == ["A2", "A1", "A6", "A7"]
+    # Both together
+    assert _ids(_filtered(scene, entity=DAMAC, location=DUBAI)) == ["A2"]
+    # Type and status, as the Newsroom toggles send them (pending signals are "draft")
+    assert _ids(_filtered(scene, entity=EMAAR, source_type="signal", status=["draft"])) == [scene.s1]
+    assert _ids(_filtered(scene, entity=EMAAR, source_type="article", status=["approved"])) == []
+    assert _ids(_filtered(scene, entity=EMAAR, status=["rejected"])) == []  # never shown, even if asked
+    # Title search is plain text
+    assert _ids(_filtered(scene, entity=EMAAR, q="article a3")) == ["A3"]
+    assert _filtered(scene, entity=EMAAR, q="(")["total"] == 0
+    # Paging
+    page = _filtered(scene, entity=EMAAR, limit=2, skip=2)
+    assert _ids(page) == ["A1", "A3"] and page["total"] == 5
+    # Errors
+    assert scene.get("/newsroom/items").status_code == 422
+    assert scene.get("/newsroom/items", params={"location": EMAAR}).status_code == 422  # not a place
+    assert scene.get("/newsroom/items", params={"entity": "missing"}).status_code == 404

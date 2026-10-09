@@ -241,6 +241,13 @@ class HistoryResponse(BaseModel):
     skip: int
 
 
+class FilteredItemsResponse(BaseModel):
+    items: List[HistoryItem]
+    total: int
+    limit: int
+    skip: int
+
+
 class SourceRef(BaseModel):
     source_type: SourceType
     source_id: str = Field(..., min_length=1, max_length=100)
@@ -251,11 +258,14 @@ class ComposeRequest(BaseModel):
     output_type: Literal["article", "signal"]
     exclude_entity_ids: List[str] = Field(default_factory=list, max_length=100,
                                           description="Companies/places the reviewer removed before composing")
+    include_entity_ids: List[str] = Field(default_factory=list, max_length=20,
+                                          description="Switched-on companies/places the reviewer added before composing")
 
 
 class ExtractSignalRequest(BaseModel):
     article_id: str = Field(..., min_length=1, max_length=100)
     exclude_entity_ids: List[str] = Field(default_factory=list, max_length=100)
+    include_entity_ids: List[str] = Field(default_factory=list, max_length=20)
 
 
 class SignalSavedRequest(BaseModel):
@@ -278,6 +288,7 @@ class ComposeRunOut(BaseModel):
     sources: List[ComposeSourceOut]
     entity_ids: List[str] = []
     excluded_entity_ids: List[str] = []
+    included_entity_ids: List[str] = []
     requested_by: Optional[str] = None
     created_at: UtcDatetime
     started_at: Optional[UtcDatetime] = None

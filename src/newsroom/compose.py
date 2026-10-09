@@ -86,13 +86,21 @@ def _out(doc: dict) -> dict:
     return out
 
 
-async def _source_entities(db, keys: List[tuple], exclude: List[str]) -> List[str]:
-    """Confirmed links of the sources, switched-on entities only, minus the ones the reviewer removed."""
+async def _source_entities(db, keys: List[tuple], exclude: List[str], include: Optional[List[str]] = None) -> List[str]:
+    """Confirmed links of the sources, switched-on entities only, minus the ones the reviewer removed,
+    plus the ones the reviewer added (which must be switched on)."""
     entity_ids = set()
     for source_type, source_id in keys:
         entity_ids.update(await db[ndb.ENTITY_MENTIONS].distinct(
             "entity_id", {"source_type": source_type, "source_id": source_id, "status": "linked"}))
     entity_ids -= set(exclude or [])
+    added = set(include or [])
+    if added:
+        found = set(await db[ndb.ENTITIES].distinct("_id", {"_id": {"$in": list(added)}, "status": "active"}))
+        if found != added:
+            raise Invalid("Only switched-on companies and places can be added: "
+                          + ", ".join(sorted(added - found)))
+    entity_ids |= added
     if not entity_ids:
         return []
     active = await db[ndb.ENTITIES].distinct("_id", {"_id": {"$in": list(entity_ids)}, "status": "active"})
@@ -100,7 +108,8 @@ async def _source_entities(db, keys: List[tuple], exclude: List[str]) -> List[st
 
 
 async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_type: str,
-                     items: List[dict], actor: str, exclude_entity_ids: Optional[List[str]] = None) -> dict:
+                     items: List[dict], actor: str, exclude_entity_ids: Optional[List[str]] = None,
+                     include_entity_ids: Optional[List[str]] = None) -> dict:
     """Checks and records a compose request, then queues it for the worker."""
     keys = list(dict.fromkeys((i["source_type"], i["source_id"]) for i in items))
     if kind == "compose" and not (MIN_SOURCES <= len(keys) <= MAX_SOURCES):
@@ -140,8 +149,9 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
         "status": "queued",
         "sources": source_docs,
         "source_keys": source_keys,
-        "entity_ids": await _source_entities(db, keys, exclude_entity_ids or []),
+        "entity_ids": await _source_entities(db, keys, exclude_entity_ids or [], include_entity_ids or []),
         "excluded_entity_ids": sorted(set(exclude_entity_ids or [])),
+        "included_entity_ids": sorted(set(include_entity_ids or [])),
         "requested_by": actor,
         "created_at": now,
         "deadline_at": now + timedelta(minutes=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES),

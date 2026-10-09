@@ -43,10 +43,10 @@ def scene(api, sync_db):
     return api
 
 
-def _compose(api, *sources, output_type="article", exclude=()):
+def _compose(api, *sources, output_type="article", exclude=(), include=()):
     return api.post("/newsroom/compose", json={
         "sources": [{"source_type": t, "source_id": i} for t, i in sources],
-        "output_type": output_type, "exclude_entity_ids": list(exclude)})
+        "output_type": output_type, "exclude_entity_ids": list(exclude), "include_entity_ids": list(include)})
 
 
 def _run(sync_db, **fields):
@@ -69,6 +69,21 @@ def test_compose_is_queued_with_provenance(scene):
     assert sorted(run["entity_ids"]) == sorted([EMAAR, DAMAC])  # Dubai removed by the reviewer
     assert [s["status_at_request"] for s in run["sources"]] == ["processed", "draft"]
     assert scene.queue.pushed == [(settings.NEWSROOM_COMPOSE_QUEUE, json.dumps({"run_id": run["id"]}))]
+
+
+def test_reviewer_can_add_switched_on_companies_and_places(scene):
+    nakheel = seed_entity_id("organisation", "Nakheel")
+    run = _compose(scene, ("article", "A1"), ("signal", scene.signal_id), exclude=[DUBAI], include=[nakheel]).json()
+    assert sorted(run["entity_ids"]) == sorted([EMAAR, DAMAC, nakheel])
+    assert run["included_entity_ids"] == [nakheel]
+    # Only switched-on entries can be added (a staged one, or one that does not exist, is refused)
+    staged = seed_entity_id("organisation", "Emaar Development")
+    for bad in (staged, "no-such-entity"):
+        resp = _compose(scene, ("article", "A1"), ("article", "A2"), include=[bad])
+        assert resp.status_code == 422 and bad in resp.json()["detail"]
+    # Extract-signal takes additions too
+    extract = scene.post("/newsroom/extract-signal", json={"article_id": "A2", "include_entity_ids": [nakheel]}).json()
+    assert extract["entity_ids"] == [nakheel]
 
 
 @pytest.mark.parametrize("sources, code", [

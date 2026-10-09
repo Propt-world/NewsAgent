@@ -43,6 +43,8 @@ INDEX_SPECS = [
     (ENTITY_MENTIONS, [("entity_id", ASCENDING), ("status", ASCENDING), ("timestamp", DESCENDING)], {"name": "entity_status_time"}),
     (ENTITY_MENTIONS, [("source_type", ASCENDING), ("source_id", ASCENDING), ("status", ASCENDING)], {"name": "source_status"}),
     (ENTITY_MENTIONS, [("entity_id", ASCENDING), ("location_ids", ASCENDING), ("timestamp", DESCENDING)], {"name": "entity_location_time"}),
+    # The Newsroom list's place-only filter ("everything in Dubai")
+    (ENTITY_MENTIONS, [("location_ids", ASCENDING), ("timestamp", DESCENDING)], {"name": "location_time"}),
     (ENTITY_MENTIONS, [("entity_id", ASCENDING), ("topics", ASCENDING), ("timestamp", DESCENDING)], {"name": "entity_topic_time"}),
     # One suggestion per item, field and name; dismissed ones stay so they are never shown again.
     (ENTITY_SUGGESTIONS, [("source_type", ASCENDING), ("source_id", ASCENDING), ("field", ASCENDING), ("name_norm", ASCENDING)],

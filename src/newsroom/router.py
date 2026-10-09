@@ -32,6 +32,7 @@ from src.newsroom.models import (
     EntityOut,
     EntityUpdate,
     ExtractSignalRequest,
+    FilteredItemsResponse,
     HistoryResponse,
     IgnoreCreate,
     IgnoreOut,
@@ -225,6 +226,22 @@ async def entity_history(
     return await _call(rel.entity_history(db, entity_id, location, before, after, limit, skip))
 
 
+@router.get("/items", response_model=FilteredItemsResponse,
+            description="Articles and signals linked to a company and/or in a place (a place includes its "
+                        "communities), newest first: the Newsroom list's company/place filter.")
+async def filtered_items(
+    entity: Optional[str] = Query(None, description="Only items linked to this entity"),
+    location: Optional[str] = Query(None, description="Only items in this place (location entity id)"),
+    source_type: Optional[SourceType] = Query(None, description="article or signal"),
+    status: Optional[List[str]] = Query(None, description="Item statuses, e.g. processed and draft for pending"),
+    q: Optional[str] = Query(None, max_length=100, description="Plain text in the title"),
+    limit: int = Query(20, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+    db=Depends(get_newsroom_db),
+):
+    return await _call(rel.filtered_items(db, entity, location, source_type, status, q, limit, skip))
+
+
 @router.post("/items/changed", response_model=ItemsChangedResponse,
              description="Another service changed these items (status or text). NewsAgent re-reads each one "
                          "and refreshes its links and the new-names queue. Only ids are sent.")
@@ -289,7 +306,8 @@ async def compose(payload: ComposeRequest, db=Depends(get_newsroom_db), sources=
                   redis=Depends(get_redis), actor: str = Depends(get_actor)):
     return await _call(cmp.create_run(
         db, sources, redis, kind="compose", output_type=payload.output_type,
-        items=[s.model_dump() for s in payload.sources], actor=actor, exclude_entity_ids=payload.exclude_entity_ids))
+        items=[s.model_dump() for s in payload.sources], actor=actor, exclude_entity_ids=payload.exclude_entity_ids,
+        include_entity_ids=payload.include_entity_ids))
 
 
 @router.post("/extract-signal", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,
@@ -299,7 +317,7 @@ async def extract_signal(payload: ExtractSignalRequest, db=Depends(get_newsroom_
     return await _call(cmp.create_run(
         db, sources, redis, kind="extract_signal", output_type="signal",
         items=[{"source_type": "article", "source_id": payload.article_id}], actor=actor,
-        exclude_entity_ids=payload.exclude_entity_ids))
+        exclude_entity_ids=payload.exclude_entity_ids, include_entity_ids=payload.include_entity_ids))
 
 
 @router.get("/compose", response_model=ComposeRunList, description="Recent compose runs and today's AI spend.")

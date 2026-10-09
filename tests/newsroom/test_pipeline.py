@@ -125,9 +125,16 @@ with TestClient(app) as c:
     out["suggestions"] = sorted(s["name"] for s in db.entity_suggestions.find({{"source_id": article["_id"]}}))
     emaar = db.entity_suggestions.find_one({{"source_id": article["_id"], "name": "Emaar"}})
     c.post(f"/newsroom/items/article/{{article['_id']}}/links", json={{"entity_id": emaar["entity_id"]}})
+    c.patch(f"/articles/{{article['_id']}}/title", json={{"title": "Edited title"}})
+    out["title_after_edit"] = db.entity_mentions.find_one({{"source_id": article["_id"]}})["title"]
     r = c.patch(f"/articles/{{article['_id']}}/status", json={{"status": "rejected"}})
     out["status"] = r.status_code
     out["item_status"] = db.entity_mentions.find_one({{"source_id": article["_id"]}})["item_status"]
+    # Processed again (same url): links follow the new text and status.
+    c.post("/webhook/store-result", json={{"source_url": url, "status": "success",
+        "data": {{"title": "Reprocessed title", "summary": "New summary."}}}})
+    mention = db.entity_mentions.find_one({{"source_id": article["_id"]}})
+    out["after_reprocess"] = [mention["title"], mention["item_status"]]
 print("RESULT=" + json.dumps(out))
 """
     env = {k: v for k, v in os.environ.items()}
@@ -143,3 +150,5 @@ print("RESULT=" + json.dumps(out))
     assert out["suggestions"] == ["Brand New Place", "Dubai", "Emaar"]  # "Wasl" is ambiguous: no suggestion
     assert out["status"] == 200
     assert out["item_status"] == "rejected"
+    assert out["title_after_edit"] == "Edited title"
+    assert out["after_reprocess"] == ["Reprocessed title", "processed"]

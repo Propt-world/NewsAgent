@@ -8,7 +8,7 @@ import logging
 from typing import Any, List, Tuple
 
 from src.newsroom import links as lnk
-from src.newsroom.db import get_newsroom_db
+from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.scheduler.db import get_async_scheduler_collections
 
 logger = logging.getLogger("newsroom")
@@ -32,20 +32,31 @@ def split_names(newsroom_names: Any) -> Tuple[List[str], List[str]]:
     return organisations, _strings(newsroom_names.get("places"))
 
 
-async def suggest_for_article_url(url: str, newsroom_names: Any) -> None:
-    """Background step after the result webhook stored an article: creates entity suggestions."""
+async def article_stored(url: str, newsroom_names: Any) -> None:
+    """
+    Background step after the result webhook stored an article: creates entity suggestions from the
+    names the pipeline found, and refreshes existing links (an article can be processed again).
+    """
     try:
-        organisations, locations = split_names(newsroom_names)
-        if not organisations and not locations:
-            return
         article = await get_async_scheduler_collections().processed_articles.find_one({"url": url}, {"_id": 1})
         if article is None:
             logger.warning(f"[NEWSROOM] No article for {url}; suggestions skipped.")
             return
-        counts = await lnk.suggest(get_newsroom_db(), "article", article["_id"], organisations, locations, "pipeline")
-        logger.info(f"[NEWSROOM] Suggestions for article {article['_id']}: {counts}")
+        organisations, locations = split_names(newsroom_names)
+        if organisations or locations:
+            counts = await lnk.suggest(get_newsroom_db(), "article", article["_id"], organisations, locations, "pipeline")
+            logger.info(f"[NEWSROOM] Suggestions for article {article['_id']}: {counts}")
+        await lnk.item_changed(get_newsroom_db(), get_item_sources(), "article", article["_id"])
     except Exception:
-        logger.exception(f"[NEWSROOM] Creating suggestions failed for {url}")
+        logger.exception(f"[NEWSROOM] Article hook failed for {url}")
+
+
+async def article_edited(article_id: str) -> None:
+    """After an article's title is edited: its links show the new title."""
+    try:
+        await lnk.item_changed(get_newsroom_db(), get_item_sources(), "article", article_id)
+    except Exception:
+        logger.exception(f"[NEWSROOM] Edit hook failed for article {article_id}")
 
 
 async def article_status_changed(article_id: str, new_status: str) -> None:

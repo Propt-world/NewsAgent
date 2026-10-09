@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, R
 
 from src.newsroom import entities as svc
 from src.newsroom import links as lnk
+from src.newsroom import related as rel
 from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.newsroom.models import (
     AliasCreate,
@@ -24,6 +25,7 @@ from src.newsroom.models import (
     EntityListResponse,
     EntityOut,
     EntityUpdate,
+    HistoryResponse,
     IgnoreCreate,
     IgnoreOut,
     ItemEntitiesResponse,
@@ -34,6 +36,7 @@ from src.newsroom.models import (
     NewNameGroup,
     NewNameLinkRequest,
     NewsroomHealthResponse,
+    RelatedResponse,
     SourceType,
     SuggestionOut,
     SuggestRequest,
@@ -177,6 +180,35 @@ async def link_all(source_type: SourceType, source_id: str, db=Depends(get_newsr
 async def unlink_entity(source_type: SourceType, source_id: str, entity_id: str, db=Depends(get_newsroom_db),
                         actor: str = Depends(get_actor)):
     return await _call(lnk.unlink(db, source_type, source_id, entity_id, actor))
+
+
+@router.get("/items/{source_type}/{source_id}/related", response_model=RelatedResponse,
+            description="Other articles and signals sharing this item's confirmed companies (or, if it has none, "
+                        "its specific places). Ranked by shared entities, then shared places, then recency.")
+async def related_items(
+    source_type: SourceType,
+    source_id: str,
+    location: Optional[str] = Query(None, description="Only items in this place (location entity id), e.g. Dubai"),
+    days: Optional[int] = Query(None, ge=1, le=3650, description="Only items from the last N days"),
+    limit: int = Query(20, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+    db=Depends(get_newsroom_db),
+):
+    return await _call(rel.related_items(db, source_type, source_id, location, days, limit, skip))
+
+
+@router.get("/entities/{entity_id}/history", response_model=HistoryResponse,
+            description="An entity's confirmed articles and signals, newest first, e.g. Emaar only in Dubai.")
+async def entity_history(
+    entity_id: str,
+    location: Optional[str] = Query(None, description="Only items in this place (location entity id)"),
+    before: Optional[datetime] = Query(None, description="Only items before this date"),
+    after: Optional[datetime] = Query(None, description="Only items after this date"),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+    db=Depends(get_newsroom_db),
+):
+    return await _call(rel.entity_history(db, entity_id, location, before, after, limit, skip))
 
 
 @router.post("/items/changed", response_model=ItemsChangedResponse,

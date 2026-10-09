@@ -177,6 +177,59 @@ class CountResponse(BaseModel):
     count: int
 
 
+class EntityRef(BaseModel):
+    id: str
+    name: str
+
+
+class RelatedItem(BaseModel):
+    source_type: SourceType
+    source_id: str
+    title: Optional[str] = None
+    snippet: Optional[str] = None
+    url: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    item_status: Optional[str] = None
+    shared_entities: List[EntityRef]
+    shared_places: List[EntityRef]
+    reason: str
+
+
+class RelatedResponse(BaseModel):
+    basis: Literal["organisations", "places", "none"] = Field(
+        ..., description="What 'related' was based on: shared organisations, specific places, or nothing linked yet")
+    items: List[RelatedItem]
+    total: int
+    limit: int
+    skip: int
+
+
+class HistoryEntity(BaseModel):
+    id: str
+    name: str
+    kind: str
+    status: str
+
+
+class HistoryItem(BaseModel):
+    source_type: SourceType
+    source_id: str
+    title: Optional[str] = None
+    snippet: Optional[str] = None
+    url: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    item_status: Optional[str] = None
+    location_ids: List[str] = []
+
+
+class HistoryResponse(BaseModel):
+    entity: HistoryEntity
+    items: List[HistoryItem]
+    total: int
+    limit: int
+    skip: int
+
+
 class ItemsChangedRequest(BaseModel):
     source_type: SourceType
     source_ids: List[str] = Field(..., min_length=1, max_length=500)

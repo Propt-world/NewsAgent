@@ -43,7 +43,7 @@ from src.utils.email_utils import close_async_email_client, send_error_email_asy
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.db import ensure_newsroom_indexes
-from src.newsroom.pipeline import article_status_changed, suggest_for_article_url
+from src.newsroom.pipeline import article_edited, article_status_changed, article_stored
 from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
@@ -504,9 +504,9 @@ async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTask
             }
         )
 
-    # Newsroom: entity suggestions from the names the pipeline found (after the response; failures only logged)
-    if settings.newsroom_enabled and payload.get("newsroom_names"):
-        background_tasks.add_task(suggest_for_article_url, url, payload.get("newsroom_names"))
+    # Newsroom: suggestions from the names the pipeline found, and refreshed links (after the response; failures only logged)
+    if settings.newsroom_enabled:
+        background_tasks.add_task(article_stored, url, payload.get("newsroom_names"))
 
     return {"status": "ok", "message": "Result stored"}
 
@@ -1145,6 +1145,10 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
+
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the title change itself has already succeeded.
+        await article_edited(article_id)
 
     return {"status": "updated", "id": article_id, "new_title": new_title.strip(), "new_slug": new_slug}
 

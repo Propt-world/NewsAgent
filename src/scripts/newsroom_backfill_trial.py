@@ -44,7 +44,7 @@ def write_csv(path: Path, rows: list) -> None:
 def labels_pass(index, labels, articles, out: Path) -> dict:
     name_rows, link_rows = [], []
     per_entity = defaultdict(lambda: {"links": 0, bt.EXACT_CASE: 0, bt.OTHER_CASE: 0, bt.ABSENT: 0, "examples": []})
-    outcomes, unknown, other_kind = Counter(), Counter(), Counter()
+    outcomes, unknown, other_list = Counter(), Counter(), Counter()
     with_links = 0
     for row in labels:
         article_id, title = row["Article ID"].strip(), row.get("Article Title") or ""
@@ -54,8 +54,8 @@ def labels_pass(index, labels, articles, out: Path) -> dict:
             outcomes[r.outcome] += 1
             if r.outcome == "unknown":
                 unknown[(r.field, r.name)] += 1
-                if r.other_kind_match:
-                    other_kind[(r.field, r.name, r.other_kind_match)] += 1
+            if r.given_as:
+                other_list[(r.given_as, r.name, r.entity_name)] += 1
             name_rows.append({"article_id": article_id, "title": title, **asdict(r)})
         links = bt.auto_links(results)
         with_links += bool(links)
@@ -89,7 +89,7 @@ def labels_pass(index, labels, articles, out: Path) -> dict:
         "links_name_not_in_text": in_text[bt.ABSENT],
         "name_outcomes": dict(outcomes),
         "top_unknown_names": [f"{f}: {n} ({c})" for (f, n), c in unknown.most_common(25)],
-        "unknown_names_matching_the_other_kind": [f"{f}: {n} -> {m} ({c})" for (f, n, m), c in other_kind.most_common(25)],
+        "found_in_the_other_list": [f"{f}: {n} -> {m} ({c})" for (f, n, m), c in other_list.most_common(25)],
     }
 
 

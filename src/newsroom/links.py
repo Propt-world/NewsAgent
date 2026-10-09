@@ -122,10 +122,12 @@ async def suggest(db, source_type: str, source_id: str, organisations: List[str]
         if skipped:
             counts[skip_counts[skipped]] += 1
             continue
-        aliases = await db[ndb.ENTITY_ALIASES].find({"kind": field, "alias_norm": norm}).to_list(length=None)
-        exact = rs.exact_alias(aliases)
-        found = await db[ndb.ENTITIES].find_one({"_id": exact["entity_id"]}) if exact else None
-        resolution = rs.resolve(name, ignored, aliases, found)
+        given_as = field
+        resolution, exact = await _resolve_in(db, field, name, norm, ignored)
+        if resolution.outcome == rs.UNKNOWN:
+            other, other_exact = await _resolve_in(db, rs.other_kind(field), name, norm, ignored)
+            if other.outcome in rs.OTHER_LIST_OUTCOMES:
+                field, resolution, exact = rs.other_kind(field), other, other_exact
         if resolution.outcome in skip_counts:
             counts[skip_counts[resolution.outcome]] += 1
             continue
@@ -140,6 +142,8 @@ async def suggest(db, source_type: str, source_id: str, organisations: List[str]
             reason = f"exact match on alias '{exact['alias']}' (entity is switched off)"
         else:
             reason = f"exact match on alias '{exact['alias']}'"
+        if field != given_as:
+            reason += f" (given as a {'company' if given_as == 'organisation' else 'place'} name)"
         doc = {
             "_id": str(uuid.uuid4()),
             "source_type": source_type,
@@ -164,6 +168,14 @@ async def suggest(db, source_type: str, source_id: str, organisations: List[str]
         except DuplicateKeyError:
             counts["existing"] += 1
     return counts
+
+
+async def _resolve_in(db, kind: str, name: str, norm: str, ignored) -> tuple:
+    """The shared matching rules for one name in one list; returns (resolution, exact alias or None)."""
+    aliases = await db[ndb.ENTITY_ALIASES].find({"kind": kind, "alias_norm": norm}).to_list(length=None)
+    exact = rs.exact_alias(aliases)
+    found = await db[ndb.ENTITIES].find_one({"_id": exact["entity_id"]}) if exact else None
+    return rs.resolve(name, ignored, aliases, found), exact
 
 
 async def item_entities(db, source_type: str, source_id: str) -> dict:

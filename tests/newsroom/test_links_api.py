@@ -70,6 +70,22 @@ def test_suggest_rules(seeded):
     assert (again["created"], again["existing"]) == (0, 7)
 
 
+def test_names_are_tried_in_the_other_list(seeded):
+    # "Yas Island" given as a company/project is the place; "KEZAD" given as a place is the company.
+    counts = _suggest(seeded, organisations=["Yas Island"], locations=["KEZAD", "Nowhere Town"])
+    assert counts["created"] == 3
+    suggestions = _open(seeded)
+    yas, kezad = suggestions["Yas Island"], suggestions["KEZAD"]
+    assert (yas["field"], yas["entity_id"]) == (LOC, _id(LOC, "Yas Island"))
+    assert yas["reason"] == "exact match on alias 'Yas Island' (given as a company name)"
+    assert (kezad["field"], kezad["entity_id"]) == (ORG, _id(ORG, "KEZAD"))
+    assert suggestions["Nowhere Town"]["field"] == LOC and suggestions["Nowhere Town"]["entity_id"] is None
+    # The suggestion is stored under the entity's own list, so it can be linked normally.
+    resp = seeded.post(f"{ITEM}/links", json={"entity_id": yas["entity_id"], "suggestion_id": yas["id"]})
+    assert resp.status_code == 200, resp.text
+    assert "Yas Island" in _links(seeded)
+
+
 def test_link_unlink_is_sticky(seeded, sync_db):
     _suggest(seeded, **NAMES)
     emaar = _open(seeded)["Emaar"]

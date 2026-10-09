@@ -29,9 +29,13 @@ def test_resolution_follows_the_live_rules(index):
     assert index.resolve("organisation", "Wasl Group").outcome == rs.STAGED
     assert index.resolve("organisation", "waslgroup").outcome == rs.IGNORED
     assert index.resolve("organisation", "www.emaar.com").outcome == rs.HANDLE
-    # A community given as a project: not an organisation, but a switched-on place of that name exists
+    # A community given as a project is found in the place list; a company given as a place in the company list
     yas = index.resolve("organisation", "Yas Island")
-    assert yas.outcome == rs.UNKNOWN and yas.other_kind_match == "Yas Island"
+    assert (yas.outcome, yas.field, yas.entity_name, yas.given_as) == (rs.ACTIVE, "location", "Yas Island", "organisation")
+    kezad = index.resolve("location", "KEZAD")
+    assert (kezad.outcome, kezad.field, kezad.given_as) == (rs.ACTIVE, "organisation", "location")
+    assert index.resolve("organisation", "Emaar").given_as is None
+    assert index.resolve("organisation", "Nobody Ltd").outcome == rs.UNKNOWN
 
 
 def test_auto_links_only_switched_on_and_once_per_entity(index):

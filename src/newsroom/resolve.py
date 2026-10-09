@@ -5,6 +5,10 @@ the backfill trial so the two can never disagree.
 Order: website/handle -> ignore list (original text, before normalising) ->
 aliases of the normalised name (an exact alias wins; only ambiguous ones give
 nothing) -> the entity's status.
+
+A name not in its own list is tried in the other list (exact alias only), so a
+community given as a project ("Yas Island") finds the place, and a company
+given as a place ("KEZAD") finds the company.
 """
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
@@ -18,6 +22,15 @@ UNKNOWN = "unknown"            # not in the list
 SWITCHED_OFF = "switched_off"  # the entity is missing or has status "ignored"
 STAGED = "staged"              # exact match on an entity that is not switched on yet
 ACTIVE = "active"              # exact match on a switched-on entity
+
+
+KINDS = ("organisation", "location")
+# Outcomes of the other list that are used when a name is not in its own list
+OTHER_LIST_OUTCOMES = (ACTIVE, STAGED)
+
+
+def other_kind(kind: str) -> str:
+    return KINDS[1] if kind == KINDS[0] else KINDS[0]
 
 
 @dataclass

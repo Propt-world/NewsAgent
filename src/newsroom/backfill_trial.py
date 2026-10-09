@@ -25,7 +25,6 @@ from src.newsroom.seed import SeedPlan
 
 # Workbook cells that mean "nothing named"
 EMPTY_CELLS = {"", "not stated", "not applicable", "none", "n/a", "na", "-", "unknown", "not specified"}
-KINDS = ("organisation", "location")
 SNIPPET_CHARS = 80
 
 # in_text values
@@ -65,8 +64,8 @@ class NameResult:
     entity_name: Optional[str] = None
     entity_status: Optional[str] = None
     matched_alias: Optional[str] = None
-    # A switched-on entity of the other kind has this exact alias (e.g. a project name that is a place)
-    other_kind_match: Optional[str] = None
+    # The list the name was given in, when it was found in the other one (e.g. a project name that is a place)
+    given_as: Optional[str] = None
 
 
 class ListIndex:
@@ -83,24 +82,25 @@ class ListIndex:
     def from_plan(cls, plan: SeedPlan) -> "ListIndex":
         return cls(plan.entities, plan.aliases, [i["string_key"] for i in plan.ignore])
 
-    def resolve(self, field: str, name: str) -> NameResult:
-        norm = normalize_alias(name)
-        aliases = self.aliases.get((field, norm), [])
+    def _resolve_in(self, kind: str, name: str) -> rs.Resolution:
+        aliases = self.aliases.get((kind, normalize_alias(name)), [])
         exact = rs.exact_alias(aliases)
-        entity = self.entities.get(exact["entity_id"]) if exact else None
-        res = rs.resolve(name, self.ignored, aliases, entity)
-        result = NameResult(field=field, name=name, outcome=res.outcome)
+        return rs.resolve(name, self.ignored, aliases, self.entities.get(exact["entity_id"]) if exact else None)
+
+    def resolve(self, field: str, name: str) -> NameResult:
+        """Same as links.suggest: the name's own list first, then the other list (exact alias only)."""
+        res, kind = self._resolve_in(field, name), field
+        if res.outcome == rs.UNKNOWN:
+            other = self._resolve_in(rs.other_kind(field), name)
+            if other.outcome in rs.OTHER_LIST_OUTCOMES:
+                res, kind = other, rs.other_kind(field)
+        result = NameResult(field=kind, name=name, outcome=res.outcome, given_as=field if kind != field else None)
         if res.entity is not None:
             result.entity_id = res.entity["_id"]
             result.entity_name = res.entity["canonical_name"]
             result.entity_status = res.entity["status"]
         if res.alias is not None:
             result.matched_alias = res.alias["alias"]
-        if res.outcome == rs.UNKNOWN:
-            other = next(k for k in KINDS if k != field)
-            other_res = self.resolve(other, name) if (other, norm) in self.aliases else None
-            if other_res is not None and other_res.outcome == rs.ACTIVE:
-                result.other_kind_match = other_res.entity_name
         return result
 
 

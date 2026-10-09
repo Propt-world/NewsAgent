@@ -181,6 +181,7 @@ class FakeModel:
         self.answers = answers
         self.prompts = []
         self.temperatures = []  # (schema name, temperature) per call
+        self.callbacks = []  # the callbacks (Opik tracer) each call was given
         self.temperature = None
         self.delay = delay
 
@@ -194,7 +195,8 @@ class FakeModel:
         model = self
 
         class Structured:
-            async def ainvoke(self, messages):
+            async def ainvoke(self, messages, config=None):
+                model.callbacks.append((config or {}).get("callbacks"))
                 model.prompts.append((schema.__name__, messages[0][1]))
                 model.temperatures.append((schema.__name__, model.temperature))
                 if model.delay:
@@ -229,8 +231,9 @@ def fake_usage(prompt_tokens=1200, completion_tokens=300, cost=0.00036):
 
 @pytest.fixture
 def job(scene, sync_db, mongo_url, db_name, monkeypatch):
-    """Runs a compose job against the throwaway database with a fake model."""
+    """Runs a compose job against the throwaway database with a fake model (and no real Opik)."""
     monkeypatch.setattr(cw, "get_openai_callback", fake_usage)
+    monkeypatch.setattr(settings, "OPIK_API_KEY", "")
 
     async def no_registry(names):
         return {n: cw.PROMPTS_BY_NAME[n]["content"] for n in names}
@@ -304,7 +307,7 @@ def test_article_job_stores_and_links(scene, job, sync_db, monkeypatch):
     posted = {}
 
     class FakeGraph:
-        async def ainvoke(self, state):
+        async def ainvoke(self, state, config=None):
             assert state.source_url.startswith("newsroom://compose/")
             assert [s["url"] for s in state.other_sources] == ["https://example.com/A1", "https://example.com/A2"]
             article = ArticleModel(title="SEO title", content=state.news_article.content, author=state.news_article.author)
@@ -365,3 +368,53 @@ print("RESULT=" + json.dumps({{"codes": out, "good": [a["source_id"], a.get("gen
     assert out["codes"] == [200, 200]
     assert out["good"] == ["newsroom_compose", "run-1", "Propt Newsroom", "processed"]
     assert out["forged"] == ["manual_submission", None]
+
+
+class FakeTracer:
+    """Stands in for OpikTracer: records how it was made and that it was flushed."""
+
+    def __init__(self, **options):
+        self.options = options
+        self.flushed = False
+
+    def flush(self):
+        self.flushed = True
+
+
+def test_compose_calls_are_traced_in_opik(scene, job, monkeypatch):
+    from src.configs.settings import Settings
+    made = []
+
+    def fake_opik_client(self, graph=None, **options):
+        made.append(FakeTracer(**options))
+        return made[-1]
+
+    monkeypatch.setattr(settings, "OPIK_API_KEY", "test-key")
+    monkeypatch.setattr(Settings, "get_opik_client", fake_opik_client)
+    body = _compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json()
+    run, model = job(body)
+    assert run["status"] == "succeeded" and run["opik_traced"] is True
+    tracer = made[0]
+    assert model.callbacks == [[tracer]] * 3  # researcher, writer, editor
+    assert tracer.options["thread_id"] == run["_id"]
+    assert tracer.options["tags"] == ["newsroom", "compose", "signal"]
+    assert tracer.options["metadata"]["compose_run_id"] == run["_id"]
+    assert tracer.flushed
+
+
+def test_opik_problems_never_fail_a_job(scene, job, monkeypatch):
+    from src.configs.settings import Settings
+
+    def broken(self, graph=None, **options):
+        raise ConnectionError("opik down")
+
+    monkeypatch.setattr(settings, "OPIK_API_KEY", "test-key")
+    monkeypatch.setattr(Settings, "get_opik_client", broken)
+    run, model = job(_compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json())
+    assert run["status"] == "succeeded" and run["opik_traced"] is False
+    assert model.callbacks == [None] * 3
+
+
+def test_no_opik_key_means_no_tracing(scene, job):
+    run, model = job(_compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json())
+    assert run["status"] == "succeeded" and run["opik_traced"] is False

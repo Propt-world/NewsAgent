@@ -7,7 +7,9 @@ Editor and the extract-signal decision use NEWSROOM_COMPOSE_CHECK_TEMPERATURE. A
 (compose_graph) and are stored through the result webhook as a pending article
 by "Propt Newsroom". Signals are kept as a draft on the run for the reviewer.
 Token usage and cost of every call (including the pipeline steps) are recorded
-on the run and count towards the daily budget.
+on the run and count towards the daily budget. Every call is also traced in Opik
+(one thread per run, tagged newsroom/compose) when OPIK_API_KEY is set; tracing
+problems are logged and never fail a job.
 """
 import asyncio
 import hashlib
@@ -139,9 +141,31 @@ async def entity_context(db, entity_ids: List[str]) -> str:
     return "\n".join(sorted(lines))
 
 
-async def ask(model, prompt: str, variables: dict, schema):
+def get_compose_tracer(run: dict):
+    """An Opik tracer for one compose run, or None (Opik not configured or unavailable)."""
+    if not settings.OPIK_API_KEY:
+        return None
+    try:
+        return settings.get_opik_client(
+            tags=list(dict.fromkeys(t for t in ("newsroom", "compose", run.get("kind"), run.get("output_type")) if t)),
+            metadata={"compose_run_id": run["_id"], "kind": run.get("kind"), "output_type": run.get("output_type"),
+                      "model": settings.NEWSROOM_COMPOSE_MODEL, "requested_by": run.get("requested_by"),
+                      "sources": run.get("source_keys") or []},
+            thread_id=run["_id"],
+        )
+    except Exception as e:
+        logger.warning(f"[NEWSROOM] Opik tracing unavailable for compose run {run.get('_id')}: {e}")
+        return None
+
+
+def _config(tracer) -> dict:
+    return {"callbacks": [tracer]} if tracer is not None else {}
+
+
+async def ask(model, prompt: str, variables: dict, schema, tracer=None):
     content = PromptTemplate.from_template(prompt).format(**variables)
-    return await model.with_structured_output(schema).ainvoke([("system", content), ("user", "Return the result.")])
+    return await model.with_structured_output(schema).ainvoke(
+        [("system", content), ("user", "Return the result.")], config=_config(tracer))
 
 
 async def post_to_webhook(payload: dict) -> None:
@@ -165,7 +189,8 @@ async def post_to_webhook(payload: dict) -> None:
     raise RuntimeError(f"Storing the article failed: {last}")
 
 
-async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dict]) -> Tuple[ArticleModel, Optional[dict]]:
+async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dict],
+                               tracer=None) -> Tuple[ArticleModel, Optional[dict]]:
     """The normal article steps from the summary onwards (compose_graph)."""
     from src.newsroom.compose_graph import get_compose_graph
 
@@ -178,7 +203,7 @@ async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dic
         other_sources=[{"title": t["title"], "url": t["url"], "source": "Newsroom source", "content": t["text"]}
                        for t in texts if t["url"]],
     )
-    final = await get_compose_graph().ainvoke(state)
+    final = await get_compose_graph().ainvoke(state, config=_config(tracer))
     if final.get("error_message"):
         raise RuntimeError(final["error_message"])
     article: ArticleModel = final["news_article"]
@@ -202,10 +227,12 @@ async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSource
     await db[ndb.COMPOSE_RUNS].update_one({"_id": run_id}, {"$set": {"status": "running", "started_at": _now()}})
 
     update = {}
+    tracer = get_compose_tracer(run)
+    update["opik_traced"] = tracer is not None
     with get_openai_callback() as usage:
         try:
             result, status = await asyncio.wait_for(
-                _compose(db, sources, run, update), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
+                _compose(db, sources, run, update, tracer), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
             update.update({"status": status, "result": result})
         except Exception as e:
             logger.exception(f"[NEWSROOM] Compose run {run_id} failed")
@@ -217,9 +244,14 @@ async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSource
                 "cost_usd": round(float(usage.total_cost), 6),
             })
             await db[ndb.COMPOSE_RUNS].update_one({"_id": run_id}, {"$set": update})
+    if tracer is not None:
+        try:
+            tracer.flush()
+        except Exception as e:
+            logger.warning(f"[NEWSROOM] Opik flush failed for compose run {run_id}: {e}")
 
 
-async def _compose(db, sources, run, update: dict):
+async def _compose(db, sources, run, update: dict, tracer=None):
     kind, output_type = run["kind"], run["output_type"]
     if kind == "extract_signal":
         names = ["newsroom_researcher", "newsroom_extract_signal", "newsroom_editor"]
@@ -236,21 +268,21 @@ async def _compose(db, sources, run, update: dict):
     writer = get_compose_model(settings.NEWSROOM_COMPOSE_TEMPERATURE)
 
     research = await ask(checker, prompts["newsroom_researcher"],
-                         {"sources": source_block, "entities": await entity_context(db, run["entity_ids"])}, ResearchNotes)
+                         {"sources": source_block, "entities": await entity_context(db, run["entity_ids"])}, ResearchNotes, tracer)
     notes = research.model_dump_json(indent=1)
 
     if kind == "extract_signal":
-        decision = await ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision)
+        decision = await ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision, tracer)
         if not decision.is_signal or decision.draft is None:
             return {"reason": decision.reason or "The article does not describe a specific market movement."}, "not_a_signal"
         draft = decision.draft
     elif output_type == "signal":
-        draft = await ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft)
+        draft = await ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft, tracer)
     else:
-        draft = await ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft)
+        draft = await ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft, tracer)
 
     edited = await ask(checker, prompts["newsroom_editor"],
-                       {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft))
+                       {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft), tracer)
 
     if output_type == "signal":
         signal = edited.model_dump()
@@ -258,7 +290,7 @@ async def _compose(db, sources, run, update: dict):
         return {"draft": signal, "author": AUTHOR,
                 "article_id": run["sources"][0]["source_id"] if kind == "extract_signal" else None}, "succeeded"
 
-    article, newsroom_names = await run_article_pipeline(run["_id"], ArticleDraft(**edited.model_dump()), texts)
+    article, newsroom_names = await run_article_pipeline(run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer)
     url = composed_url(run["_id"])
     payload = {
         "source_url": url,

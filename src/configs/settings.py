@@ -140,7 +140,8 @@ class Settings(BaseSettings):
     SCHEDULER_URL: str = os.getenv('SCHEDULER_URL', 'http://scheduler:8001')
 
     # Opik Settings
-    def get_opik_client(self, graph=None):
+    def get_opik_client(self, graph=None, **tracer_options):
+        """tracer_options (optional): extra OpikTracer settings such as tags, metadata or thread_id."""
         if not self.OPIK_API_KEY:
             raise ValueError("OPIK_API_KEY is not set")
         if not self.OPIK_WORKSPACE:
@@ -153,9 +154,9 @@ class Settings(BaseSettings):
 
         # If a graph is provided, pass it to the tracer for visualization
         if graph:
-            opik_tracer = OpikTracer(graph=graph, project_name=self.OPIK_PROJECT_NAME)
+            opik_tracer = OpikTracer(graph=graph, project_name=self.OPIK_PROJECT_NAME, **tracer_options)
         else:
-            opik_tracer = OpikTracer(project_name=self.OPIK_PROJECT_NAME)
+            opik_tracer = OpikTracer(project_name=self.OPIK_PROJECT_NAME, **tracer_options)
 
         return opik_tracer
 

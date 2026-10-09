@@ -118,8 +118,8 @@ class Settings(BaseSettings):
     # Compose temperatures, separate from MODEL_TEMPERATURE (the normal pipeline steps).
     # Writer (the article or signal text): livelier wording.
     NEWSROOM_COMPOSE_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_TEMPERATURE', '0.7'))
-    # Researcher, Editor and the extract-signal decision: facts and checks, kept low.
-    NEWSROOM_COMPOSE_CHECK_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_CHECK_TEMPERATURE', '0.3'))
+    # Researcher, Editor and the extract-signal decision: facts and checks, same as the pipeline's extraction.
+    NEWSROOM_COMPOSE_CHECK_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_CHECK_TEMPERATURE', '0.5'))
     NEWSROOM_COMPOSE_PER_HOUR: int = int(os.getenv('NEWSROOM_COMPOSE_PER_HOUR', '10'))
     NEWSROOM_COMPOSE_CONCURRENT: int = int(os.getenv('NEWSROOM_COMPOSE_CONCURRENT', '2'))
     NEWSROOM_DAILY_BUDGET_USD: float = float(os.getenv('NEWSROOM_DAILY_BUDGET_USD', '10'))

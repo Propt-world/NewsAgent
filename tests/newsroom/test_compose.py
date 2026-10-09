@@ -259,9 +259,9 @@ def test_signal_job_produces_a_draft(scene, job):
     assert run["result"]["draft"]["summary_en"] == "Emaar sold 500 units in Dubai."
     assert run["result"]["author"] == "Propt Newsroom"
     assert [name for name, _ in model.prompts] == ["ResearchNotes", "SignalDraft", "SignalDraft"]  # researcher, writer, editor
-    # Only the writer uses the livelier compose temperature; facts and checks stay low
-    assert model.temperatures == [("ResearchNotes", 0.3), ("SignalDraft", 0.7), ("SignalDraft", 0.3)]
-    assert run["temperature"] == {"writer": 0.7, "checks": 0.3}
+    # Only the writer uses the livelier compose temperature; facts and checks use the pipeline's 0.5
+    assert model.temperatures == [("ResearchNotes", 0.5), ("SignalDraft", 0.7), ("SignalDraft", 0.5)]
+    assert run["temperature"] == {"writer": 0.7, "checks": 0.5}
     assert set(run["prompts"]) == {"newsroom_researcher", "newsroom_writer_signal", "newsroom_editor"}
     assert (run["tokens"]["total"], run["cost_usd"]) == (1500, 0.00036)
     research_prompt = model.prompts[0][1]
@@ -282,7 +282,7 @@ def test_extract_signal_drafts_when_it_is_one(scene, job):
     run, model = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
     assert run["status"] == "succeeded"
     # The decision is a check, not writing
-    assert model.temperatures == [("ResearchNotes", 0.3), ("ExtractDecision", 0.3), ("SignalDraft", 0.3)]
+    assert model.temperatures == [("ResearchNotes", 0.5), ("ExtractDecision", 0.5), ("SignalDraft", 0.5)]
     assert run["result"]["article_id"] == "A2"
 
 
@@ -322,7 +322,7 @@ def test_article_job_stores_and_links(scene, job, sync_db, monkeypatch):
     monkeypatch.setattr(cw, "post_to_webhook", fake_webhook)
 
     run, model = job(_compose(scene, ("article", "A1"), ("article", "A2")).json())
-    assert model.temperatures[:3] == [("ResearchNotes", 0.3), ("ArticleDraft", 0.7), ("ArticleDraft", 0.3)]
+    assert model.temperatures[:3] == [("ResearchNotes", 0.5), ("ArticleDraft", 0.7), ("ArticleDraft", 0.5)]
     assert run["status"] == "succeeded", run.get("error")
     assert run["result"]["article_id"] == "composed-1"
     assert posted["newsroom"] == {"generated_from": run["_id"], "author": "Propt Newsroom", "source_id": "newsroom_compose"}

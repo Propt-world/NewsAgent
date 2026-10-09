@@ -93,26 +93,15 @@ def labels_pass(index, labels, articles, out: Path) -> dict:
     }
 
 
-def init_db_prompts():
-    """The prompts init_db.py installs (what the pipeline uses after `init_db.py --mode upsert`)."""
-    from src.graph.nodes.load_agent_configuration import REQUIRED_PROMPTS
-    from src.models.AgentPromptsModel import AgentPromptsModel
-    from src.scripts.init_db import INITIAL_DATA
-    texts = {p["name"]: p["content"] for p in INITIAL_DATA if p["name"] in REQUIRED_PROMPTS}
-    return AgentPromptsModel(**texts)
-
-
 async def run_model(ids, articles, cache_path: Path, max_usd: float, concurrency: int) -> dict:
     """The real extract_country step on articles not yet in the cache, until max_usd is reached."""
     from langchain_community.callbacks.manager import get_openai_callback
     from src.configs.settings import settings
-    from src.graph.nodes.extract_country import extract_country
-    from src.models.ArticleModel import ArticleModel
-    from src.models.MainWorkflowState import MainWorkflowState
+    from src.newsroom import backfill as bf
 
     if not settings.newsroom_enabled:
         raise SystemExit("Pass 2 needs NEWSROOM_ENABLED=true (the name step only returns names when it is on).")
-    prompts = init_db_prompts()
+    prompts = bf.init_db_prompts()
     cached = {json.loads(line)["article_id"] for line in cache_path.read_text().splitlines()} if cache_path.exists() else set()
     todo = [i for i in ids if i not in cached and i in articles]
     stats = {"already_cached": len(ids) - len(todo), "called": 0, "failed": 0, "stopped_by_cap": False, "cost_usd": 0.0}
@@ -124,19 +113,10 @@ async def run_model(ids, articles, cache_path: Path, max_usd: float, concurrency
                 if usage.total_cost >= max_usd:
                     stats["stopped_by_cap"] = True
                     return
-                final = articles[article_id].get("final_output") or {}
-                content = str(final.get("content") or "")
-                state = MainWorkflowState(
-                    source_url=articles[article_id].get("url") or article_id,
-                    cleaned_article_text=content,
-                    news_article=ArticleModel(title=str(final.get("title") or ""), content=content,
-                                              summary=str(final.get("summary") or "")),
-                    active_prompts=prompts,
-                )
-                result = await extract_country(state)
+                names, error = await bf.ai_article_names(articles[article_id], prompts)
                 stats["called"] += 1
-                record = {"article_id": article_id, "names": result.newsroom_names, "error": result.error_message}
-                stats["failed"] += bool(result.error_message)
+                record = {"article_id": article_id, "names": names, "error": error}
+                stats["failed"] += bool(error)
                 cache.write(json.dumps(record) + "\n")
                 cache.flush()
 

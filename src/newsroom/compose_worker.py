@@ -2,7 +2,8 @@
 Compose jobs (worker side): the only Newsroom code that calls an AI model.
 
 Researcher -> Writer -> Editor with NEWSROOM_COMPOSE_MODEL, sources passed as
-data only. Articles then go through the normal pipeline from the summary step
+data only. The Writer uses NEWSROOM_COMPOSE_TEMPERATURE; the Researcher, the
+Editor and the extract-signal decision use NEWSROOM_COMPOSE_CHECK_TEMPERATURE. Articles then go through the normal pipeline from the summary step
 (compose_graph) and are stored through the result webhook as a pending article
 by "Propt Newsroom". Signals are kept as a draft on the run for the reviewer.
 Token usage and cost of every call (including the pipeline steps) are recorded
@@ -68,8 +69,8 @@ class ExtractDecision(BaseModel):
 
 # --- Helpers (replaceable in tests) ----------------------------------------------
 
-def get_compose_model() -> ChatOpenAI:
-    return ChatOpenAI(model=settings.NEWSROOM_COMPOSE_MODEL, temperature=0.3, openai_api_key=settings.OPENAI_API_KEY)
+def get_compose_model(temperature: float) -> ChatOpenAI:
+    return ChatOpenAI(model=settings.NEWSROOM_COMPOSE_MODEL, temperature=temperature, openai_api_key=settings.OPENAI_API_KEY)
 
 
 def _now() -> datetime:
@@ -231,23 +232,24 @@ async def _compose(db, sources, run, update: dict):
 
     texts = await load_source_texts(sources, run)
     source_block = format_sources(texts)
-    model = get_compose_model()
+    checker = get_compose_model(settings.NEWSROOM_COMPOSE_CHECK_TEMPERATURE)
+    writer = get_compose_model(settings.NEWSROOM_COMPOSE_TEMPERATURE)
 
-    research = await ask(model, prompts["newsroom_researcher"],
+    research = await ask(checker, prompts["newsroom_researcher"],
                          {"sources": source_block, "entities": await entity_context(db, run["entity_ids"])}, ResearchNotes)
     notes = research.model_dump_json(indent=1)
 
     if kind == "extract_signal":
-        decision = await ask(model, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision)
+        decision = await ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision)
         if not decision.is_signal or decision.draft is None:
             return {"reason": decision.reason or "The article does not describe a specific market movement."}, "not_a_signal"
         draft = decision.draft
     elif output_type == "signal":
-        draft = await ask(model, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft)
+        draft = await ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft)
     else:
-        draft = await ask(model, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft)
+        draft = await ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft)
 
-    edited = await ask(model, prompts["newsroom_editor"],
+    edited = await ask(checker, prompts["newsroom_editor"],
                        {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft))
 
     if output_type == "signal":

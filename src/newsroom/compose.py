@@ -137,6 +137,8 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
         "started_at": None,
         "finished_at": None,
         "model": settings.NEWSROOM_COMPOSE_MODEL,
+        "temperature": {"writer": settings.NEWSROOM_COMPOSE_TEMPERATURE,
+                        "checks": settings.NEWSROOM_COMPOSE_CHECK_TEMPERATURE},
         "prompts": {},
         "tokens": {"prompt": 0, "completion": 0, "total": 0},
         "cost_usd": 0.0,

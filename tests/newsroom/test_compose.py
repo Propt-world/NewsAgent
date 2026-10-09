@@ -1,5 +1,6 @@
 """Compose: request checks and limits (API) and the job itself with a fake model (needs TEST_MONGO_URL)."""
 import asyncio
+import copy
 import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -179,7 +180,15 @@ class FakeModel:
     def __init__(self, answers, delay=0):
         self.answers = answers
         self.prompts = []
+        self.temperatures = []  # (schema name, temperature) per call
+        self.temperature = None
         self.delay = delay
+
+    def at(self, temperature):
+        """The same fake (shared answers and records) as created with this temperature."""
+        view = copy.copy(self)
+        view.temperature = temperature
+        return view
 
     def with_structured_output(self, schema):
         model = self
@@ -187,6 +196,7 @@ class FakeModel:
         class Structured:
             async def ainvoke(self, messages):
                 model.prompts.append((schema.__name__, messages[0][1]))
+                model.temperatures.append((schema.__name__, model.temperature))
                 if model.delay:
                     await asyncio.sleep(model.delay)
                 answer = model.answers[schema.__name__]
@@ -228,7 +238,7 @@ def job(scene, sync_db, mongo_url, db_name, monkeypatch):
 
     def run(run_body, answers=ANSWERS, delay=0):
         model = FakeModel(answers, delay)
-        monkeypatch.setattr(cw, "get_compose_model", lambda: model)
+        monkeypatch.setattr(cw, "get_compose_model", model.at)
 
         async def go():
             client = AsyncMongoClient(mongo_url)
@@ -249,6 +259,9 @@ def test_signal_job_produces_a_draft(scene, job):
     assert run["result"]["draft"]["summary_en"] == "Emaar sold 500 units in Dubai."
     assert run["result"]["author"] == "Propt Newsroom"
     assert [name for name, _ in model.prompts] == ["ResearchNotes", "SignalDraft", "SignalDraft"]  # researcher, writer, editor
+    # Only the writer uses the livelier compose temperature; facts and checks stay low
+    assert model.temperatures == [("ResearchNotes", 0.3), ("SignalDraft", 0.7), ("SignalDraft", 0.3)]
+    assert run["temperature"] == {"writer": 0.7, "checks": 0.3}
     assert set(run["prompts"]) == {"newsroom_researcher", "newsroom_writer_signal", "newsroom_editor"}
     assert (run["tokens"]["total"], run["cost_usd"]) == (1500, 0.00036)
     research_prompt = model.prompts[0][1]
@@ -266,8 +279,10 @@ def test_extract_signal_can_say_not_a_signal(scene, job):
 
 def test_extract_signal_drafts_when_it_is_one(scene, job):
     answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, reason="", draft=SIGNAL)}
-    run, _ = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
+    run, model = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
     assert run["status"] == "succeeded"
+    # The decision is a check, not writing
+    assert model.temperatures == [("ResearchNotes", 0.3), ("ExtractDecision", 0.3), ("SignalDraft", 0.3)]
     assert run["result"]["article_id"] == "A2"
 
 
@@ -306,7 +321,8 @@ def test_article_job_stores_and_links(scene, job, sync_db, monkeypatch):
             "processed_at": NOW, "final_output": payload["data"]})
     monkeypatch.setattr(cw, "post_to_webhook", fake_webhook)
 
-    run, _ = job(_compose(scene, ("article", "A1"), ("article", "A2")).json())
+    run, model = job(_compose(scene, ("article", "A1"), ("article", "A2")).json())
+    assert model.temperatures[:3] == [("ResearchNotes", 0.3), ("ArticleDraft", 0.7), ("ArticleDraft", 0.3)]
     assert run["status"] == "succeeded", run.get("error")
     assert run["result"]["article_id"] == "composed-1"
     assert posted["newsroom"] == {"generated_from": run["_id"], "author": "Propt Newsroom", "source_id": "newsroom_compose"}

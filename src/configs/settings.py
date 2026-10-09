@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     NEWSROOM_SIMILARITY_MIN_SCORE: float = float(os.getenv('NEWSROOM_SIMILARITY_MIN_SCORE', '0.8'))
     # Compose (Propt-authored articles and signals): model and spending limits (B1, B2)
     NEWSROOM_COMPOSE_MODEL: str = os.getenv('NEWSROOM_COMPOSE_MODEL', 'gpt-4o-mini')
+    # Compose temperatures, separate from MODEL_TEMPERATURE (the normal pipeline steps).
+    # Writer (the article or signal text): livelier wording.
+    NEWSROOM_COMPOSE_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_TEMPERATURE', '0.7'))
+    # Researcher, Editor and the extract-signal decision: facts and checks, kept low.
+    NEWSROOM_COMPOSE_CHECK_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_CHECK_TEMPERATURE', '0.3'))
     NEWSROOM_COMPOSE_PER_HOUR: int = int(os.getenv('NEWSROOM_COMPOSE_PER_HOUR', '10'))
     NEWSROOM_COMPOSE_CONCURRENT: int = int(os.getenv('NEWSROOM_COMPOSE_CONCURRENT', '2'))
     NEWSROOM_DAILY_BUDGET_USD: float = float(os.getenv('NEWSROOM_DAILY_BUDGET_USD', '10'))

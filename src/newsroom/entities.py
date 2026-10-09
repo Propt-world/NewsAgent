@@ -76,6 +76,12 @@ async def _aliases_for(db, entity_ids: List[str]) -> dict:
     return grouped
 
 
+async def _entity_label(db, entity_id: str) -> str:
+    """Name for messages, e.g. "DAMAC Properties"; falls back to the id."""
+    doc = await db[ndb.ENTITIES].find_one({"_id": entity_id}, {"canonical_name": 1})
+    return f'"{doc["canonical_name"]}"' if doc else f"entity {entity_id}"
+
+
 async def _load(db, entity_id: str) -> dict:
     doc = await db[ndb.ENTITIES].find_one({"_id": entity_id})
     if doc is None:
@@ -138,9 +144,11 @@ async def _check_alias(db, kind: str, alias: str, ambiguous: bool, entity_id: Op
         raise Conflict(f"'{alias}' is already an alias of this entity")
     exact = await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": False})
     if exact:
-        raise Conflict(f"'{alias}' is already an exact alias of entity {exact['entity_id']}")
-    if not ambiguous and await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": True}):
-        raise Conflict(f"'{alias}' is marked ambiguous on another entity, so it cannot be an exact alias")
+        raise Conflict(f"'{alias}' is already an exact alias of {await _entity_label(db, exact['entity_id'])}")
+    marked = None if ambiguous else await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": True})
+    if marked:
+        raise Conflict(f"'{alias}' is marked ambiguous on {await _entity_label(db, marked['entity_id'])}, "
+                       "so it cannot be an exact alias")
     return norm
 
 
@@ -377,7 +385,7 @@ async def add_ignore(db, payload: IgnoreCreate, actor: str) -> dict:
         raise Invalid("Empty string")
     async for alias in db[ndb.ENTITY_ALIASES].find({"alias_norm": normalize_alias(string)}):
         if raw_key(alias["alias"]) == key:
-            raise Conflict(f"'{string}' is an alias of entity {alias['entity_id']}; remove the alias first")
+            raise Conflict(f"'{string}' is an alias of {await _entity_label(db, alias['entity_id'])}; remove the alias first")
     doc = {
         "_id": str(uuid.uuid4()),
         "string": string,

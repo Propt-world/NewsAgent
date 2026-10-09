@@ -158,3 +158,22 @@ def test_ignore_list(seeded):
     assert created.status_code == 201
     assert seeded.delete(f"/newsroom/ignore/{created.json()['id']}").status_code == 204
     assert seeded.delete(f"/newsroom/ignore/{created.json()['id']}").status_code == 404
+
+
+def test_conflict_messages_name_the_entity(seeded):
+    resp = _create(seeded, canonical_name="New Co", aliases=["DAMAC"])
+    assert resp.json()["detail"] == "'DAMAC' is already an exact alias of \"DAMAC Properties\""
+    resp = _create(seeded, canonical_name="Wasl")
+    assert resp.json()["detail"] == "'Wasl' is marked ambiguous on \"Wasl Properties\", so it cannot be an exact alias"
+    resp = seeded.post("/newsroom/ignore", json={"string": "Stake"})
+    assert resp.json()["detail"] == "'Stake' is an alias of \"Stake\"; remove the alias first"
+
+
+def test_times_are_marked_utc(seeded):
+    # Browsers read a time without a timezone as local time; every Newsroom time must say it is UTC.
+    url = f"/newsroom/entities/{_id(ORG, 'Stake')}"
+    seeded.patch(url, json={"status": "staged"})
+    at = seeded.get(f"{url}/audit").json()[0]["at"]
+    assert at.endswith("Z") or at.endswith("+00:00"), at
+    created_at = seeded.get(url).json()["created_at"]
+    assert created_at.endswith("Z") or created_at.endswith("+00:00"), created_at

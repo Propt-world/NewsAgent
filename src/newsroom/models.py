@@ -1,7 +1,15 @@
-from datetime import datetime
-from typing import List, Literal, Optional
+from datetime import datetime, timezone
+from typing import Annotated, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+
+def _as_utc(value: datetime) -> datetime:
+    # MongoDB returns UTC times without a timezone; mark them as UTC so browsers convert them correctly.
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+UtcDatetime = Annotated[datetime, AfterValidator(_as_utc)]
 
 EntityKind = Literal["organisation", "location"]
 EntityStatus = Literal["active", "staged", "ignored"]
@@ -10,7 +18,7 @@ EntityStatus = Literal["active", "staged", "ignored"]
 class NewsroomHealthResponse(BaseModel):
     status: str = Field(..., examples=["healthy"])
     service: str = Field(default="newsroom", examples=["newsroom"])
-    timestamp: datetime
+    timestamp: UtcDatetime
 
 
 class AliasOut(BaseModel):
@@ -34,9 +42,9 @@ class EntityOut(BaseModel):
     notes: Optional[str] = None
     mentions_in_data: int = 0
     aliases: List[AliasOut] = []
-    created_at: Optional[datetime] = None
+    created_at: Optional[UtcDatetime] = None
     created_by: Optional[str] = None
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[UtcDatetime] = None
     updated_by: Optional[str] = None
 
 
@@ -78,7 +86,7 @@ class IgnoreOut(BaseModel):
     id: str
     string: str
     reason: Optional[str] = None
-    created_at: Optional[datetime] = None
+    created_at: Optional[UtcDatetime] = None
     created_by: Optional[str] = None
 
 
@@ -133,7 +141,7 @@ class LinkOut(BaseModel):
     topics: List[str] = []
     location_ids: List[str] = []
     linked_by: Optional[str] = None
-    linked_at: Optional[datetime] = None
+    linked_at: Optional[UtcDatetime] = None
 
 
 class ItemEntitiesResponse(BaseModel):
@@ -188,7 +196,7 @@ class RelatedItem(BaseModel):
     title: Optional[str] = None
     snippet: Optional[str] = None
     url: Optional[str] = None
-    timestamp: Optional[datetime] = None
+    timestamp: Optional[UtcDatetime] = None
     item_status: Optional[str] = None
     shared_entities: List[EntityRef]
     shared_places: List[EntityRef]
@@ -219,7 +227,7 @@ class HistoryItem(BaseModel):
     title: Optional[str] = None
     snippet: Optional[str] = None
     url: Optional[str] = None
-    timestamp: Optional[datetime] = None
+    timestamp: Optional[UtcDatetime] = None
     item_status: Optional[str] = None
     location_ids: List[str] = []
 
@@ -244,7 +252,7 @@ class ItemsChangedResponse(BaseModel):
 
 class AuditOut(BaseModel):
     id: str
-    at: datetime
+    at: UtcDatetime
     actor: str
     action: str
     entity_id: Optional[str] = None

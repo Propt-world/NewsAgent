@@ -193,11 +193,13 @@ class RelatedItem(BaseModel):
     shared_entities: List[EntityRef]
     shared_places: List[EntityRef]
     reason: str
+    score: Optional[float] = Field(None, description="Only for similar-text matches")
 
 
 class RelatedResponse(BaseModel):
-    basis: Literal["organisations", "places", "none"] = Field(
-        ..., description="What 'related' was based on: shared organisations, specific places, or nothing linked yet")
+    basis: Literal["organisations", "places", "similar", "none"] = Field(
+        ..., description="What 'related' was based on: shared organisations, specific places, "
+                         "similar text (approved articles with no links), or nothing")
     items: List[RelatedItem]
     total: int
     limit: int

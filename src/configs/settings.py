@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     NEWSROOM_DB_NAME: str = os.getenv('NEWSROOM_DB_NAME', 'newsroom')
     # social_scrapper's signals collection in that database (read-only for NewsAgent)
     NEWSROOM_SIGNALS_COLLECTION: str = os.getenv('NEWSROOM_SIGNALS_COLLECTION', 'signals')
+    # "Similar articles" (approved articles only): minimum cosine score to show a match
+    NEWSROOM_SIMILARITY_MIN_SCORE: float = float(os.getenv('NEWSROOM_SIMILARITY_MIN_SCORE', '0.8'))
 
     @property
     def newsroom_enabled(self) -> bool:

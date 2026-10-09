@@ -62,9 +62,10 @@ def get_newsroom_db():
 
 @dataclass(frozen=True)
 class ItemSources:
-    """Where articles and signals are read from (read-only)."""
+    """Where articles, signals and approved articles' stored fingerprints are read from (read-only)."""
     articles: Any
     signals: Any
+    chunks: Any = None
 
 
 def get_item_sources() -> ItemSources:
@@ -73,6 +74,7 @@ def get_item_sources() -> ItemSources:
     return ItemSources(
         articles=client[settings.MONGO_DB_NAME]["processed_articles"],
         signals=client[settings.NEWSROOM_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
+        chunks=client[settings.MONGO_DB_NAME][settings.MONGO_DB_COLLECTION],
     )
 
 

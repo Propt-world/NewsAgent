@@ -10,16 +10,24 @@ Related items:
 - Ranked by number of shared entities, then place overlap, then recency.
 - Rejected, duplicated and deleted items are never shown.
 
-Similarity search for items with no links is a separate, later addition.
+Similar articles (option A): an *approved* article with no links falls back to
+articles whose stored fingerprint (embedding, made at approval) is close to its
+own. No new AI call is ever made, and pending articles never use this.
 """
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom.entities import Invalid, NotFound
+from src.newsroom.links import _parse_date
+
+logger = logging.getLogger("newsroom")
 
 HIDDEN_ITEM_STATUSES = ["rejected", "duplicated", "missing"]
 SPECIFIC_PLACE_TYPES = ["community", "landmark"]
+SIMILAR_CANDIDATE_CHUNKS = 50
 
 
 def _visible(extra: dict) -> dict:
@@ -51,8 +59,73 @@ def _most_specific(place_ids: List[str], places: dict) -> List[str]:
     return [pid for pid in place_ids if pid not in ancestors]
 
 
+async def _vector_search(chunks, vector: List[float], limit: int) -> List[dict]:
+    """Atlas Vector Search over approved articles' stored chunks (no AI call)."""
+    pipeline = [
+        {"$vectorSearch": {"index": settings.MONGO_VECTOR_INDEX_NAME, "path": "embedding",
+                           "queryVector": vector, "numCandidates": limit * 10, "limit": limit}},
+        {"$project": {"_id": 0, "metadata.url": 1, "score": {"$meta": "vectorSearchScore"}}},
+    ]
+    return await (await chunks.aggregate(pipeline)).to_list(length=limit)
+
+
+async def similar_articles(sources: ndb.ItemSources, article_id: str, days: Optional[int],
+                           limit: int, skip: int) -> Optional[dict]:
+    """Similar approved articles for an approved article, or None when this cannot apply."""
+    if sources is None or sources.chunks is None:
+        return None
+    article = await sources.articles.find_one({"_id": article_id}, {"url": 1, "status": 1})
+    if article is None or article.get("status") != "approved" or not article.get("url"):
+        return None
+    own = await sources.chunks.find_one(
+        {"metadata.url": article["url"]}, {"embedding": 1}, sort=[("metadata.chunk_index", 1)])
+    if not own or not own.get("embedding"):
+        return None
+    try:
+        hits = await _vector_search(sources.chunks, own["embedding"], SIMILAR_CANDIDATE_CHUNKS)
+    except Exception as e:
+        # For example the vector index is missing in this environment: show nothing rather than fail.
+        logger.warning(f"[NEWSROOM] Similar-articles search failed: {e}")
+        return None
+
+    best = {}
+    for hit in hits:
+        url = (hit.get("metadata") or {}).get("url")
+        score = hit.get("score") or 0.0
+        if url and url != article["url"] and score >= settings.NEWSROOM_SIMILARITY_MIN_SCORE:
+            best[url] = max(score, best.get(url, 0.0))
+    query = {"url": {"$in": list(best)}, "status": {"$nin": HIDDEN_ITEM_STATUSES}}
+    if days:
+        query["processed_at"] = {"$gte": datetime.now(timezone.utc) - timedelta(days=days)}
+    docs = await sources.articles.find(query, {
+        "url": 1, "status": 1, "processed_at": 1, "discovered_at": 1,
+        "final_output.title": 1, "final_output.summary": 1, "final_output.published_date": 1,
+    }).to_list(length=None) if best else []
+
+    rows = sorted(docs, key=lambda d: best[d["url"]], reverse=True)
+    items = []
+    for d in rows[skip:skip + limit]:
+        final = d.get("final_output") or {}
+        score = best[d["url"]]
+        items.append({
+            "source_type": "article",
+            "source_id": d["_id"],
+            "title": final.get("title"),
+            "snippet": (final.get("summary") or "")[:300],
+            "url": d["url"],
+            "timestamp": _parse_date(final.get("published_date")) or d.get("processed_at") or d.get("discovered_at"),
+            "item_status": d.get("status"),
+            "shared_entities": [],
+            "shared_places": [],
+            "reason": f"Similar text (score {score:.2f})",
+            "score": round(score, 4),
+        })
+    return {"basis": "similar", "items": items, "total": len(rows), "limit": limit, "skip": skip}
+
+
 async def related_items(db, source_type: str, source_id: str, location_id: Optional[str] = None,
-                        days: Optional[int] = None, limit: int = 20, skip: int = 0) -> dict:
+                        days: Optional[int] = None, limit: int = 20, skip: int = 0,
+                        sources: Optional[ndb.ItemSources] = None) -> dict:
     await _check_location(db, location_id)
     own = await db[ndb.ENTITY_MENTIONS].find(
         {"source_type": source_type, "source_id": source_id, "status": "linked"},
@@ -68,6 +141,11 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
         basis_ids = [eid for eid, e in active.items() if e["kind"] == "location" and e["type"] in SPECIFIC_PLACE_TYPES]
         basis = "places"
     if not basis_ids:
+        # No confirmed links: approved articles fall back to similar text (a place filter cannot apply).
+        if source_type == "article" and not location_id:
+            similar = await similar_articles(sources, source_id, days, limit, skip)
+            if similar is not None:
+                return similar
         return {"basis": "none", "items": [], "total": 0, "limit": limit, "skip": skip}
 
     match = _visible({"entity_id": {"$in": basis_ids}})

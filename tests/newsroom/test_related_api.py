@@ -171,3 +171,81 @@ def test_queries_use_indexes_and_stay_fast(scene, sync_db):
     assert body["total"] > 4000
     assert history["total"] > 900
     assert elapsed < 3.0, f"related + history took {elapsed:.2f}s"
+
+
+# --- Similar articles (option A: approved articles only, stored fingerprints, no AI call) ---
+
+@pytest.fixture
+def similar_scene(api, sync_db, monkeypatch):
+    """Approved articles with stored chunks; the Atlas vector search itself is replaced (not available locally)."""
+    from src.newsroom import related
+
+    apply_plan(build_plan(), sync_db)
+    for article_id, status, days_ago in [("S0", "approved", 1), ("S1", "approved", 2), ("S2", "approved", 3),
+                                         ("S3", "rejected", 1), ("S4", "approved", 4), ("P1", "processed", 1)]:
+        sync_db["processed_articles"].insert_one({
+            "_id": article_id, "url": f"https://example.com/{article_id}", "status": status,
+            "processed_at": NOW - timedelta(days=days_ago),
+            "final_output": {"title": f"Article {article_id}", "summary": "..."}})
+    for article_id in ["S0", "S1", "S2", "S3", "S4"]:
+        sync_db["vectorized_articles"].insert_one({
+            "_id": f"chunk-{article_id}", "embedding": [0.1, 0.2, 0.3],
+            "metadata": {"url": f"https://example.com/{article_id}", "chunk_index": 0}})
+
+    calls = []
+
+    async def fake_search(chunks, vector, limit):
+        calls.append(vector)
+        return [
+            {"metadata": {"url": "https://example.com/S0"}, "score": 1.0},    # itself
+            {"metadata": {"url": "https://example.com/S2"}, "score": 0.93},
+            {"metadata": {"url": "https://example.com/S1"}, "score": 0.88},
+            {"metadata": {"url": "https://example.com/S1"}, "score": 0.81},   # second chunk of S1
+            {"metadata": {"url": "https://example.com/S3"}, "score": 0.95},   # rejected later
+            {"metadata": {"url": "https://example.com/S4"}, "score": 0.62},   # too weak
+        ]
+
+    monkeypatch.setattr(related, "_vector_search", fake_search)
+    api.search_calls = calls
+    return api
+
+
+def test_similar_for_approved_article_without_links(similar_scene):
+    body = _related(similar_scene, item="article/S0")
+    assert body["basis"] == "similar"
+    assert _ids(body) == ["S2", "S1"]  # itself, rejected and weak matches left out; best score first
+    assert body["items"][0]["reason"] == "Similar text (score 0.93)"
+    assert body["items"][1]["score"] == 0.88
+    assert similar_scene.search_calls == [[0.1, 0.2, 0.3]]  # the stored fingerprint, no new AI call
+
+
+def test_pending_articles_never_use_similarity(similar_scene):
+    assert _related(similar_scene, item="article/P1")["basis"] == "none"
+    assert similar_scene.search_calls == []
+
+
+def test_linked_articles_use_companies_not_similarity(similar_scene):
+    _link(similar_scene, "article", "S0", EMAAR)
+    assert _related(similar_scene, item="article/S0")["basis"] == "organisations"
+    assert similar_scene.search_calls == []
+
+
+def test_place_filter_does_not_apply_to_similarity(similar_scene):
+    assert _related(similar_scene, item="article/S0", location=DUBAI)["basis"] == "none"
+
+
+def test_signals_never_use_similarity(similar_scene, sync_db):
+    signal_id = ObjectId()
+    sync_db["signals"].insert_one({"_id": signal_id, "summary_en": "x", "status": "approved", "evidence": []})
+    assert _related(similar_scene, item=f"signal/{signal_id}")["basis"] == "none"
+    assert similar_scene.search_calls == []
+
+
+def test_missing_vector_index_shows_nothing(similar_scene, monkeypatch):
+    from src.newsroom import related
+
+    async def broken(*_):
+        raise RuntimeError("index not found")
+
+    monkeypatch.setattr(related, "_vector_search", broken)
+    assert _related(similar_scene, item="article/S0")["basis"] == "none"

@@ -60,7 +60,8 @@ def api(mongo_url, db_name, sync_db, monkeypatch):
         # Articles and signals live in the same throwaway database in tests.
         client = AsyncMongoClient(mongo_url, serverSelectionTimeoutMS=3000)
         try:
-            yield ItemSources(articles=client[db_name]["processed_articles"], signals=client[db_name]["signals"])
+            yield ItemSources(articles=client[db_name]["processed_articles"], signals=client[db_name]["signals"],
+                              chunks=client[db_name]["vectorized_articles"])
         finally:
             await client.close()
 

@@ -241,6 +241,64 @@ class HistoryResponse(BaseModel):
     skip: int
 
 
+class SourceRef(BaseModel):
+    source_type: SourceType
+    source_id: str = Field(..., min_length=1, max_length=100)
+
+
+class ComposeRequest(BaseModel):
+    sources: List[SourceRef] = Field(..., min_length=2, max_length=5)
+    output_type: Literal["article", "signal"]
+    exclude_entity_ids: List[str] = Field(default_factory=list, max_length=100,
+                                          description="Companies/places the reviewer removed before composing")
+
+
+class ExtractSignalRequest(BaseModel):
+    article_id: str = Field(..., min_length=1, max_length=100)
+    exclude_entity_ids: List[str] = Field(default_factory=list, max_length=100)
+
+
+class SignalSavedRequest(BaseModel):
+    signal_id: str = Field(..., min_length=1, max_length=100)
+
+
+class ComposeSourceOut(BaseModel):
+    source_type: SourceType
+    source_id: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    status_at_request: Optional[str] = None
+
+
+class ComposeRunOut(BaseModel):
+    id: str
+    kind: Literal["compose", "extract_signal"]
+    output_type: Literal["article", "signal"]
+    status: Literal["queued", "running", "succeeded", "not_a_signal", "failed"]
+    sources: List[ComposeSourceOut]
+    entity_ids: List[str] = []
+    excluded_entity_ids: List[str] = []
+    requested_by: Optional[str] = None
+    created_at: UtcDatetime
+    started_at: Optional[UtcDatetime] = None
+    finished_at: Optional[UtcDatetime] = None
+    model: Optional[str] = None
+    prompts: Dict[str, str] = {}
+    tokens: Dict[str, int] = {}
+    cost_usd: float = 0.0
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    saved: Optional[dict] = None
+    source_rejected: bool = False
+    source_rejected_key: Optional[str] = None
+
+
+class ComposeRunList(BaseModel):
+    items: List[ComposeRunOut]
+    spent_today_usd: float
+    daily_budget_usd: float
+
+
 class ItemsSummaryRequest(BaseModel):
     source_type: SourceType
     source_ids: List[str] = Field(..., min_length=1, max_length=200)

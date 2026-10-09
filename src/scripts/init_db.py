@@ -10,6 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.db.enums import PromptStatus
 from src.configs.settings import settings
+from src.newsroom.prompts import NEWSROOM_PROMPTS
 
 PROMPT_VERSION = "v1.0"
 
@@ -540,6 +541,36 @@ def seed_prompts(db):
             print(f"  [>] Upserted Active Prompt: {data['name']}")
 
 
+def seed_newsroom_prompts(db):
+    """Newsroom compose prompts: inserted only when missing, so edits made in the registry are kept."""
+    print("--- Setting up Newsroom Prompts (insert only if missing) ---")
+    prompts_col = db["prompts"]
+    active_status = PromptStatus.ACTIVE.value
+    for data in NEWSROOM_PROMPTS:
+        now = datetime.now(timezone.utc)
+        result = prompts_col.update_one(
+            {"name": data["name"], "status": active_status},
+            {
+                "$setOnInsert": {
+                    "_id": str(uuid.uuid4()),
+                    "name": data["name"],
+                    "content": data["content"],
+                    "description": data["description"],
+                    "input_variables": data["input_variables"],
+                    "version": PROMPT_VERSION,
+                    "status": active_status,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            },
+            upsert=True,
+        )
+        if result.upserted_id:
+            print(f"  [+] Added Newsroom Prompt: {data['name']}")
+        else:
+            print(f"  [=] Kept existing Newsroom Prompt: {data['name']}")
+
+
 def seed_email_recipients(db):
     print("--- Setting up Email Recipients ---")
     recipients_col = db["email_recipients"]
@@ -656,6 +687,7 @@ def init_db(mode: str = "upsert", yes: bool = False):
             reset_application_collections(db)
 
         seed_prompts(db)
+        seed_newsroom_prompts(db)
         seed_email_recipients(db)
         seed_categories(db)
         ensure_operational_indexes(db)

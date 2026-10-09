@@ -16,7 +16,7 @@ from pymongo import AsyncMongoClient, MongoClient
 
 from src.configs.settings import settings
 from src.newsroom.db import ItemSources, ensure_indexes_sync, get_item_sources, get_newsroom_db
-from src.newsroom.router import mount_newsroom
+from src.newsroom.router import get_redis, mount_newsroom
 
 API_KEY = "test-key"
 
@@ -65,12 +65,32 @@ def api(mongo_url, db_name, sync_db, monkeypatch):
         finally:
             await client.close()
 
+    queue = FakeQueue()
+
+    async def test_redis():
+        yield queue
+
     app = FastAPI()
     mount_newsroom(app, True)
     app.dependency_overrides[get_newsroom_db] = test_db
     app.dependency_overrides[get_item_sources] = test_sources
+    app.dependency_overrides[get_redis] = test_redis
     with TestClient(app, headers={"X-API-Key": API_KEY, "X-Newsroom-User": "tester@propt.global"}) as client:
+        client.queue = queue
         yield client
+
+
+class FakeQueue:
+    """Stands in for Redis: records compose jobs instead of queueing them."""
+
+    def __init__(self):
+        self.pushed = []
+        self.fail = False
+
+    async def rpush(self, name, value):
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.pushed.append((name, value))
 
 
 @pytest.fixture

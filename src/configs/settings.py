@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     NEWSROOM_SIGNALS_COLLECTION: str = os.getenv('NEWSROOM_SIGNALS_COLLECTION', 'signals')
     # "Similar articles" (approved articles only): minimum cosine score to show a match
     NEWSROOM_SIMILARITY_MIN_SCORE: float = float(os.getenv('NEWSROOM_SIMILARITY_MIN_SCORE', '0.8'))
+    # Compose (Propt-authored articles and signals): model and spending limits (B1, B2)
+    NEWSROOM_COMPOSE_MODEL: str = os.getenv('NEWSROOM_COMPOSE_MODEL', 'gpt-4o-mini')
+    NEWSROOM_COMPOSE_PER_HOUR: int = int(os.getenv('NEWSROOM_COMPOSE_PER_HOUR', '10'))
+    NEWSROOM_COMPOSE_CONCURRENT: int = int(os.getenv('NEWSROOM_COMPOSE_CONCURRENT', '2'))
+    NEWSROOM_DAILY_BUDGET_USD: float = float(os.getenv('NEWSROOM_DAILY_BUDGET_USD', '10'))
+    NEWSROOM_BUDGET_TIMEZONE: str = os.getenv('NEWSROOM_BUDGET_TIMEZONE', 'Asia/Dubai')
+    NEWSROOM_COMPOSE_TIMEOUT_MINUTES: int = int(os.getenv('NEWSROOM_COMPOSE_TIMEOUT_MINUTES', '15'))
+    NEWSROOM_COMPOSE_QUEUE: str = os.getenv('NEWSROOM_COMPOSE_QUEUE', 'newsroom_compose_jobs')
 
     @property
     def newsroom_enabled(self) -> bool:

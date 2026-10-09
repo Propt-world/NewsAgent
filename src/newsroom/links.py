@@ -189,7 +189,8 @@ async def item_entities(db, source_type: str, source_id: str) -> dict:
 # --- Link / unlink / dismiss ----------------------------------------------------
 
 async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, entity_id: str,
-               actor: str, suggestion_id: Optional[str] = None, activate: bool = False) -> dict:
+               actor: str, suggestion_id: Optional[str] = None, activate: bool = False,
+               link_source: str = "reviewer") -> dict:
     _check_source_type(source_type)
     entity = await db[ndb.ENTITIES].find_one({"_id": entity_id})
     if entity is None:
@@ -222,7 +223,7 @@ async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, e
         fields = {
             "kind": entity["kind"],
             "status": "linked",
-            "link_source": "reviewer",
+            "link_source": link_source,
             "matched_alias": suggestion.get("matched_alias") if suggestion else None,
             "suggestion_id": suggestion_id,
             "title": info["title"],
@@ -311,6 +312,12 @@ async def on_item_status(db, source_type: str, source_id: str, new_status: str) 
     await db[ndb.ENTITY_MENTIONS].update_many(
         {"source_type": source_type, "source_id": source_id}, {"$set": {"item_status": new_status}})
     queued = new_status == "approved"
+    if new_status in ("rejected", "duplicated", "archived"):
+        # Composed pieces built on this item are flagged for re-checking (never changed automatically).
+        await db[ndb.COMPOSE_RUNS].update_many(
+            {"source_keys": f"{source_type}:{source_id}", "status": "succeeded", "source_rejected": False},
+            {"$set": {"source_rejected": True, "source_rejected_at": _now(),
+                      "source_rejected_key": f"{source_type}:{source_id}"}})
     await db[ndb.ENTITY_SUGGESTIONS].update_many(
         {"source_type": source_type, "source_id": source_id, "status": "open", "entity_id": None},
         {"$set": {"in_new_names_queue": queued}},

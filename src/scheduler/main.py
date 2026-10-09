@@ -43,7 +43,7 @@ from src.utils.email_utils import close_async_email_client, send_error_email_asy
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.db import ensure_newsroom_indexes
-from src.newsroom.pipeline import article_edited, article_status_changed, article_stored
+from src.newsroom.pipeline import article_edited, article_status_changed, article_stored, newsroom_composed
 from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
@@ -492,17 +492,21 @@ async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTask
 
     if result.matched_count == 0:
         logger.info("[WEBHOOK] URL not in scheduler DB. Creating new record.")
-        await collections.processed_articles.insert_one(
-            {
-                "_id": str(uuid.uuid4()),
-                "source_id": "manual_submission",
-                "url": url,
-                "status": "processed",
-                "discovered_at": datetime.now(timezone.utc),
-                "processed_at": datetime.now(timezone.utc),
-                "final_output": data,
-            }
-        )
+        record = {
+            "_id": str(uuid.uuid4()),
+            "source_id": "manual_submission",
+            "url": url,
+            "status": "processed",
+            "discovered_at": datetime.now(timezone.utc),
+            "processed_at": datetime.now(timezone.utc),
+            "final_output": data,
+        }
+        # Newsroom: a composed article (Propt Newsroom) keeps its own source id and the compose run it came from
+        if settings.newsroom_enabled and newsroom_composed(url, payload.get("newsroom")):
+            record["source_id"] = payload["newsroom"]["source_id"]
+            record["generated_from"] = payload["newsroom"]["generated_from"]
+            record["author"] = payload["newsroom"]["author"]
+        await collections.processed_articles.insert_one(record)
 
     # Newsroom: suggestions from the names the pipeline found, and refreshed links (after the response; failures only logged)
     if settings.newsroom_enabled:

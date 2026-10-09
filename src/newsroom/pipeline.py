@@ -8,10 +8,12 @@ import logging
 from typing import Any, List, Tuple
 
 from src.newsroom import links as lnk
+from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.scheduler.db import get_async_scheduler_collections
 
 logger = logging.getLogger("newsroom")
+COMPOSED_URL_PREFIX = composed_url("")
 
 MAX_NAMES_PER_FIELD = 50
 MAX_NAME_CHARS = 200
@@ -30,6 +32,17 @@ def split_names(newsroom_names: Any) -> Tuple[List[str], List[str]]:
         return [], []
     organisations = _strings(newsroom_names.get("companies")) + _strings(newsroom_names.get("projects"))
     return organisations, _strings(newsroom_names.get("places"))
+
+
+def newsroom_composed(url: str, newsroom: Any) -> bool:
+    """True for a well-formed composed-article result (Propt Newsroom) sent by the compose worker."""
+    return (
+        isinstance(newsroom, dict)
+        and url.startswith(COMPOSED_URL_PREFIX)
+        and newsroom.get("generated_from") == url[len(COMPOSED_URL_PREFIX):]
+        and newsroom.get("source_id") == COMPOSED_SOURCE_ID
+        and newsroom.get("author") == AUTHOR
+    )
 
 
 async def article_stored(url: str, newsroom_names: Any) -> None:

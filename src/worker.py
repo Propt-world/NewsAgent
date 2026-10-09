@@ -32,6 +32,20 @@ async def update_job_status(r, job_id, status, result=None, error=None):
         print(f"[ERROR] Failed to update Redis status: {e}")
 
 
+async def run_compose_in_slot(slots: asyncio.Semaphore, job_data_raw: str) -> None:
+    """Runs one Newsroom compose job; errors are recorded on the run, never crash the worker."""
+    from src.newsroom.compose_worker import run_compose_job
+
+    async with slots:
+        try:
+            run_id = json.loads(job_data_raw).get("run_id")
+            if run_id:
+                await run_compose_job(run_id)
+        except Exception as e:
+            print(f"[NEWSROOM] Compose job error: {e}")
+            traceback.print_exc()
+
+
 async def run_worker():
     """
     Continuous loop that listens to Redis for new jobs and processes them using
@@ -63,13 +77,27 @@ async def run_worker():
             except Exception as e:
                 print(f"[WORKER] Could not initialize Opik: {e}")
 
+        # Newsroom compose jobs have their own queue and run alongside article jobs (at most N at once)
+        queues = [settings.REDIS_QUEUE_NAME]
+        if settings.newsroom_enabled:
+            queues.append(settings.NEWSROOM_COMPOSE_QUEUE)
+            print(f"--- Listening on Queue: {settings.NEWSROOM_COMPOSE_QUEUE} (Newsroom compose) ---")
+        compose_slots = asyncio.Semaphore(max(1, settings.NEWSROOM_COMPOSE_CONCURRENT))
+        compose_tasks = set()
+
         while True:
             try:
-                result = await r.blpop(settings.REDIS_QUEUE_NAME, timeout=0)
+                result = await r.blpop(queues, timeout=0)
                 if not result:
                     continue
 
                 queue_name, job_data_raw = result
+                if queue_name == settings.NEWSROOM_COMPOSE_QUEUE:
+                    task = asyncio.create_task(run_compose_in_slot(compose_slots, job_data_raw))
+                    compose_tasks.add(task)
+                    task.add_done_callback(compose_tasks.discard)
+                    continue
+
                 job_data = json.loads(job_data_raw)
                 job_id = job_data.get("job_id")
                 source_url = job_data.get("source_url")

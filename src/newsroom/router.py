@@ -11,8 +11,11 @@ by the backoffice and is informational only (not verified) in this build.
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Response, status
 
+from src.configs.settings import settings
+from src.newsroom import compose as cmp
 from src.newsroom import entities as svc
 from src.newsroom import links as lnk
 from src.newsroom import related as rel
@@ -20,11 +23,15 @@ from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.newsroom.models import (
     AliasCreate,
     AuditOut,
+    ComposeRequest,
+    ComposeRunList,
+    ComposeRunOut,
     CountResponse,
     EntityCreate,
     EntityListResponse,
     EntityOut,
     EntityUpdate,
+    ExtractSignalRequest,
     HistoryResponse,
     IgnoreCreate,
     IgnoreOut,
@@ -39,6 +46,7 @@ from src.newsroom.models import (
     NewNameLinkRequest,
     NewsroomHealthResponse,
     RelatedResponse,
+    SignalSavedRequest,
     SourceType,
     SuggestionOut,
     SuggestRequest,
@@ -67,6 +75,8 @@ async def _call(coro):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except svc.Invalid as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except cmp.TooManyRequests as e:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
 
 
 @router.get(
@@ -259,6 +269,54 @@ async def link_new_name(payload: NewNameLinkRequest, db=Depends(get_newsroom_db)
 @router.post("/new-names/dismiss", response_model=CountResponse)
 async def dismiss_new_name(payload: NewNameDismissRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return {"count": await _call(lnk.dismiss_new_name(db, payload.field, payload.name_norm, actor))}
+
+
+# --- Compose (paid: the worker calls the AI model) ---------------------------------
+
+async def get_redis():
+    """FastAPI dependency: Redis for queueing compose jobs."""
+    client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+@router.post("/compose", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,
+             description="Queue a new Propt Newsroom article or signal from 2-5 approved or pending sources. "
+                         "Checked against the hourly, concurrency and daily budget limits before anything is spent.")
+async def compose(payload: ComposeRequest, db=Depends(get_newsroom_db), sources=Depends(get_item_sources),
+                  redis=Depends(get_redis), actor: str = Depends(get_actor)):
+    return await _call(cmp.create_run(
+        db, sources, redis, kind="compose", output_type=payload.output_type,
+        items=[s.model_dump() for s in payload.sources], actor=actor, exclude_entity_ids=payload.exclude_entity_ids))
+
+
+@router.post("/extract-signal", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,
+             description="Queue a check of one article: drafts a signal if there is one, otherwise says why not.")
+async def extract_signal(payload: ExtractSignalRequest, db=Depends(get_newsroom_db), sources=Depends(get_item_sources),
+                         redis=Depends(get_redis), actor: str = Depends(get_actor)):
+    return await _call(cmp.create_run(
+        db, sources, redis, kind="extract_signal", output_type="signal",
+        items=[{"source_type": "article", "source_id": payload.article_id}], actor=actor,
+        exclude_entity_ids=payload.exclude_entity_ids))
+
+
+@router.get("/compose", response_model=ComposeRunList, description="Recent compose runs and today's AI spend.")
+async def list_compose_runs(limit: int = Query(20, ge=1, le=100), db=Depends(get_newsroom_db)):
+    return await _call(cmp.list_runs(db, limit))
+
+
+@router.get("/compose/{run_id}", response_model=ComposeRunOut)
+async def get_compose_run(run_id: str, db=Depends(get_newsroom_db)):
+    return await _call(cmp.get_run(db, run_id))
+
+
+@router.post("/compose/{run_id}/saved", response_model=ComposeRunOut,
+             description="The reviewer saved the drafted signal in social_scrapper; links the run's entities to it.")
+async def compose_signal_saved(run_id: str, payload: SignalSavedRequest, db=Depends(get_newsroom_db),
+                               sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
+    return await _call(cmp.mark_signal_saved(db, sources, run_id, payload.signal_id, actor))
 
 
 def mount_newsroom(app: FastAPI, enabled: bool) -> bool:

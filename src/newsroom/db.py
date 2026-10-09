@@ -23,6 +23,7 @@ ENTITY_MENTIONS = "entity_mentions"
 ENTITY_IGNORE = "entity_ignore"
 ENTITY_AUDIT = "entity_audit"
 ENTITY_SUGGESTIONS = "entity_suggestions"
+COMPOSE_RUNS = "compose_runs"
 
 # (collection, keys, options)
 INDEX_SPECS = [
@@ -52,6 +53,9 @@ INDEX_SPECS = [
     (ENTITY_IGNORE, [("string_key", ASCENDING)], {"unique": True, "name": "ignore_unique"}),
     (ENTITY_AUDIT, [("entity_id", ASCENDING), ("at", DESCENDING)], {"name": "entity_time"}),
     (ENTITY_AUDIT, [("at", DESCENDING)], {"name": "time"}),
+    (COMPOSE_RUNS, [("created_at", DESCENDING)], {"name": "created"}),
+    (COMPOSE_RUNS, [("status", ASCENDING), ("deadline_at", ASCENDING)], {"name": "status_deadline"}),
+    (COMPOSE_RUNS, [("source_keys", ASCENDING), ("status", ASCENDING)], {"name": "source_keys"}),
 ]
 
 

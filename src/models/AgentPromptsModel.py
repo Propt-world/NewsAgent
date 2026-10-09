@@ -47,3 +47,7 @@ class AgentPromptsModel(BaseModel):
     # --- Translation ---
     translation_system: str
     translation_user: str
+
+    # --- Real-estate check (optional: the built-in text is used when the registry has none) ---
+    real_estate_check_system: Optional[str] = None
+    real_estate_check_user: Optional[str] = None

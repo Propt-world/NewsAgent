@@ -202,6 +202,23 @@ async def cursor_to_list(cursor):
     return [doc async for doc in cursor]
 
 
+async def submit_article_job(http_client: httpx.AsyncClient, link: str, check_real_estate: bool) -> bool:
+    """Sends one article to the worker queue through the main API's /submit-job. True if accepted."""
+    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
+    headers = {}
+    if settings.NEWSAGENT_API_KEY:
+        headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
+    payload = {"source_url": link, "max_retries": 3, "check_real_estate": check_real_estate}
+    try:
+        resp = await http_client.post(f"{api_base}/submit-job", json=payload, headers=headers)
+        resp.raise_for_status()
+        logger.info(f"🚀 Submitted: {link}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to submit {link}: {e}")
+        return False
+
+
 async def check_single_source(source: dict):
     # Acquire semaphore
     async with CONCURRENCY_LIMIT:
@@ -251,25 +268,8 @@ async def check_single_source(source: dict):
                     except Exception:
                         continue
 
-                    # PREPARE API REQUEST
-                    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
-                    api_url = f"{api_base}/submit-job"
-
-                    # [FIX] ADD SECURITY HEADERS
-                    headers = {}
-                    if settings.NEWSAGENT_API_KEY:
-                        headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
-                    # ----------------------------------
-
-                    payload = {"source_url": link, "max_retries": 3}
-
-                    try:
-                        # [FIX] PASS HEADERS HERE
-                        resp = await http_client.post(api_url, json=payload, headers=headers)
-                        resp.raise_for_status()
-                        logger.info(f"🚀 Submitted: {link}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to submit {link}: {e}")
+                    # Articles found by the scheduler get the real-estate check (when it is switched on)
+                    if not await submit_article_job(http_client, link, check_real_estate=True):
                         await collections.processed_articles.update_one(
                             {"_id": new_article["_id"]},
                             {"$set": {"status": "submission_failed"}}
@@ -474,6 +474,9 @@ async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTask
     url = payload.get("source_url")
     data = payload.get("data")
 
+    if url and payload.get("status") == NOT_REAL_ESTATE:
+        return await store_not_real_estate(url, payload)
+
     if not url or not data:
         raise HTTPException(status_code=400, detail="Invalid Payload")
 
@@ -514,6 +517,37 @@ async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTask
         background_tasks.add_task(article_stored, url, payload.get("newsroom_names"))
 
     return {"status": "ok", "message": "Result stored"}
+
+
+NOT_REAL_ESTATE = "not_real_estate"
+# Only an article still waiting for its result can be marked; a processed or reviewed one is never changed.
+FILTERABLE_STATUSES = ["queued", "submission_failed", NOT_REAL_ESTATE]
+
+
+async def store_not_real_estate(url: str, payload: Dict[str, Any]) -> Dict[str, str]:
+    """The worker's real-estate check skipped this article: mark it so it is never processed again
+    (the scheduler already knows the url) and show it in the backoffice's Filtered out list."""
+    check = payload.get("real_estate_check") if isinstance(payload.get("real_estate_check"), dict) else {}
+    title = payload.get("title")
+    record = {
+        "status": NOT_REAL_ESTATE,
+        "filtered_at": datetime.now(timezone.utc),
+        "real_estate_check": {
+            "is_real_estate": False,
+            "reason": str(check.get("reason") or "")[:500],
+            "model": str(check.get("model") or "")[:100],
+            "checked_at": str(check.get("checked_at") or "")[:40],
+            "title": str(title)[:300] if title else None,
+        },
+    }
+    collections = get_async_scheduler_collections()
+    result = await collections.processed_articles.update_one(
+        {"url": url, "status": {"$in": FILTERABLE_STATUSES}}, {"$set": record})
+    if result.matched_count == 0:
+        logger.warning(f"[WEBHOOK] Not-real-estate result for {url} ignored: no article waiting for a result.")
+        return {"status": "ignored", "message": "No article waiting for a result"}
+    logger.info(f"[WEBHOOK] 🚫 Not real estate: {url}")
+    return {"status": "ok", "message": "Marked not real estate"}
 
 
 # 2. SOURCE MANAGEMENT ENDPOINTS
@@ -1283,6 +1317,40 @@ async def search_articles_similarity(
 
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT
+@app.post(
+    "/articles/{article_id}/process-anyway",
+    response_model=GenericResponse,
+    description="Sends an article the real-estate check filtered out through the normal pipeline, without the check.",
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": GenericResponse, "description": "Article not found"},
+        status.HTTP_409_CONFLICT: {"model": GenericResponse, "description": "Article is not filtered out"},
+        status.HTTP_502_BAD_GATEWAY: {"model": GenericResponse, "description": "Could not queue the article"},
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def process_anyway(article_id: str):
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id}, {"url": 1, "status": 1})
+    if article is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    # Only from "not_real_estate", in one step, so a double click cannot queue it twice.
+    claimed = await collections.processed_articles.update_one(
+        {"_id": article_id, "status": NOT_REAL_ESTATE},
+        {"$set": {"status": "queued", "real_estate_check.overridden_at": datetime.now(timezone.utc)}},
+    )
+    if claimed.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Only articles filtered out as not real estate can be processed this way")
+    async with httpx.AsyncClient() as http_client:
+        queued = await submit_article_job(http_client, article["url"], check_real_estate=False)
+    if not queued:
+        # Back to the Filtered out list, so the reviewer can try again
+        await collections.processed_articles.update_one(
+            {"_id": article_id, "status": "queued"},
+            {"$set": {"status": NOT_REAL_ESTATE}, "$unset": {"real_estate_check.overridden_at": ""}})
+        raise HTTPException(status_code=502, detail="Could not send the article for processing; try again later")
+    return {"status": "queued", "message": "Sent for processing without the real-estate check", "id": article_id}
+
+
 @app.post(
     "/articles/{article_id}/archive",
     response_model=GenericResponse,

@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     # Off unless explicitly enabled; when off no /newsroom routes are mounted.
     # Kept as a string so an empty or unexpected value means "off" instead of a startup error.
     NEWSROOM_ENABLED: str = os.getenv('NEWSROOM_ENABLED', 'false')
+    # Real-estate check before processing articles the scheduler found (true to enable; off by default)
+    REAL_ESTATE_CHECK_ENABLED: str = os.getenv('REAL_ESTATE_CHECK_ENABLED', 'false')
+    # A classifier: steady answers, so a low temperature (separate from MODEL_TEMPERATURE)
+    REAL_ESTATE_CHECK_TEMPERATURE: float = float(os.getenv('REAL_ESTATE_CHECK_TEMPERATURE', '0'))
+    # How much of the fetched article text the check reads (with the title)
+    REAL_ESTATE_CHECK_CHARS: int = int(os.getenv('REAL_ESTATE_CHECK_CHARS', '1500'))
     # Database holding the Newsroom knowledge graph (same cluster as DATABASE_URL)
     NEWSROOM_DB_NAME: str = os.getenv('NEWSROOM_DB_NAME', 'newsroom')
     # social_scrapper's signals collection in that database (read-only for NewsAgent)
@@ -130,6 +136,10 @@ class Settings(BaseSettings):
     @property
     def newsroom_enabled(self) -> bool:
         return self.NEWSROOM_ENABLED.strip().lower() in ("1", "true", "yes", "on")
+
+    @property
+    def real_estate_check_enabled(self) -> bool:
+        return self.REAL_ESTATE_CHECK_ENABLED.strip().lower() in ("1", "true", "yes", "on")
 
     # Scheduler Configuration
     # Main API URL for submitting jobs (used by scheduler service)

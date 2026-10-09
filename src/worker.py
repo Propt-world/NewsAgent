@@ -8,6 +8,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from src.configs.settings import settings
 from src.graph.graph import MainWorkflow
+from src.graph.nodes.check_real_estate import is_skipped
 from src.graph.nodes.load_agent_configuration import close_async_config_client
 from src.models.MainWorkflowState import MainWorkflowState
 from src.utils.email_utils import close_async_email_client, send_error_email_async
@@ -109,6 +110,7 @@ async def run_worker():
                 initial_state = MainWorkflowState(
                     source_url=source_url,
                     max_retries=max_retries,
+                    check_real_estate=bool(job_data.get("check_real_estate", False)),
                 )
 
                 try:
@@ -135,6 +137,10 @@ async def run_worker():
                             source_url=source_url,
                             error_details=error_message,
                         )
+                    elif is_skipped(final_state):
+                        # Not a failure: the article was judged not to be real estate (no email, no dead-letter queue).
+                        pprint(f"[JOB {job_id}] Skipped: not real estate.")
+                        await update_job_status(r, job_id, "skipped", result=final_state.get("real_estate_check"))
                     else:
                         pprint(f"[JOB {job_id}] Finished successfully.")
                         article_data = final_state.get("news_article").dict()

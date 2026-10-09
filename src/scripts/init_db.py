@@ -11,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from src.db.enums import PromptStatus
 from src.configs.settings import settings
 from src.newsroom.prompts import NEWSROOM_PROMPTS
+from src.graph.nodes.check_real_estate import REAL_ESTATE_CHECK_PROMPTS
 
 PROMPT_VERSION = "v1.0"
 
@@ -543,10 +544,19 @@ def seed_prompts(db):
 
 def seed_newsroom_prompts(db):
     """Newsroom compose prompts: inserted only when missing, so edits made in the registry are kept."""
-    print("--- Setting up Newsroom Prompts (insert only if missing) ---")
+    seed_prompts_if_missing(db, NEWSROOM_PROMPTS, "Newsroom")
+
+
+def seed_real_estate_check_prompts(db):
+    """Real-estate check prompts: inserted only when missing, so edits made in the registry are kept."""
+    seed_prompts_if_missing(db, REAL_ESTATE_CHECK_PROMPTS, "Real-estate check")
+
+
+def seed_prompts_if_missing(db, prompts, label):
+    print(f"--- Setting up {label} Prompts (insert only if missing) ---")
     prompts_col = db["prompts"]
     active_status = PromptStatus.ACTIVE.value
-    for data in NEWSROOM_PROMPTS:
+    for data in prompts:
         now = datetime.now(timezone.utc)
         result = prompts_col.update_one(
             {"name": data["name"], "status": active_status},
@@ -566,9 +576,9 @@ def seed_newsroom_prompts(db):
             upsert=True,
         )
         if result.upserted_id:
-            print(f"  [+] Added Newsroom Prompt: {data['name']}")
+            print(f"  [+] Added {label} Prompt: {data['name']}")
         else:
-            print(f"  [=] Kept existing Newsroom Prompt: {data['name']}")
+            print(f"  [=] Kept existing {label} Prompt: {data['name']}")
 
 
 def seed_email_recipients(db):
@@ -688,6 +698,7 @@ def init_db(mode: str = "upsert", yes: bool = False):
 
         seed_prompts(db)
         seed_newsroom_prompts(db)
+        seed_real_estate_check_prompts(db)
         seed_email_recipients(db)
         seed_categories(db)
         ensure_operational_indexes(db)

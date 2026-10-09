@@ -87,6 +87,8 @@ def test_ranking_and_reasons(scene):
     assert first["source_type"] == "signal"
     assert a1["reason"] == "Shares Emaar Properties · same area: Dubai Creek Harbour"
     assert [p["name"] for p in a1["shared_places"]] == ["Dubai Creek Harbour"]  # not UAE / Dubai as well
+    a3 = body["items"][2]
+    assert a3["reason"] == "Shares Emaar Properties · same country: United Arab Emirates"
 
 
 def test_rejected_items_never_shown(scene):

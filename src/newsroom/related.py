@@ -191,7 +191,8 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
         place_names = [names[i]["canonical_name"] for i in places if i in names]
         reason = "Shares " + ", ".join(shared_names)
         if place_names and basis == "organisations":
-            reason += " · same area: " + ", ".join(place_names)
+            only_countries = all(names.get(i, {}).get("type") == "country" for i in places)
+            reason += (" · same country: " if only_countries else " · same area: ") + ", ".join(place_names)
         items.append({
             "source_type": row["_id"]["source_type"],
             "source_id": row["_id"]["source_id"],

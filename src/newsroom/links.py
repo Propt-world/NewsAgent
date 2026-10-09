@@ -22,7 +22,8 @@ from src.newsroom import entities as ent
 from src.newsroom.entities import Conflict, Invalid, NotFound
 from src.newsroom.locations import refresh_item_locations
 from src.newsroom.models import EntityUpdate
-from src.newsroom.normalize import looks_like_handle, normalize_alias, raw_key
+from src.newsroom import resolve as rs
+from src.newsroom.normalize import normalize_alias
 
 SOURCE_TYPES = ("article", "signal")
 FIELDS = ("organisation", "location")
@@ -114,28 +115,24 @@ async def suggest(db, source_type: str, source_id: str, organisations: List[str]
     mentions = {m["entity_id"]: m["status"] async for m in db[ndb.ENTITY_MENTIONS].find(
         {"source_type": source_type, "source_id": source_id}, {"entity_id": 1, "status": 1})}
 
+    skip_counts = {rs.HANDLE: "skipped_handle", rs.IGNORED: "skipped_ignored",
+                   rs.AMBIGUOUS: "skipped_ambiguous", rs.SWITCHED_OFF: "skipped_switched_off"}
     for field, name, norm in names:
-        if looks_like_handle(name):
-            counts["skipped_handle"] += 1
-            continue
-        if raw_key(name) in ignored:
-            counts["skipped_ignored"] += 1
+        skipped = rs.precheck(name, ignored)
+        if skipped:
+            counts[skip_counts[skipped]] += 1
             continue
         aliases = await db[ndb.ENTITY_ALIASES].find({"kind": field, "alias_norm": norm}).to_list(length=None)
-        exact = next((a for a in aliases if not a.get("ambiguous")), None)
-        if aliases and exact is None:
-            counts["skipped_ambiguous"] += 1
+        exact = rs.exact_alias(aliases)
+        found = await db[ndb.ENTITIES].find_one({"_id": exact["entity_id"]}) if exact else None
+        resolution = rs.resolve(name, ignored, aliases, found)
+        if resolution.outcome in skip_counts:
+            counts[skip_counts[resolution.outcome]] += 1
             continue
-
-        entity = None
-        if exact is not None:
-            entity = await db[ndb.ENTITIES].find_one({"_id": exact["entity_id"]})
-            if entity is None or entity["status"] == "ignored":
-                counts["skipped_switched_off"] += 1
-                continue
-            if entity["_id"] in mentions:
-                counts["skipped_linked_or_removed"] += 1
-                continue
+        entity = resolution.entity
+        if entity is not None and entity["_id"] in mentions:
+            counts["skipped_linked_or_removed"] += 1
+            continue
 
         if entity is None:
             reason = "not in the list"

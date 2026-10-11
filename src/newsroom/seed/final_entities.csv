@@ -1,17 +1,17 @@
 ﻿canonical_name,type,status,"aliases (exact, auto-link)",ambiguous_aliases (never auto-link),parent,country,context_slug,mentions_in_data,ambiguous_mentions,note
 Stake,investment,active,Stake,,,UAE,stake,75,0,several context entities share this key: Stake Saudi / Stake
 DAMAC Properties,developer,active,DAMAC | Damac | DAMAC Properties | Damac Properties,DAMAC Group,,UAE,damac-properties,65,1,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
-Aldar Properties,developer,active,Aldar | Aldar Properties,,,UAE,aldar-properties,65,0,
+Aldar Properties,developer,active,Aldar | Aldar Properties | Aldar Group,,,UAE,aldar-properties,65,0,
 Emaar Properties,developer,active,Emaar | Emaar Properties,,,UAE,emaar-properties,64,0,"'Emaar Development' (subsidiary), 'Emaar Hospitality Group' and 'Emaar Economic City' (a different Saudi company) are separate entities and never auto-link here."
 ADQ,investment,active,ADQ,,,UAE,,49,0,
 Azizi Developments,developer,active,Azizi | Azizi Developments,Azizi Group | Azizi Properties,,UAE,azizi-developments,44,3,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
 Dubai South,developer,active,Dubai South,,,UAE,,43,0,
 Dubai Holding,investment,active,Dubai Holding,,,UAE,dubai-holding,40,0,"Parent of Meraas, Dubai Properties and Dubai Holding Real Estate. 'Dubai Properties' and 'Dubai Holding Real Estate' are split out as separate entities."
-Arada,developer,active,Arada,,,UAE,,35,0,
+Arada,developer,active,Arada | Arada Group,,,UAE,,35,0,
 Nakheel,developer,active,Nakheel,,,UAE,nakheel,34,0,
-Binghatti,developer,active,Binghatti,,,UAE,binghatti,32,0,
+Binghatti,developer,active,Binghatti | Binghatti Developers | Binghatti Holding,,,UAE,binghatti,32,0,
 Meydan,developer,active,Meydan,,,UAE,,27,0,Also an area of Dubai (see locations).
-Modon Holding,developer,active,Modon | Modon Holding,Modon Properties,,UAE,,26,1,Type to confirm.
+Modon Holding,developer,active,Modon | Modon Holding | Modon Real Estate,Modon Properties,,UAE,,26,1,Type to confirm.
 Bayut,proptech,active,Bayut,,,UAE,,26,0,
 Meraas,developer,active,Meraas,,Dubai Holding,UAE,meraas,24,0,Context also has 'Meraas Holding' - probably a duplicate; please check.
 Sobha Realty,developer,active,Sobha | Sobha Realty,,Sobha Group,UAE,sobha-realty,23,0,
@@ -34,14 +34,14 @@ Sharjah Investment and Development Authority,government,active,Shurooq | Sharjah
 Ellington Properties,developer,active,Ellington | Ellington Properties,,,UAE,,10,0,
 Select Group,developer,active,Select Group,,,UAE,,9,0,
 Red Sea Global,developer,active,Red Sea Global,,,Saudi Arabia,red-sea-global,9,0,
-Madayn,government,active,Madayn,,,Oman,,9,0,
-Retal Urban,developer,active,Retal Urban | Retal Urban Development Company,Retal,,Saudi Arabia,retal-urban,7,2,
+Madayn,government,active,Madayn | Public Establishment for Industrial Estates | Public Establishment for Industrial Estates (Madayn),,,Oman,,9,0,
+Retal Urban,developer,active,Retal Urban | Retal Urban Development Company | Retal Urban Development,Retal,,Saudi Arabia,retal-urban,7,2,
 PIF,investment,active,PIF | Public Investment Fund | Public Investment Fund (PIF),,,Saudi Arabia,pif-saudi,9,0,
 NEOM,developer,active,NEOM,,,Saudi Arabia,neom,8,0,
 Tiger Properties,developer,active,Tiger Properties,Tiger Group | Tiger Holding,,UAE,,5,3,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
 Union Properties,developer,active,Union Properties,,,UAE,,8,0,
 Imtiaz Developments,developer,active,Imtiaz Developments,,,UAE,,7,0,
-Deyaar,developer,active,Deyaar,,,UAE,,7,0,
+Deyaar,developer,active,Deyaar | Deyaar Development,,,UAE,,7,0,
 Mabanee Company,developer,active,Mabanee Company | Mabanee,,,Kuwait,mabanee-kuwait,6,0,
 Msheireb Properties,developer,active,Msheireb Properties,,,Qatar,msheireb-properties,6,0,
 KEZAD,government,active,KEZAD,,,UAE,,6,0,

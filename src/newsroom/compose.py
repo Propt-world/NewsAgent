@@ -10,6 +10,10 @@ Limits (B1), all checked before anything is queued:
 - at most NEWSROOM_COMPOSE_CONCURRENT runs queued or running at once
 - no new runs once today's spend (NEWSROOM_BUDGET_TIMEZONE day) reaches NEWSROOM_DAILY_BUDGET_USD
 - the same sources and output cannot be composed twice at the same time
+
+Deadlines: a queued run may wait up to NEWSROOM_COMPOSE_MAX_WAIT_HOURS for a
+worker (busy or restarting); NEWSROOM_COMPOSE_TIMEOUT_MINUTES counts only from
+when a worker starts it. deadline_at always holds the current one.
 """
 import json
 import uuid
@@ -71,13 +75,29 @@ async def spent_today(db, now: Optional[datetime] = None) -> float:
     return float(rows[0]["cost"]) if rows else 0.0
 
 
+NEVER_STARTED = "No worker started this job in time (busy or restarting). Nothing more was charged; try again."
+TIMED_OUT = "Timed out while writing"
+
+
+def wait_deadline(now: datetime) -> datetime:
+    return now + timedelta(hours=settings.NEWSROOM_COMPOSE_MAX_WAIT_HOURS)
+
+
+def run_deadline(now: datetime) -> datetime:
+    return now + timedelta(minutes=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES)
+
+
 async def reap_stale_runs(db) -> int:
-    """Runs queued or running past their deadline are marked failed (the worker may have stopped)."""
-    res = await db[ndb.COMPOSE_RUNS].update_many(
-        {"status": {"$in": ACTIVE_STATUSES}, "deadline_at": {"$lt": _now()}},
-        {"$set": {"status": "failed", "error": "Timed out", "finished_at": _now()}},
-    )
-    return res.modified_count
+    """Runs past their deadline are marked failed: queued ones waited too long, running ones took too long."""
+    now = _now()
+    count = 0
+    for status, error in (("queued", NEVER_STARTED), ("running", TIMED_OUT)):
+        res = await db[ndb.COMPOSE_RUNS].update_many(
+            {"status": status, "deadline_at": {"$lt": now}},
+            {"$set": {"status": "failed", "error": error, "finished_at": now}},
+        )
+        count += res.modified_count
+    return count
 
 
 def _out(doc: dict) -> dict:
@@ -154,8 +174,9 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
         "included_entity_ids": sorted(set(include_entity_ids or [])),
         "requested_by": actor,
         "created_at": now,
-        "deadline_at": now + timedelta(minutes=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES),
+        "deadline_at": wait_deadline(now),
         "started_at": None,
+        "attempts": 0,
         "finished_at": None,
         "model": settings.NEWSROOM_COMPOSE_MODEL,
         "temperature": {"writer": settings.NEWSROOM_COMPOSE_TEMPERATURE,

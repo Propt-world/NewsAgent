@@ -12,6 +12,7 @@ from pymongo import AsyncMongoClient
 from src.configs.settings import settings
 from src.models.ArticleModel import ArticleModel
 from src.models.SeoMetadataModel import SeoMetadataModel
+from src.newsroom import compose as cmp
 from src.newsroom import compose_worker as cw
 from src.newsroom import links as lnk
 from src.newsroom.db import ItemSources
@@ -151,7 +152,22 @@ def test_queue_failure_marks_run_failed(scene, sync_db):
 def test_stuck_runs_time_out(scene, sync_db):
     run_id = _run(sync_db, status="running", deadline_at=NOW - timedelta(minutes=1))
     body = scene.get(f"/newsroom/compose/{run_id}").json()
-    assert (body["status"], body["error"]) == ("failed", "Timed out")
+    assert (body["status"], body["error"]) == ("failed", cmp.TIMED_OUT)
+
+
+def test_queued_runs_wait_hours_not_minutes(scene, sync_db):
+    """The writing time limit starts when a worker starts the job; a queued job may wait for a busy worker."""
+    resp = _compose(scene, ("article", "A1"), ("article", "A2"))
+    assert resp.status_code in (200, 201, 202), resp.text
+    run = sync_db["compose_runs"].find_one({"_id": resp.json()["id"]})
+    waited = run["deadline_at"] - run["created_at"]
+    assert waited == timedelta(hours=settings.NEWSROOM_COMPOSE_MAX_WAIT_HOURS)
+    assert (run["attempts"], run["started_at"]) == (0, None)
+
+    # Twenty minutes in the queue is fine; past the wait limit it is given up.
+    stale = _run(sync_db, status="queued", created_at=NOW - timedelta(hours=7), deadline_at=NOW - timedelta(hours=1))
+    body = scene.get(f"/newsroom/compose/{stale}").json()
+    assert (body["status"], body["error"]) == ("failed", cmp.NEVER_STARTED)
 
 
 def test_extract_signal_request(scene):
@@ -254,7 +270,8 @@ def job(scene, sync_db, mongo_url, db_name, monkeypatch):
         return {n: cw.PROMPTS_BY_NAME[n]["content"] for n in names}
     monkeypatch.setattr(cw, "load_prompts", no_registry)
 
-    def run(run_body, answers=ANSWERS, delay=0):
+    def run(run_body, answers=ANSWERS, delay=0, interrupt_after=None):
+        """interrupt_after: cancel the job after that many seconds, as a worker shutdown does."""
         model = FakeModel(answers, delay)
         monkeypatch.setattr(cw, "get_compose_model", model.at)
 
@@ -263,10 +280,14 @@ def job(scene, sync_db, mongo_url, db_name, monkeypatch):
             try:
                 db = client[db_name]
                 sources = ItemSources(articles=db["processed_articles"], signals=db["signals"], chunks=db["vectorized_articles"])
-                await cw.run_compose_job(run_body["id"], db, sources)
+                task = asyncio.create_task(cw.run_compose_job(run_body["id"], db, sources))
+                if interrupt_after is not None:
+                    await asyncio.sleep(interrupt_after)
+                    task.cancel()
+                return await task
             finally:
                 await client.close()
-        asyncio.run(go())
+        run.outcome = asyncio.run(go())
         return sync_db["compose_runs"].find_one({"_id": run_body["id"]}), model
     return run
 
@@ -433,3 +454,58 @@ def test_opik_problems_never_fail_a_job(scene, job, monkeypatch):
 def test_no_opik_key_means_no_tracing(scene, job):
     run, model = job(_compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json())
     assert run["status"] == "succeeded" and run["opik_traced"] is False
+
+
+# --- Worker shutdown (Fargate Spot) and the time limits -------------------------------
+
+def test_time_limit_starts_when_the_worker_starts(scene, job, sync_db):
+    body = _compose(scene, ("article", "A1"), ("article", "A2"), output_type="signal").json()
+    # Waited 3 hours in the queue (busy worker): still runs.
+    sync_db["compose_runs"].update_one({"_id": body["id"]}, {"$set": {"created_at": NOW - timedelta(hours=3)}})
+    run, _ = job(body)
+    assert run["status"] == "succeeded"
+    assert run["attempts"] == 1
+    assert run["started_at"] is not None
+
+
+def test_a_job_is_run_only_once(scene, job, sync_db):
+    body = _compose(scene, ("article", "A1"), ("article", "A2"), output_type="signal").json()
+    job(body)
+    run, model = job(body)  # delivered again (e.g. pushed back twice): not run, not paid again
+    assert model.prompts == []
+    assert run["attempts"] == 1 and run["cost_usd"] == 0.00036
+
+
+def test_shutdown_puts_the_job_back_and_keeps_its_spend(scene, job, sync_db):
+    body = _compose(scene, ("article", "A1"), ("article", "A2"), output_type="signal").json()
+    run, _ = job(body, delay=1, interrupt_after=0.3)
+    assert job.outcome == cw.REQUEUE
+    assert (run["status"], run["started_at"], run["error"], run["attempts"]) == ("queued", None, None, 1)
+    assert run["deadline_at"] - datetime.now(timezone.utc).replace(tzinfo=None) > timedelta(hours=5)
+    assert run["cost_usd"] == 0.00036  # what the cut-off start spent still counts
+
+    run, _ = job(body)  # the next worker finishes it
+    assert (run["status"], run["attempts"]) == ("succeeded", 2)
+    assert run["cost_usd"] == pytest.approx(0.00072)  # both starts
+
+
+def test_shutdown_gives_up_after_the_last_start(scene, job, sync_db, monkeypatch):
+    monkeypatch.setattr(settings, "NEWSROOM_COMPOSE_MAX_ATTEMPTS", 1)
+    body = _compose(scene, ("article", "A1"), ("article", "A2"), output_type="signal").json()
+    run, _ = job(body, delay=1, interrupt_after=0.3)
+    assert job.outcome is None
+    assert (run["status"], run["error"]) == ("failed", cw.INTERRUPTED.format(n=1))
+
+
+def test_a_job_given_up_meanwhile_is_not_turned_into_a_success(scene, job, sync_db, monkeypatch):
+    body = _compose(scene, ("article", "A1"), ("article", "A2"), output_type="signal").json()
+    original = cw.ask
+
+    async def ask_then_give_up(*args, **kwargs):
+        # The clean-up marks the run failed while the worker is still writing.
+        sync_db["compose_runs"].update_one({"_id": body["id"]}, {"$set": {"status": "failed", "error": cmp.TIMED_OUT}})
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(cw, "ask", ask_then_give_up)
+    run, _ = job(body)
+    assert (run["status"], run["error"]) == ("failed", cmp.TIMED_OUT)
+    assert run["cost_usd"] == 0.00036  # the spend is still counted

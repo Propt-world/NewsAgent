@@ -130,7 +130,12 @@ class Settings(BaseSettings):
     NEWSROOM_COMPOSE_CONCURRENT: int = int(os.getenv('NEWSROOM_COMPOSE_CONCURRENT', '2'))
     NEWSROOM_DAILY_BUDGET_USD: float = float(os.getenv('NEWSROOM_DAILY_BUDGET_USD', '10'))
     NEWSROOM_BUDGET_TIMEZONE: str = os.getenv('NEWSROOM_BUDGET_TIMEZONE', 'Asia/Dubai')
+    # Counted from when the worker starts the job, not from when it was requested.
     NEWSROOM_COMPOSE_TIMEOUT_MINUTES: int = int(os.getenv('NEWSROOM_COMPOSE_TIMEOUT_MINUTES', '15'))
+    # How long a job may wait in the queue (busy or restarting worker) before it is given up; nothing is charged.
+    NEWSROOM_COMPOSE_MAX_WAIT_HOURS: float = float(os.getenv('NEWSROOM_COMPOSE_MAX_WAIT_HOURS', '6'))
+    # A job cut off by a worker shutdown is put back in the queue, at most this many starts in total.
+    NEWSROOM_COMPOSE_MAX_ATTEMPTS: int = int(os.getenv('NEWSROOM_COMPOSE_MAX_ATTEMPTS', '3'))
     NEWSROOM_COMPOSE_QUEUE: str = os.getenv('NEWSROOM_COMPOSE_QUEUE', 'newsroom_compose_jobs')
 
     @property

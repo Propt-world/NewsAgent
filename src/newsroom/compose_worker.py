@@ -22,10 +22,12 @@ from langchain_community.callbacks.manager import get_openai_callback
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
+from pymongo import ReturnDocument
 
 from src.configs.settings import settings
 from src.models.ArticleModel import ArticleModel
 from src.models.MainWorkflowState import MainWorkflowState
+from src.newsroom import compose as cmp
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
@@ -218,37 +220,77 @@ async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dic
 
 # --- The job ----------------------------------------------------------------------
 
-async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSources] = None) -> None:
+REQUEUE = "requeue"
+INTERRUPTED = "Stopped {n} times because the worker was shutting down; try again."
+
+
+async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSources] = None) -> Optional[str]:
+    """
+    Runs one queued compose job. Returns REQUEUE when a worker shutdown cut it off and it
+    should go back in the queue (the caller pushes it back); otherwise None.
+    """
     db = db if db is not None else ndb.get_newsroom_db()
     sources = sources or ndb.get_item_sources()
-    run = await db[ndb.COMPOSE_RUNS].find_one({"_id": run_id})
-    if run is None or run["status"] != "queued":
-        return
-    await db[ndb.COMPOSE_RUNS].update_one({"_id": run_id}, {"$set": {"status": "running", "started_at": _now()}})
+    # Claim it in one step, so the same job delivered twice is never run (and paid for) twice.
+    started = _now()
+    run = await db[ndb.COMPOSE_RUNS].find_one_and_update(
+        {"_id": run_id, "status": "queued"},
+        {"$set": {"status": "running", "started_at": started, "deadline_at": cmp.run_deadline(started)},
+         "$inc": {"attempts": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if run is None:
+        return None  # unknown, or no longer queued (finished, failed or given up)
 
     update = {}
     tracer = get_compose_tracer(run)
     update["opik_traced"] = tracer is not None
+    interrupted = False
     with get_openai_callback() as usage:
         try:
             result, status = await asyncio.wait_for(
                 _compose(db, sources, run, update, tracer), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
-            update.update({"status": status, "result": result})
+            update.update({"status": status, "result": result, "finished_at": _now()})
+        except asyncio.CancelledError:
+            # The worker is shutting down: wait in the queue again unless it has had its starts.
+            interrupted = run.get("attempts", 1) < settings.NEWSROOM_COMPOSE_MAX_ATTEMPTS
+            if interrupted:
+                update.update({"status": "queued", "started_at": None, "deadline_at": cmp.wait_deadline(_now()),
+                               "error": None})
+            else:
+                update.update({"status": "failed", "finished_at": _now(),
+                               "error": INTERRUPTED.format(n=run.get("attempts", 1))})
         except Exception as e:
             logger.exception(f"[NEWSROOM] Compose run {run_id} failed")
-            update.update({"status": "failed", "error": (str(e) or type(e).__name__)[:500]})
+            update.update({"status": "failed", "error": (str(e) or type(e).__name__)[:500], "finished_at": _now()})
         finally:
-            update.update({
-                "finished_at": _now(),
-                "tokens": {"prompt": usage.prompt_tokens, "completion": usage.completion_tokens, "total": usage.total_tokens},
-                "cost_usd": round(float(usage.total_cost), 6),
-            })
-            await db[ndb.COMPOSE_RUNS].update_one({"_id": run_id}, {"$set": update})
+            # Spend adds up over every start; written only while this worker still owns the run,
+            # so a run the clean-up already marked failed is not turned back into a success.
+            res = await db[ndb.COMPOSE_RUNS].update_one(
+                {"_id": run_id, "status": "running"},
+                {"$set": update, "$inc": {
+                    "tokens.prompt": usage.prompt_tokens,
+                    "tokens.completion": usage.completion_tokens,
+                    "tokens.total": usage.total_tokens,
+                    "cost_usd": round(float(usage.total_cost), 6),
+                }},
+            )
+            if res.matched_count == 0:
+                # Already given up (timed out): still count what was spent.
+                await db[ndb.COMPOSE_RUNS].update_one({"_id": run_id}, {"$inc": {
+                    "tokens.prompt": usage.prompt_tokens,
+                    "tokens.completion": usage.completion_tokens,
+                    "tokens.total": usage.total_tokens,
+                    "cost_usd": round(float(usage.total_cost), 6),
+                }})
+                logger.warning(f"[NEWSROOM] Compose run {run_id} ended after it was given up; its result was not kept")
+                interrupted = False
     if tracer is not None:
         try:
             tracer.flush()
         except Exception as e:
             logger.warning(f"[NEWSROOM] Opik flush failed for compose run {run_id}: {e}")
+    return REQUEUE if interrupted else None
 
 
 async def _compose(db, sources, run, update: dict, tracer=None):

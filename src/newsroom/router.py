@@ -42,6 +42,8 @@ from src.newsroom.models import (
     ItemsSummaryRequest,
     ItemsSummaryResponse,
     LinkRequest,
+    MergeRequest,
+    MergeResult,
     NewNameDismissRequest,
     NewNameGroup,
     NewNameLinkRequest,
@@ -97,7 +99,8 @@ async def newsroom_health():
 @router.get("/entities", response_model=EntityListResponse, description="List and search entities with their aliases.")
 async def list_entities(
     kind: Optional[Literal["organisation", "location"]] = None,
-    entity_status: Optional[Literal["active", "staged", "ignored"]] = Query(None, alias="status"),
+    entity_status: Optional[Literal["active", "staged", "ignored", "merged"]] = Query(
+        None, alias="status", description="Merged duplicates are listed only with status=merged"),
     entity_type: Optional[str] = Query(None, alias="type"),
     q: Optional[str] = Query(None, max_length=200, description="Matches the name or any alias"),
     limit: int = Query(100, ge=1, le=500),
@@ -127,6 +130,13 @@ async def create_entity(payload: EntityCreate, db=Depends(get_newsroom_db), acto
               description="Edit name, type, status (on/off), parent, country or notes. Entities are switched off, never deleted.")
 async def update_entity(entity_id: str, payload: EntityUpdate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(svc.update_entity(db, entity_id, payload, actor))
+
+
+@router.post("/entities/{entity_id}/merge", response_model=MergeResult,
+             description="Merge this duplicate into into_id: its aliases, links, suggestions and children move there. "
+                         "Use dry_run to see the counts first. The duplicate stays as status 'merged'.")
+async def merge_entity(entity_id: str, payload: MergeRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+    return await _call(svc.merge_entities(db, entity_id, payload.into_id, actor, payload.dry_run))
 
 
 @router.post("/entities/{entity_id}/aliases", response_model=EntityOut, status_code=status.HTTP_201_CREATED)

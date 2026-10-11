@@ -19,7 +19,7 @@ HANDLE = "handle"              # looks like a website or social account
 IGNORED = "ignored"            # on the ignore list
 AMBIGUOUS = "ambiguous"        # the name only matches ambiguous aliases
 UNKNOWN = "unknown"            # not in the list
-SWITCHED_OFF = "switched_off"  # the entity is missing or has status "ignored"
+SWITCHED_OFF = "switched_off"  # the entity is missing or has status "ignored" or "merged"
 STAGED = "staged"              # exact match on an entity that is not switched on yet
 ACTIVE = "active"              # exact match on a switched-on entity
 
@@ -64,6 +64,6 @@ def resolve(name: str, ignored_keys: Iterable[str], aliases: List[dict], entity:
     exact = exact_alias(aliases)
     if exact is None:
         return Resolution(AMBIGUOUS if aliases else UNKNOWN)
-    if entity is None or entity.get("status") == "ignored":
+    if entity is None or entity.get("status") in ("ignored", "merged"):
         return Resolution(SWITCHED_OFF, exact, entity)
     return Resolution(ACTIVE if entity.get("status") == "active" else STAGED, exact, entity)

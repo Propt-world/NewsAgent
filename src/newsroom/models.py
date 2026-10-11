@@ -12,7 +12,9 @@ def _as_utc(value: datetime) -> datetime:
 UtcDatetime = Annotated[datetime, AfterValidator(_as_utc)]
 
 EntityKind = Literal["organisation", "location"]
-EntityStatus = Literal["active", "staged", "ignored"]
+# "merged" is set only by a merge; reviewers choose between the other three.
+EntityStatus = Literal["active", "staged", "ignored", "merged"]
+EditableStatus = Literal["active", "staged", "ignored"]
 
 
 class NewsroomHealthResponse(BaseModel):
@@ -41,6 +43,7 @@ class EntityOut(BaseModel):
     context_slug: Optional[str] = None
     notes: Optional[str] = None
     mentions_in_data: int = 0
+    merged_into: Optional[str] = None
     aliases: List[AliasOut] = []
     created_at: Optional[UtcDatetime] = None
     created_by: Optional[str] = None
@@ -59,7 +62,7 @@ class EntityCreate(BaseModel):
     kind: EntityKind
     type: str = Field(..., min_length=1, max_length=64)
     canonical_name: str = Field(..., min_length=1, max_length=200)
-    status: EntityStatus = "staged"
+    status: EditableStatus = "staged"
     parent_id: Optional[str] = None
     country_id: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=2000)
@@ -71,7 +74,7 @@ class EntityUpdate(BaseModel):
     """Only the fields that are sent are changed; send parent_id/country_id as null to clear them."""
     type: Optional[str] = Field(None, min_length=1, max_length=64)
     canonical_name: Optional[str] = Field(None, min_length=1, max_length=200)
-    status: Optional[EntityStatus] = None
+    status: Optional[EditableStatus] = None
     parent_id: Optional[str] = None
     country_id: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=2000)
@@ -80,6 +83,25 @@ class EntityUpdate(BaseModel):
 class AliasCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=200)
     ambiguous: bool = False
+
+
+class MergeRequest(BaseModel):
+    into_id: str = Field(..., min_length=1, description="The entity that is kept")
+    dry_run: bool = Field(False, description="Only count what would change")
+
+
+class MergeResult(BaseModel):
+    dry_run: bool
+    merged_id: str
+    into_id: str
+    aliases_moved: int
+    aliases_already_there: int
+    links_moved: int
+    links_both_decided: int = Field(..., description="Items where both had a decision; the kept entity's decision stays")
+    suggestions_moved: int
+    children_moved: int
+    countries_moved: int
+    entity: EntityOut
 
 
 class IgnoreOut(BaseModel):

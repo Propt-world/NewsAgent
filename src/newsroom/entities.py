@@ -9,6 +9,9 @@ Rules enforced here:
 - parents are the same kind and never form a loop; path_ids (ancestors + self)
   are recomputed for the whole subtree when a parent changes
 - entities are switched off (status) instead of deleted; every change is audited
+- a merge moves a duplicate's aliases, links, suggestions and children to the
+  kept entity; the duplicate stays as status "merged" (so the seed never
+  re-creates it) and can no longer be edited or linked
 """
 import re
 import uuid
@@ -18,7 +21,7 @@ from typing import List, Optional
 from pymongo.errors import DuplicateKeyError
 
 from src.newsroom import db as ndb
-from src.newsroom.locations import refresh_items_for_places
+from src.newsroom.locations import refresh_item_locations, refresh_items_for_places
 from src.newsroom.models import AliasCreate, EntityCreate, EntityUpdate, IgnoreCreate
 from src.newsroom.normalize import looks_like_handle, normalize_alias, raw_key
 
@@ -89,14 +92,22 @@ async def _load(db, entity_id: str) -> dict:
     return doc
 
 
+async def _load_editable(db, entity_id: str) -> dict:
+    doc = await _load(db, entity_id)
+    if doc.get("status") == "merged":
+        raise Invalid(f'"{doc["canonical_name"]}" was merged into {await _entity_label(db, doc.get("merged_into"))}; '
+                      "edit that one instead")
+    return doc
+
+
 # --- Reads ---------------------------------------------------------------
 
 async def list_entities(db, kind=None, status=None, etype=None, q=None, limit=100, skip=0) -> dict:
     query = {}
     if kind:
         query["kind"] = kind
-    if status:
-        query["status"] = status
+    # Merged duplicates are listed only when asked for.
+    query["status"] = status if status else {"$ne": "merged"}
     if etype:
         query["type"] = etype
     if q:
@@ -163,6 +174,8 @@ async def _check_parent(db, kind: str, parent_id: Optional[str], entity_id: Opti
     parent = await db[ndb.ENTITIES].find_one({"_id": parent_id})
     if parent is None:
         raise Invalid(f"Parent {parent_id} not found")
+    if parent.get("status") == "merged":
+        raise Invalid(f'"{parent["canonical_name"]}" was merged; choose the entity it was merged into')
     if parent["kind"] != kind:
         raise Invalid("Parent must be the same kind (organisation or location)")
     if entity_id and (parent_id == entity_id or entity_id in parent.get("path_ids", [])):
@@ -176,7 +189,8 @@ async def _check_country(db, kind: str, country_id: Optional[str]) -> None:
     if kind != "organisation":
         raise Invalid("Only organisations have a country")
     country = await db[ndb.ENTITIES].find_one({"_id": country_id})
-    if country is None or country["kind"] != "location" or country["type"] != "country":
+    if country is None or country["kind"] != "location" or country["type"] != "country" \
+            or country.get("status") == "merged":
         raise Invalid(f"Country {country_id} is not a country location")
 
 
@@ -277,7 +291,7 @@ async def create_entity(db, payload: EntityCreate, actor: str) -> dict:
 
 
 async def update_entity(db, entity_id: str, payload: EntityUpdate, actor: str) -> dict:
-    current = await _load(db, entity_id)
+    current = await _load_editable(db, entity_id)
     sent = payload.model_fields_set
     changes = {}
 
@@ -340,7 +354,7 @@ async def update_entity(db, entity_id: str, payload: EntityUpdate, actor: str) -
 
 
 async def add_alias(db, entity_id: str, payload: AliasCreate, actor: str) -> dict:
-    entity = await _load(db, entity_id)
+    entity = await _load_editable(db, entity_id)
     norm = await _check_alias(db, entity["kind"], payload.alias, payload.ambiguous, entity_id)
     doc = _alias_doc(entity["kind"], entity_id, payload.alias, norm, payload.ambiguous, actor)
     try:
@@ -352,13 +366,138 @@ async def add_alias(db, entity_id: str, payload: AliasCreate, actor: str) -> dic
 
 
 async def delete_alias(db, entity_id: str, alias_id: str, actor: str) -> dict:
-    await _load(db, entity_id)
+    await _load_editable(db, entity_id)
     alias = await db[ndb.ENTITY_ALIASES].find_one({"_id": alias_id, "entity_id": entity_id})
     if alias is None:
         raise NotFound(f"Alias {alias_id} not found on entity {entity_id}")
     await db[ndb.ENTITY_ALIASES].delete_one({"_id": alias_id})
     await audit(db, actor, "delete_alias", entity_id, {"alias": alias["alias"], "ambiguous": alias.get("ambiguous", False)}, None)
     return await get_entity(db, entity_id)
+
+
+# --- Merge ---------------------------------------------------------------
+
+async def merge_entities(db, entity_id: str, into_id: str, actor: str, dry_run: bool = False) -> dict:
+    """
+    Merges a duplicate (entity_id) into the entity that is kept (into_id).
+
+    Where both had a decision on the same item, the kept entity's decision
+    stays, so a reviewer's "remove" is never turned back into a link. Steps
+    are safe to repeat: if a merge stops halfway, the same merge finishes it.
+    """
+    if entity_id == into_id:
+        raise Invalid("Choose a different entity to merge into")
+    source = await _load(db, entity_id)
+    target = await _load(db, into_id)
+    resuming = source.get("status") == "merged"
+    if resuming and source.get("merged_into") != into_id:
+        raise Conflict(f'"{source["canonical_name"]}" was already merged into '
+                       f'{await _entity_label(db, source.get("merged_into"))}')
+    if target.get("status") == "merged":
+        raise Invalid(f'"{target["canonical_name"]}" was itself merged; choose the entity it was merged into')
+    if source["kind"] != target["kind"]:
+        raise Invalid("A company or person cannot be merged with a place")
+    if into_id in source.get("path_ids", []) or entity_id in target.get("path_ids", []):
+        raise Invalid(f'"{target["canonical_name"]}" and "{source["canonical_name"]}" are parent and child, '
+                      "not duplicates; change the parent instead")
+    countries = await db[ndb.ENTITIES].count_documents({"country_id": entity_id})
+    if countries and target.get("type") != "country":
+        raise Invalid(f'{countries} companies use "{source["canonical_name"]}" as their country, '
+                      f'but "{target["canonical_name"]}" is not a country')
+
+    aliases = await db[ndb.ENTITY_ALIASES].find({"entity_id": entity_id}).to_list(length=None)
+    target_norms = set(await db[ndb.ENTITY_ALIASES].distinct("alias_norm", {"entity_id": into_id}))
+    alias_moves = [a for a in aliases if a["alias_norm"] not in target_norms]
+    alias_drops = [a for a in aliases if a["alias_norm"] in target_norms]
+
+    mentions = await db[ndb.ENTITY_MENTIONS].find({"entity_id": entity_id}).to_list(length=None)
+    target_items = {(m["source_type"], m["source_id"]) async for m in db[ndb.ENTITY_MENTIONS].find(
+        {"entity_id": into_id}, {"source_type": 1, "source_id": 1})}
+    both = [m for m in mentions if (m["source_type"], m["source_id"]) in target_items]
+    moves = [m for m in mentions if (m["source_type"], m["source_id"]) not in target_items]
+
+    suggestions = await db[ndb.ENTITY_SUGGESTIONS].count_documents({"entity_id": entity_id})
+    children = await db[ndb.ENTITIES].find(
+        {"parent_id": entity_id, "status": {"$ne": "merged"}}, {"_id": 1}).to_list(length=None)
+
+    result = {
+        "dry_run": dry_run,
+        "merged_id": entity_id,
+        "into_id": into_id,
+        "aliases_moved": len(alias_moves),
+        "aliases_already_there": len(alias_drops),
+        "links_moved": len(moves),
+        "links_both_decided": len(both),
+        "suggestions_moved": suggestions,
+        "children_moved": len(children),
+        "countries_moved": countries,
+    }
+    if dry_run:
+        return {**result, "entity": await get_entity(db, into_id)}
+
+    # 1. The duplicate stops taking new links or edits before anything moves.
+    now = _now()
+    if not resuming:
+        res = await db[ndb.ENTITIES].update_one(
+            {"_id": entity_id, "status": {"$ne": "merged"}},
+            {"$set": {"status": "merged", "merged_into": into_id, "merged_at": now, "merged_by": actor,
+                      "status_before_merge": source["status"], "updated_at": now, "updated_by": actor}},
+        )
+        if res.modified_count == 0:
+            raise Conflict(f'"{source["canonical_name"]}" was merged by someone else at the same time')
+
+    # 2. Names: moving keeps alias_norm, so the exact-alias unique index is never hit.
+    if alias_drops:
+        await db[ndb.ENTITY_ALIASES].delete_many({"_id": {"$in": [a["_id"] for a in alias_drops]}})
+    for alias in alias_moves:
+        try:
+            await db[ndb.ENTITY_ALIASES].update_one({"_id": alias["_id"]}, {"$set": {"entity_id": into_id}})
+        except DuplicateKeyError:
+            await db[ndb.ENTITY_ALIASES].delete_one({"_id": alias["_id"]})  # added to the target meanwhile
+
+    # 3. Links: the kept entity's decision wins where both had one.
+    if both:
+        await db[ndb.ENTITY_MENTIONS].delete_many({"_id": {"$in": [m["_id"] for m in both]}})
+    for mention in moves:
+        try:
+            await db[ndb.ENTITY_MENTIONS].update_one({"_id": mention["_id"]}, {"$set": {"entity_id": into_id}})
+        except DuplicateKeyError:
+            await db[ndb.ENTITY_MENTIONS].delete_one({"_id": mention["_id"]})  # linked to the target meanwhile
+
+    # 4. Suggestions point at the kept entity; open ones on items it is already decided on are closed the same way.
+    touched = await db[ndb.ENTITY_SUGGESTIONS].find(
+        {"entity_id": entity_id}, {"source_type": 1, "source_id": 1}).to_list(length=None)
+    await db[ndb.ENTITY_SUGGESTIONS].update_many(
+        {"entity_id": entity_id}, {"$set": {"entity_id": into_id, "entity_status": target["status"]}})
+    for source_type, source_id in {(s["source_type"], s["source_id"]) for s in touched}:
+        decision = await db[ndb.ENTITY_MENTIONS].find_one(
+            {"entity_id": into_id, "source_type": source_type, "source_id": source_id}, {"status": 1})
+        if decision is None:
+            continue
+        await db[ndb.ENTITY_SUGGESTIONS].update_many(
+            {"entity_id": into_id, "source_type": source_type, "source_id": source_id, "status": "open"},
+            {"$set": {"status": "linked" if decision["status"] == "linked" else "dismissed",
+                      "decided_at": now, "decided_by": actor}},
+        )
+
+    # 5. Children move under the kept entity (their paths and items' places are recomputed).
+    for child in children:
+        await update_entity(db, child["_id"], EntityUpdate(parent_id=into_id), actor)
+    if countries:
+        await db[ndb.ENTITIES].update_many({"country_id": entity_id}, {"$set": {"country_id": into_id}})
+
+    # 6. Items that had the duplicate place now carry the kept place's decision and ancestors.
+    if source["kind"] == "location":
+        for source_type, source_id in {(m["source_type"], m["source_id"]) for m in mentions}:
+            await refresh_item_locations(db, source_type, source_id)
+
+    audited = {k: v for k, v in result.items() if k not in ("dry_run", "merged_id", "into_id")}
+    status_before = source.get("status_before_merge") if resuming else source["status"]
+    await audit(db, actor, "merge_into", entity_id, {"status": status_before},
+                {"merged_into": into_id, "into_name": target["canonical_name"], **audited})
+    await audit(db, actor, "merge_from", into_id, None,
+                {"merged_id": entity_id, "merged_name": source["canonical_name"], **audited})
+    return {**result, "entity": await get_entity(db, into_id)}
 
 
 # --- Ignore list ---------------------------------------------------------

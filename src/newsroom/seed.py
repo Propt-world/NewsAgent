@@ -246,10 +246,11 @@ def compare_with_db(plan: SeedPlan, db) -> Dict[str, int]:
     existing_names = {(d["kind"], d["canonical_norm"]): d["_id"] for d in db[ndb.ENTITIES].find({}, {"kind": 1, "canonical_norm": 1})}
     exact_in_db = {(d["kind"], d["alias_norm"]): d["entity_id"] for d in db[ndb.ENTITY_ALIASES].find({"ambiguous": False}, {"kind": 1, "alias_norm": 1, "entity_id": 1})}
     alias_pairs = {(d["entity_id"], d["alias_norm"]) for d in db[ndb.ENTITY_ALIASES].find({}, {"entity_id": 1, "alias_norm": 1})}
+    merged = set(db[ndb.ENTITIES].distinct("_id", {"status": "merged"}))
     ignore_keys = {d["string_key"] for d in db[ndb.ENTITY_IGNORE].find({}, {"string_key": 1})}
 
     result = {"entities_new": 0, "entities_existing": 0, "entities_name_taken": 0,
-              "aliases_new": 0, "aliases_existing": 0, "aliases_conflicting": 0,
+              "aliases_new": 0, "aliases_existing": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0,
               "ignore_new": 0, "ignore_existing": 0}
     for e in plan.entities:
         if e["_id"] in existing_entities:
@@ -259,7 +260,9 @@ def compare_with_db(plan: SeedPlan, db) -> Dict[str, int]:
         else:
             result["entities_new"] += 1
     for a in plan.aliases:
-        if (a["entity_id"], a["alias_norm"]) in alias_pairs:
+        if a["entity_id"] in merged:
+            result["aliases_merged_entity"] += 1
+        elif (a["entity_id"], a["alias_norm"]) in alias_pairs:
             result["aliases_existing"] += 1
         elif not a["ambiguous"] and exact_in_db.get((a["kind"], a["alias_norm"]), a["entity_id"]) != a["entity_id"]:
             result["aliases_conflicting"] += 1
@@ -279,7 +282,8 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
         raise RuntimeError("Index creation failed: " + "; ".join(index_errors))
 
     result = {"entities_inserted": 0, "entities_skipped": 0, "aliases_inserted": 0,
-              "aliases_skipped": 0, "aliases_conflicting": 0, "ignore_inserted": 0, "ignore_skipped": 0}
+              "aliases_skipped": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0,
+              "ignore_inserted": 0, "ignore_skipped": 0}
     inserted_ids = set()
     for e in plan.entities:
         try:
@@ -293,7 +297,12 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
             result["entities_inserted"] += 1
         else:
             result["entities_skipped"] += 1
+    # A merged duplicate's names now live on the entity it was merged into; never add them back.
+    merged = set(db[ndb.ENTITIES].distinct("_id", {"status": "merged"}))
     for a in plan.aliases:
+        if a["entity_id"] in merged:
+            result["aliases_merged_entity"] += 1
+            continue
         try:
             res = db[ndb.ENTITY_ALIASES].update_one(
                 {"entity_id": a["entity_id"], "alias_norm": a["alias_norm"]},

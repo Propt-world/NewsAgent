@@ -206,6 +206,8 @@ async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, e
         raise NotFound(f"Entity {entity_id} not found")
     if entity["status"] == "ignored":
         raise Invalid("This entity is set to ignored and cannot be linked")
+    if entity["status"] == "merged":
+        raise Invalid(f'"{entity["canonical_name"]}" was merged into another entity; link that one instead')
 
     suggestion = None
     if suggestion_id:

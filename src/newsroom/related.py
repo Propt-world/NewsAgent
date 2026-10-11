@@ -26,7 +26,8 @@ from src.newsroom.links import _parse_date
 
 logger = logging.getLogger("newsroom")
 
-HIDDEN_ITEM_STATUSES = ["rejected", "duplicated", "missing"]
+# Archived articles and expired signals stay visible (they are history); deleted ones are hidden.
+HIDDEN_ITEM_STATUSES = ["rejected", "duplicated", "missing", "deleted"]
 SPECIFIC_PLACE_TYPES = ["community", "landmark"]
 SIMILAR_CANDIDATE_CHUNKS = 50
 

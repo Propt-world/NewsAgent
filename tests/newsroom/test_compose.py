@@ -509,3 +509,18 @@ def test_a_job_given_up_meanwhile_is_not_turned_into_a_success(scene, job, sync_
     run, _ = job(body)
     assert (run["status"], run["error"]) == ("failed", cmp.TIMED_OUT)
     assert run["cost_usd"] == 0.00036  # the spend is still counted
+
+
+def test_a_composed_article_can_be_a_source_and_is_shown_by_its_public_link(scene, sync_db):
+    """User decision 2026-10-12: composed articles may be sources (launch -> sales -> sold out)."""
+    sync_db["processed_articles"].insert_one({
+        "_id": "C1", "url": "newsroom://compose/run-old", "status": "approved", "source_id": "newsroom_compose",
+        "processed_at": NOW, "final_output": {"title": "Emaar launch sells out", "content": "Composed text."}})
+    resp = _compose(scene, ("article", "A1"), ("article", "C1"))
+    assert resp.status_code in (200, 201, 202), resp.text
+    urls = {s["source_id"]: s["url"] for s in resp.json()["sources"]}
+    assert urls["C1"] == "https://propt.global/news/emaar-launch-sells-out/C1"  # used as signal evidence too
+    assert urls["A1"] == "https://example.com/A1"
+
+    run = sync_db["compose_runs"].find_one({"_id": resp.json()["id"]})
+    assert all(not (s["url"] or "").startswith("newsroom://") for s in run["sources"])

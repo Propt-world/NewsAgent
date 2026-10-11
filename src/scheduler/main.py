@@ -44,7 +44,7 @@ from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.compose import approval_blocked_reason
 from src.newsroom.db import ensure_newsroom_indexes
-from src.newsroom.pipeline import article_edited, article_status_changed, article_stored, newsroom_composed
+from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
 from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
@@ -1396,6 +1396,10 @@ async def archive_article(article_id: str):
     # 3. Delete from Active
     await collections.processed_articles.delete_one({"_id": article_id})
 
+    if settings.newsroom_enabled:
+        # Archived articles stay linked in the Newsroom, shown as archived (errors are logged inside).
+        await article_moved(article_id)
+
     return {"status": "archived", "message": "Article archived successfully", "id": article_id}
 
 
@@ -1442,6 +1446,10 @@ async def soft_delete_article(article_id: str):
 
     # 3. Delete from Active
     await collections.processed_articles.delete_one({"_id": article_id})
+
+    if settings.newsroom_enabled:
+        # Deleted articles disappear from the Newsroom's related items, history and filters.
+        await article_moved(article_id)
 
     return {"status": "soft_deleted", "message": "Article soft deleted successfully", "id": article_id}
 

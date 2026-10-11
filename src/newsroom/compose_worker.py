@@ -32,6 +32,7 @@ from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.prompts import PROMPTS_BY_NAME
+from src.newsroom.public_links import shown_url
 
 logger = logging.getLogger("newsroom")
 
@@ -114,7 +115,8 @@ async def load_source_texts(sources: ndb.ItemSources, run: dict) -> List[dict]:
             doc = await sources.articles.find_one({"_id": s["source_id"]})
             final = (doc or {}).get("final_output") or {}
             text = final.get("content") or final.get("summary") or ""
-            title, url = final.get("title") or s["title"], (doc or {}).get("url")
+            # A composed article used as a source is shown by its public link, never newsroom://
+            title, url = final.get("title") or s["title"], shown_url(doc) if doc else None
         else:
             doc = await sources.signals.find_one({"_id": ObjectId(s["source_id"])}) if ObjectId.is_valid(s["source_id"]) else None
             doc = doc or {}

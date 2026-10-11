@@ -72,6 +72,14 @@ async def article_edited(article_id: str) -> None:
         logger.exception(f"[NEWSROOM] Edit hook failed for article {article_id}")
 
 
+async def article_moved(article_id: str) -> None:
+    """After the Archive or Delete button moved an article: archived stays linked, deleted is hidden."""
+    try:
+        await lnk.item_changed(get_newsroom_db(), get_item_sources(), "article", article_id)
+    except Exception:
+        logger.exception(f"[NEWSROOM] Archive/delete hook failed for article {article_id}")
+
+
 async def article_status_changed(article_id: str, new_status: str) -> None:
     """Keeps links' item status current and feeds the new-names queue on approval."""
     try:

@@ -25,9 +25,9 @@ from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.entities import Conflict, Invalid, NotFound
+from src.newsroom.public_links import COMPOSED_SOURCE_ID  # re-exported: used by pipeline and the worker
 
 AUTHOR = "Propt Newsroom"
-COMPOSED_SOURCE_ID = "newsroom_compose"
 ALLOWED_SOURCE_STATUSES = {
     "article": {"processed", "approved"},           # Pending review or approved
     "signal": {"draft", "pending_review", "approved"},

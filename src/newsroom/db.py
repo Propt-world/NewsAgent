@@ -72,6 +72,9 @@ class ItemSources:
     articles: Any
     signals: Any
     chunks: Any = None
+    # Where the Archive and Delete buttons move articles (archived stay linked; deleted are hidden)
+    archived: Any = None
+    deleted: Any = None
 
 
 def get_item_sources() -> ItemSources:
@@ -81,6 +84,8 @@ def get_item_sources() -> ItemSources:
         articles=client[settings.MONGO_DB_NAME]["processed_articles"],
         signals=client[settings.NEWSROOM_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
         chunks=client[settings.MONGO_DB_NAME][settings.MONGO_DB_COLLECTION],
+        archived=client[settings.MONGO_DB_NAME]["archived_articles"],
+        deleted=client[settings.MONGO_DB_NAME]["deleted_articles"],
     )
 
 

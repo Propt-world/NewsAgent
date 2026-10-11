@@ -23,6 +23,7 @@ from src.newsroom.entities import Conflict, Invalid, NotFound
 from src.newsroom.locations import refresh_item_locations
 from src.newsroom.models import EntityUpdate
 from src.newsroom import resolve as rs
+from src.newsroom.public_links import shown_url
 from src.newsroom.normalize import normalize_alias
 
 SOURCE_TYPES = ("article", "signal")
@@ -50,16 +51,24 @@ async def item_info(sources: ndb.ItemSources, source_type: str, source_id: str) 
     """Title, snippet, url, date and status of an article or signal, or None if it does not exist."""
     if source_type == "article":
         doc = await sources.articles.find_one({"_id": source_id})
+        status = doc.get("status") if doc else None
+        # Archive and Delete move an article out of processed_articles: archived ones stay linked
+        # (shown as "archived"), deleted ones are hidden everywhere.
+        for moved_to, label in ((sources.archived, "archived"), (sources.deleted, "deleted")):
+            if doc is None and moved_to is not None:
+                doc = await moved_to.find_one({"_id": source_id})
+                status = label
         if doc is None:
             return None
         final = doc.get("final_output") or {}
         return {
             "title": final.get("title") or final.get("article_title") or "",
             "snippet": (final.get("summary") or "")[:SNIPPET_CHARS],
-            "url": doc.get("url"),
+            # Composed articles get their public link, never the internal newsroom:// key.
+            "url": shown_url(doc),
             # 30% of articles have no published date: fall back to when we processed/found them.
             "timestamp": _parse_date(final.get("published_date")) or doc.get("processed_at") or doc.get("discovered_at"),
-            "item_status": doc.get("status"),
+            "item_status": status,
         }
     if source_type == "signal":
         if not ObjectId.is_valid(source_id):
@@ -323,7 +332,7 @@ async def on_item_status(db, source_type: str, source_id: str, new_status: str) 
     await db[ndb.ENTITY_MENTIONS].update_many(
         {"source_type": source_type, "source_id": source_id}, {"$set": {"item_status": new_status}})
     queued = new_status == "approved"
-    if new_status in ("rejected", "duplicated", "archived"):
+    if new_status in ("rejected", "duplicated", "archived", "deleted"):
         # Composed pieces built on this item are flagged for re-checking (never changed automatically).
         await db[ndb.COMPOSE_RUNS].update_many(
             {"source_keys": f"{source_type}:{source_id}", "status": "succeeded", "source_rejected": False},

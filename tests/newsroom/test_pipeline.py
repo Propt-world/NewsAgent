@@ -172,3 +172,62 @@ def test_approval_needs_an_image_only_for_composed_articles():
     assert approval_blocked_reason({**composed, "final_output": {"top_image": "https://img.test/a.jpg"}}) is None
     assert approval_blocked_reason({"source_id": "zawya", "final_output": {}}) is None  # scraped: unchanged
     assert approval_blocked_reason(None) is None  # missing: the endpoint's own 404 handles it
+
+
+# --- Public links for composed articles; archived and deleted articles ---------------------
+
+def test_public_link_is_built_like_the_app():
+    from src.newsroom.public_links import public_article_url, shown_url, slugify
+    assert slugify("Mashreq Expo City off-plan financing") == "mashreq-expo-city-off-plan-financing"
+    assert slugify("  Emaar's Q3: AED 1.2bn sales — up 20%!  ") == "emaars-q3-aed-12bn-sales-up-20"
+    assert public_article_url("abc", "إعمار") == "https://propt.global/news/article/abc"  # no Latin letters
+    composed = {"_id": "a1", "url": "newsroom://compose/run-1", "source_id": "newsroom_compose",
+                "final_output": {"title": "Emaar and DAMAC in Dubai"}}
+    assert shown_url(composed) == "https://propt.global/news/emaar-and-damac-in-dubai/a1"
+    assert shown_url({"_id": "a2", "url": "https://gulfnews.com/x", "source_id": "gulf"}) == "https://gulfnews.com/x"
+
+
+def test_approval_chunks_carry_the_public_link_for_composed_articles_only():
+    from src.utils.loader import normalize_document
+    composed = {"_id": "a1", "url": "newsroom://compose/run-1", "source_id": "newsroom_compose",
+                "final_output": {"title": "Emaar and DAMAC in Dubai", "content": "x"}}
+    scraped = {"_id": "a2", "url": "https://gulfnews.com/x", "source_id": "gulf", "final_output": {"title": "T"}}
+    assert normalize_document(composed)["url"] == "https://propt.global/news/emaar-and-damac-in-dubai/a1"
+    assert normalize_document(scraped)["url"] == "https://gulfnews.com/x"  # unchanged
+
+
+def test_archive_keeps_links_and_delete_hides_them(mongo_url, db_name, sync_db):
+    """The real scheduler app: Archive and Delete tell the Newsroom (fresh process, throwaway database)."""
+    script = f"""
+import json
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+from src.newsroom.seed import apply_plan, build_plan, seed_entity_id
+db = MongoClient({mongo_url!r})[{db_name!r}]
+apply_plan(build_plan(), db)
+from src.scheduler.main import app
+emaar = seed_entity_id("organisation", "Emaar Properties")
+out = {{}}
+with TestClient(app) as c:
+    for n in (1, 2, 3):
+        db.processed_articles.insert_one({{"_id": f"art-{{n}}", "url": f"https://example.com/{{n}}", "status": "approved",
+            "processed_at": None, "final_output": {{"title": f"Emaar story {{n}}", "summary": "s"}}}})
+        c.post(f"/newsroom/items/article/art-{{n}}/links", json={{"entity_id": emaar}})
+    out["archive"] = c.post("/articles/art-1/archive").status_code
+    out["delete"] = c.delete("/articles/art-2").status_code
+    out["statuses"] = {{m["source_id"]: m["item_status"] for m in db.entity_mentions.find({{"entity_id": emaar}})}}
+    history = c.get(f"/newsroom/entities/{{emaar}}/history").json()
+    out["history"] = sorted((i["source_id"], i.get("item_status")) for i in history["items"])
+print("RESULT=" + json.dumps(out))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert (out["archive"], out["delete"]) == (200, 200)
+    assert out["statuses"] == {"art-1": "archived", "art-2": "deleted", "art-3": "approved"}
+    # Archived stays in the company's history (labelled); deleted is gone.
+    assert out["history"] == [["art-1", "archived"], ["art-3", "approved"]]

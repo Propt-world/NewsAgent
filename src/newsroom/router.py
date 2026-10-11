@@ -30,6 +30,7 @@ from src.newsroom.models import (
     CsvExport,
     CsvImportRequest,
     CsvImportResult,
+    CsvTemplate,
     CountResponse,
     EntityCreate,
     EntityListResponse,
@@ -122,6 +123,15 @@ async def export_entities(kind: Literal["organisation", "location"], db=Depends(
     label = "companies-people" if kind == "organisation" else "places"
     filename = f"newsroom-{label}-{datetime.now(timezone.utc):%Y-%m-%d}.csv"
     return CsvExport(filename=filename, csv=await entity_csv.export_csv(db, kind))
+
+
+@router.get("/entities/template", response_model=CsvTemplate,
+            description="A sample file: the column names and example rows (rows named 'Example: ...' are never "
+                        "imported), plus the accepted types.")
+async def entities_template(kind: Literal["organisation", "location"], db=Depends(get_newsroom_db)):
+    label = "companies-people" if kind == "organisation" else "places"
+    return CsvTemplate(filename=f"newsroom-{label}-template.csv", csv=entity_csv.template_csv(kind),
+                       columns=entity_csv.columns(kind), types=await entity_csv.allowed_types(db, kind))
 
 
 @router.post("/entities/import", response_model=CsvImportResult,

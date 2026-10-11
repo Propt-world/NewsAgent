@@ -124,6 +124,13 @@ class CsvExport(BaseModel):
     csv: str
 
 
+class CsvTemplate(BaseModel):
+    filename: str
+    csv: str
+    columns: List[str]
+    types: List[str] = Field(..., description="Accepted values for the type column")
+
+
 class CsvImportRequest(BaseModel):
     kind: EntityKind
     csv_text: str = Field(..., max_length=1_000_000, description="The file's text (up to about 1 MB)")

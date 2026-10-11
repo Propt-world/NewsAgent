@@ -163,3 +163,25 @@ def test_apostrophe_from_an_export_is_removed(seeded, sync_db):
 def test_unreadable_files_are_refused(seeded, text, message):
     resp = _import(seeded, text)
     assert resp.status_code == 422 and message in resp.json()["detail"]
+
+
+# --- Template and types -----------------------------------------------------------
+
+@pytest.mark.parametrize("kind", [ORG, LOC])
+def test_template_can_be_imported_as_is(seeded, kind):
+    body = seeded.get("/newsroom/entities/template", params={"kind": kind}).json()
+    assert body["filename"].endswith("-template.csv")
+    assert body["csv"].lstrip("﻿").splitlines()[0] == ",".join(body["columns"])
+    assert "developer" in body["types"] if kind == ORG else "community" in body["types"]
+    result = _import(seeded, body["csv"], kind, dry_run=False).json()
+    assert (result["added"], result["problems"]) == (0, 0)
+    assert all(r["message"] == "Example row (never imported)" for r in result["rows"])
+
+
+def test_type_must_be_a_known_one(seeded, sync_db):
+    text = HEADER + "Typo Co,develper,off,,,,,\nCase Co,Developer,off,,,,,\nNo Type Co,,off,,,,,\n"
+    outcomes = _outcomes(_import(seeded, text, dry_run=False).json())
+    assert outcomes["Typo Co"][0] == "error" and "Type 'develper' is not one of: developer" in outcomes["Typo Co"][1]
+    assert outcomes["Case Co"][0] == "added"
+    assert sync_db["entities"].find_one({"canonical_name": "Case Co"})["type"] == "developer"
+    assert outcomes["No Type Co"] == ("error", "No type")

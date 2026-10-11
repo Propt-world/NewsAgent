@@ -5,6 +5,9 @@ Export writes one kind (companies/people or places) in the same layout the
 import reads. Cells that a spreadsheet could run as a formula (starting with
 =, +, -, @, tab or carriage return) get a leading apostrophe; import removes it.
 
+A template (column names plus example rows) is offered for people who have
+not seen the layout; rows whose name starts with "Example:" are never imported.
+
 Import only ADDS entities whose name is not in the list yet. Rows for names
 that already exist are skipped and nothing about the existing entity changes.
 Every row is checked with the same rules as the screen (create_entity); rows
@@ -40,6 +43,29 @@ HEADERS = {
     "notes": ("notes", "note"),
 }
 ALIAS_COLUMNS = ("aliases", "ambiguous_aliases")
+EXAMPLE_PREFIX = "example:"
+
+# The types the entity manager offers (same list as the backoffice's entityOptions.ts).
+STANDARD_TYPES = {
+    "organisation": ["developer", "investment", "government", "finance", "brokerage", "proptech", "contractor",
+                     "architecture_firm", "brand_partner", "project", "executive", "News/Media", "unknown"],
+    "location": ["country", "city", "region", "community", "landmark"],
+}
+
+TEMPLATE_ROWS = {
+    "organisation": [
+        {"name": "Example: Nshama", "type": "developer", "on_off": "on",
+         "aliases": "Nshama Developments | Nshama LLC", "ambiguous_aliases": "Nshama Group", "parent": "",
+         "country": "United Arab Emirates", "notes": "Example row, never imported. One company per row."},
+        {"name": "Example: Emaar Hospitality", "type": "investment", "on_off": "off", "aliases": "",
+         "ambiguous_aliases": "", "parent": "Emaar Properties", "country": "UAE",
+         "notes": "Example row, never imported. Parent must already be in the list or in this file."},
+    ],
+    "location": [
+        {"name": "Example: Dubai Hills Estate", "type": "community", "on_off": "on", "aliases": "Dubai Hills | DHE",
+         "ambiguous_aliases": "", "parent": "Dubai", "notes": "Example row, never imported. One place per row."},
+    ],
+}
 
 
 def columns(kind: str) -> List[str]:
@@ -96,6 +122,22 @@ async def export_csv(db, kind: str) -> str:
         writer.writerow([row[c] for c in cols])
     # The byte-order mark lets Excel open Arabic names correctly.
     return "﻿" + out.getvalue()
+
+
+async def allowed_types(db, kind: str) -> List[str]:
+    """The standard types plus any other type already used in the list (so existing data stays importable)."""
+    in_use = await db[ndb.ENTITIES].distinct("type", {"kind": kind})
+    return STANDARD_TYPES[kind] + sorted(t for t in in_use if t and t not in STANDARD_TYPES[kind])
+
+
+def template_csv(kind: str) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    cols = columns(kind)
+    writer.writerow(cols)
+    for row in TEMPLATE_ROWS[kind]:
+        writer.writerow([row.get(c, "") for c in cols])
+    return "\ufeff" + out.getvalue()
 
 
 # --- Import ----------------------------------------------------------------
@@ -159,17 +201,22 @@ def _parse(text: str, kind: str) -> List[_Row]:
     return rows
 
 
-async def _check_row(db, row: _Row, kind: str, countries: Dict[str, str],
+async def _check_row(db, row: _Row, kind: str, countries: Dict[str, str], types: Dict[str, str],
                      in_file_exact: Dict[str, int], in_file_ambiguous: Dict[str, int]) -> None:
     """Same checks as adding on the screen, plus clashes with other rows of the file."""
     v = row.values
+    given_type = v.get("type", "").strip()
+    etype = types.get(given_type.lower())
+    if etype is None:
+        return row.fail(f"Type '{given_type}' is not one of: {', '.join(types.values())}" if given_type
+                        else "No type")
     status = STATUS_WORDS.get(v.get("on_off", "").strip().lower())
     if status is None:
         return row.fail(f"On/off must be on, off or ignored, not '{v.get('on_off')}'")
     try:
         payload = EntityCreate(
             kind=kind,
-            type=v.get("type", "").strip(),
+            type=etype,
             canonical_name=row.name,
             status=status,
             notes=v.get("notes") or None,
@@ -260,11 +307,14 @@ async def import_csv(db, kind: str, text: str, actor: str, dry_run: bool = True)
         async for a in db[ndb.ENTITY_ALIASES].find({"entity_id": {"$in": country_ids}, "ambiguous": False}):
             countries.setdefault(a["alias_norm"], a["entity_id"])
 
+    types = {t.lower(): t for t in await allowed_types(db, kind)}
     in_file_exact: Dict[str, int] = {}
     in_file_ambiguous: Dict[str, int] = {}
     first_row: Dict[str, int] = {}
     for row in rows:
-        if not row.norm:
+        if row.name.strip().lower().startswith(EXAMPLE_PREFIX):
+            row.outcome, row.message = "skip", "Example row (never imported)"
+        elif not row.norm:
             row.fail("No name")
         elif row.norm in existing:
             row.outcome = "skip"
@@ -274,7 +324,7 @@ async def import_csv(db, kind: str, text: str, actor: str, dry_run: bool = True)
             row.outcome, row.message = "skip", f"Same name as row {first_row[row.norm]}"
         else:
             first_row[row.norm] = row.number
-            await _check_row(db, row, kind, countries, in_file_exact, in_file_ambiguous)
+            await _check_row(db, row, kind, countries, types, in_file_exact, in_file_ambiguous)
 
     order = _creation_order(rows, parents)
 

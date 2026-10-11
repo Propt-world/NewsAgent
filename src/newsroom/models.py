@@ -104,6 +104,21 @@ class MergeResult(BaseModel):
     entity: EntityOut
 
 
+class DeleteRequest(BaseModel):
+    confirm: Optional[str] = Field(None, description='Must be "delete" (any case) unless dry_run')
+    dry_run: bool = Field(False, description="Only count what would be removed")
+
+
+class DeleteResult(BaseModel):
+    dry_run: bool
+    entity_id: str
+    canonical_name: str
+    aliases_removed: int
+    links_removed: int = Field(..., description="Links to articles and signals")
+    decisions_removed: int = Field(..., description="Reviewer removals remembered for this entry")
+    suggestions_reset: int = Field(..., description="Open suggestions that go back to 'not in the list'")
+
+
 class IgnoreOut(BaseModel):
     id: str
     string: str

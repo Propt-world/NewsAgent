@@ -247,19 +247,24 @@ def compare_with_db(plan: SeedPlan, db) -> Dict[str, int]:
     exact_in_db = {(d["kind"], d["alias_norm"]): d["entity_id"] for d in db[ndb.ENTITY_ALIASES].find({"ambiguous": False}, {"kind": 1, "alias_norm": 1, "entity_id": 1})}
     alias_pairs = {(d["entity_id"], d["alias_norm"]) for d in db[ndb.ENTITY_ALIASES].find({}, {"entity_id": 1, "alias_norm": 1})}
     merged = set(db[ndb.ENTITIES].distinct("_id", {"status": "merged"}))
+    deleted = set(db[ndb.ENTITY_AUDIT].distinct("entity_id", {"action": "delete"}))
     ignore_keys = {d["string_key"] for d in db[ndb.ENTITY_IGNORE].find({}, {"string_key": 1})}
 
-    result = {"entities_new": 0, "entities_existing": 0, "entities_name_taken": 0,
+    result = {"entities_new": 0, "entities_existing": 0, "entities_name_taken": 0, "entities_deleted": 0,
               "aliases_new": 0, "aliases_existing": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0,
               "ignore_new": 0, "ignore_existing": 0}
     for e in plan.entities:
-        if e["_id"] in existing_entities:
+        if e["_id"] in deleted:
+            result["entities_deleted"] += 1
+        elif e["_id"] in existing_entities:
             result["entities_existing"] += 1
         elif (e["kind"], e["canonical_norm"]) in existing_names:
             result["entities_name_taken"] += 1
         else:
             result["entities_new"] += 1
     for a in plan.aliases:
+        if a["entity_id"] in deleted:
+            continue
         if a["entity_id"] in merged:
             result["aliases_merged_entity"] += 1
         elif (a["entity_id"], a["alias_norm"]) in alias_pairs:
@@ -281,11 +286,16 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
     if index_errors:
         raise RuntimeError("Index creation failed: " + "; ".join(index_errors))
 
-    result = {"entities_inserted": 0, "entities_skipped": 0, "aliases_inserted": 0,
+    result = {"entities_inserted": 0, "entities_skipped": 0, "entities_deleted": 0, "aliases_inserted": 0,
               "aliases_skipped": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0,
               "ignore_inserted": 0, "ignore_skipped": 0}
     inserted_ids = set()
+    # Entities a reviewer deleted stay deleted, with their names.
+    deleted = set(db[ndb.ENTITY_AUDIT].distinct("entity_id", {"action": "delete"}))
     for e in plan.entities:
+        if e["_id"] in deleted:
+            result["entities_deleted"] += 1
+            continue
         try:
             res = db[ndb.ENTITIES].update_one({"_id": e["_id"]}, {"$setOnInsert": e}, upsert=True)
         except DuplicateKeyError:
@@ -300,6 +310,8 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
     # A merged duplicate's names now live on the entity it was merged into; never add them back.
     merged = set(db[ndb.ENTITIES].distinct("_id", {"status": "merged"}))
     for a in plan.aliases:
+        if a["entity_id"] in deleted:
+            continue
         if a["entity_id"] in merged:
             result["aliases_merged_entity"] += 1
             continue

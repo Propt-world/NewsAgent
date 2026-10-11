@@ -9,6 +9,9 @@ Rules enforced here:
 - parents are the same kind and never form a loop; path_ids (ancestors + self)
   are recomputed for the whole subtree when a parent changes
 - entities are switched off (status) instead of deleted; every change is audited
+- delete needs the word "delete"; it removes the entity, its aliases and links
+  (never the articles or signals), is refused while other entries depend on
+  it, and keeps a full copy in the audit log so the seed never re-adds it
 - a merge moves a duplicate's aliases, links, suggestions and children to the
   kept entity; the duplicate stays as status "merged" (so the seed never
   re-creates it) and can no longer be edited or linked
@@ -498,6 +501,65 @@ async def merge_entities(db, entity_id: str, into_id: str, actor: str, dry_run: 
     await audit(db, actor, "merge_from", into_id, None,
                 {"merged_id": entity_id, "merged_name": source["canonical_name"], **audited})
     return {**result, "entity": await get_entity(db, into_id)}
+
+
+# --- Delete --------------------------------------------------------------
+
+DELETE_WORD = "delete"
+
+
+async def delete_entity(db, entity_id: str, actor: str, confirm: Optional[str], dry_run: bool = False) -> dict:
+    """
+    Deletes an entity for good. Articles and signals are never touched: only the
+    entity, its aliases and its links go; open suggestions for it become unknown names.
+    """
+    entity = await _load(db, entity_id)
+    name = entity["canonical_name"]
+    if entity.get("status") == "merged":
+        raise Invalid(f'"{name}" is a merged record; it has no names or links to delete')
+    children = await db[ndb.ENTITIES].count_documents({"parent_id": entity_id, "status": {"$ne": "merged"}})
+    if children:
+        raise Invalid(f'{children} {"entry is" if children == 1 else "entries are"} inside "{name}"; '
+                      "move or delete them first")
+    countries = await db[ndb.ENTITIES].count_documents({"country_id": entity_id})
+    if countries:
+        raise Invalid(f'{countries} {"company uses" if countries == 1 else "companies use"} "{name}" as their country; '
+                      "change that first")
+
+    aliases = await db[ndb.ENTITY_ALIASES].find({"entity_id": entity_id}).to_list(length=None)
+    mentions = await db[ndb.ENTITY_MENTIONS].find(
+        {"entity_id": entity_id}, {"source_type": 1, "source_id": 1, "status": 1}).to_list(length=None)
+    open_query = {"entity_id": entity_id, "status": "open"}
+    result = {
+        "dry_run": dry_run,
+        "entity_id": entity_id,
+        "canonical_name": name,
+        "aliases_removed": len(aliases),
+        "links_removed": sum(1 for m in mentions if m["status"] == "linked"),
+        "decisions_removed": sum(1 for m in mentions if m["status"] != "linked"),
+        "suggestions_reset": await db[ndb.ENTITY_SUGGESTIONS].count_documents(open_query),
+    }
+    if dry_run:
+        return result
+    if (confirm or "").strip().lower() != DELETE_WORD:
+        raise Invalid(f'Type "{DELETE_WORD}" to confirm')
+
+    # The full copy goes in first, so the record exists even if a later step fails.
+    snapshot = {k: v for k, v in entity.items() if k != "_id"}
+    snapshot["aliases"] = [{"alias": a["alias"], "ambiguous": a.get("ambiguous", False)} for a in aliases]
+    counts = {k: v for k, v in result.items() if k not in ("dry_run", "entity_id", "canonical_name")}
+    await audit(db, actor, "delete", entity_id, snapshot, counts)
+
+    await db[ndb.ENTITY_SUGGESTIONS].update_many(open_query, {"$set": {
+        "entity_id": None, "entity_status": None, "matched_alias": None,
+        "reason": "not in the list (entry was deleted)"}})
+    await db[ndb.ENTITY_MENTIONS].delete_many({"entity_id": entity_id})
+    await db[ndb.ENTITY_ALIASES].delete_many({"entity_id": entity_id})
+    await db[ndb.ENTITIES].delete_one({"_id": entity_id})
+    if entity["kind"] == "location":
+        for source_type, source_id in {(m["source_type"], m["source_id"]) for m in mentions if m["status"] == "linked"}:
+            await refresh_item_locations(db, source_type, source_id)
+    return result
 
 
 # --- Ignore list ---------------------------------------------------------

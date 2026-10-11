@@ -42,6 +42,8 @@ from src.newsroom.models import (
     ItemsSummaryRequest,
     ItemsSummaryResponse,
     LinkRequest,
+    DeleteRequest,
+    DeleteResult,
     MergeRequest,
     MergeResult,
     NewNameDismissRequest,
@@ -137,6 +139,15 @@ async def update_entity(entity_id: str, payload: EntityUpdate, db=Depends(get_ne
                          "Use dry_run to see the counts first. The duplicate stays as status 'merged'.")
 async def merge_entity(entity_id: str, payload: MergeRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(svc.merge_entities(db, entity_id, payload.into_id, actor, payload.dry_run))
+
+
+@router.post("/entities/{entity_id}/delete", response_model=DeleteResult,
+             description='Delete an entity for good (its aliases and links; never articles or signals). '
+                         'Needs confirm="delete"; use dry_run to see the counts first. Refused while entries sit '
+                         'inside it or companies use it as their country.')
+async def delete_entity(entity_id: str, payload: DeleteRequest, db=Depends(get_newsroom_db),
+                        actor: str = Depends(get_actor)):
+    return await _call(svc.delete_entity(db, entity_id, actor, payload.confirm, payload.dry_run))
 
 
 @router.post("/entities/{entity_id}/aliases", response_model=EntityOut, status_code=status.HTTP_201_CREATED)

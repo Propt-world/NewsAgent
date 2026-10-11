@@ -218,6 +218,9 @@ with TestClient(app) as c:
     out["statuses"] = {{m["source_id"]: m["item_status"] for m in db.entity_mentions.find({{"entity_id": emaar}})}}
     history = c.get(f"/newsroom/entities/{{emaar}}/history").json()
     out["history"] = sorted((i["source_id"], i.get("item_status")) for i in history["items"])
+    from src.scheduler.main import scheduler
+    job = scheduler.get_job("newsroom_nightly_repair")
+    out["nightly"] = str(job.trigger) if job else None
 print("RESULT=" + json.dumps(out))
 """
     env = {k: v for k, v in os.environ.items()}
@@ -231,3 +234,4 @@ print("RESULT=" + json.dumps(out))
     assert out["statuses"] == {"art-1": "archived", "art-2": "deleted", "art-3": "approved"}
     # Archived stays in the company's history (labelled); deleted is gone.
     assert out["history"] == [["art-1", "archived"], ["art-3", "approved"]]
+    assert out["nightly"] == "cron[hour='3', minute='0']"  # the link repair, every night (UAE time)

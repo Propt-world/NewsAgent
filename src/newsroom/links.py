@@ -47,45 +47,57 @@ def _parse_date(value) -> Optional[datetime]:
     return None
 
 
-async def item_info(sources: ndb.ItemSources, source_type: str, source_id: str) -> Optional[dict]:
-    """Title, snippet, url, date and status of an article or signal, or None if it does not exist."""
+def _article_info(doc: dict, status: Optional[str]) -> dict:
+    final = doc.get("final_output") or {}
+    return {
+        "title": final.get("title") or final.get("article_title") or "",
+        "snippet": (final.get("summary") or "")[:SNIPPET_CHARS],
+        # Composed articles get their public link, never the internal newsroom:// key.
+        "url": shown_url(doc),
+        # 30% of articles have no published date: fall back to when we processed/found them.
+        "timestamp": _parse_date(final.get("published_date")) or doc.get("processed_at") or doc.get("discovered_at"),
+        "item_status": status,
+    }
+
+
+def _signal_info(doc: dict) -> dict:
+    text = doc.get("summary_en") or doc.get("summary") or ""
+    evidence = doc.get("evidence") or []
+    return {
+        "title": text[:120],
+        "snippet": text[:SNIPPET_CHARS],
+        "url": evidence[0].get("url") if evidence and isinstance(evidence[0], dict) else None,
+        "timestamp": doc.get("generated_at") or doc.get("updated_at"),
+        "item_status": doc.get("status"),
+    }
+
+
+async def items_info(sources: ndb.ItemSources, source_type: str, source_ids: List[str]) -> Dict[str, dict]:
+    """item_info for many items at once (a few queries per batch). Items that do not exist are left out."""
+    ids = list(dict.fromkeys(i for i in source_ids if i))
+    found: Dict[str, dict] = {}
     if source_type == "article":
-        doc = await sources.articles.find_one({"_id": source_id})
-        status = doc.get("status") if doc else None
         # Archive and Delete move an article out of processed_articles: archived ones stay linked
         # (shown as "archived"), deleted ones are hidden everywhere.
-        for moved_to, label in ((sources.archived, "archived"), (sources.deleted, "deleted")):
-            if doc is None and moved_to is not None:
-                doc = await moved_to.find_one({"_id": source_id})
-                status = label
-        if doc is None:
-            return None
-        final = doc.get("final_output") or {}
-        return {
-            "title": final.get("title") or final.get("article_title") or "",
-            "snippet": (final.get("summary") or "")[:SNIPPET_CHARS],
-            # Composed articles get their public link, never the internal newsroom:// key.
-            "url": shown_url(doc),
-            # 30% of articles have no published date: fall back to when we processed/found them.
-            "timestamp": _parse_date(final.get("published_date")) or doc.get("processed_at") or doc.get("discovered_at"),
-            "item_status": status,
-        }
+        for collection, label in ((sources.articles, None), (sources.archived, "archived"), (sources.deleted, "deleted")):
+            todo = [i for i in ids if i not in found]
+            if not todo or collection is None:
+                continue
+            async for doc in collection.find({"_id": {"$in": todo}}):
+                found[doc["_id"]] = _article_info(doc, label or doc.get("status"))
+        return found
     if source_type == "signal":
-        if not ObjectId.is_valid(source_id):
-            return None
-        doc = await sources.signals.find_one({"_id": ObjectId(source_id)})
-        if doc is None:
-            return None
-        text = doc.get("summary_en") or doc.get("summary") or ""
-        evidence = doc.get("evidence") or []
-        return {
-            "title": text[:120],
-            "snippet": text[:SNIPPET_CHARS],
-            "url": evidence[0].get("url") if evidence and isinstance(evidence[0], dict) else None,
-            "timestamp": doc.get("generated_at") or doc.get("updated_at"),
-            "item_status": doc.get("status"),
-        }
+        object_ids = [ObjectId(i) for i in ids if ObjectId.is_valid(i)]
+        if object_ids:
+            async for doc in sources.signals.find({"_id": {"$in": object_ids}}):
+                found[str(doc["_id"])] = _signal_info(doc)
+        return found
     raise Invalid(f"Unknown source type '{source_type}'")
+
+
+async def item_info(sources: ndb.ItemSources, source_type: str, source_id: str) -> Optional[dict]:
+    """Title, snippet, url, date and status of an article or signal, or None if it does not exist."""
+    return (await items_info(sources, source_type, [source_id])).get(source_id)
 
 
 def _check_source_type(source_type: str) -> None:

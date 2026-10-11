@@ -25,6 +25,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo.errors import DuplicateKeyError
 import httpx
@@ -45,6 +46,7 @@ from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.compose import approval_blocked_reason
 from src.newsroom.db import ensure_newsroom_indexes
 from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
+from src.newsroom.resync import nightly_repair
 from src.newsroom.router import mount_newsroom
 from src.models.Responses import (
     GenericResponse,
@@ -336,6 +338,9 @@ async def lifespan(app: FastAPI):
     if settings.newsroom_enabled:
         # Runs in the background so startup never waits on it; failures are only logged.
         app.state.newsroom_index_task = asyncio.create_task(ensure_newsroom_indexes())
+        # Every night the Newsroom repairs link details that missed an update (logged; never raises).
+        scheduler.add_job(nightly_repair, CronTrigger(hour=3, minute=0, timezone=settings.NEWSROOM_BUDGET_TIMEZONE),
+                          id="newsroom_nightly_repair", replace_existing=True)
 
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()

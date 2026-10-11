@@ -119,6 +119,34 @@ class DeleteResult(BaseModel):
     suggestions_reset: int = Field(..., description="Open suggestions that go back to 'not in the list'")
 
 
+class CsvExport(BaseModel):
+    filename: str
+    csv: str
+
+
+class CsvImportRequest(BaseModel):
+    kind: EntityKind
+    csv_text: str = Field(..., max_length=1_000_000, description="The file's text (up to about 1 MB)")
+    dry_run: bool = Field(True, description="Only check the rows; nothing is added")
+
+
+class CsvImportRow(BaseModel):
+    row: int = Field(..., description="Line number in the file (the column names are line 1)")
+    name: str
+    outcome: Literal["add", "added", "skip", "error"]
+    message: str = ""
+
+
+class CsvImportResult(BaseModel):
+    dry_run: bool
+    kind: EntityKind
+    rows: List[CsvImportRow]
+    to_add: int
+    added: int
+    skipped: int
+    problems: int
+
+
 class IgnoreOut(BaseModel):
     id: str
     string: str

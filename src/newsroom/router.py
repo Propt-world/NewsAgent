@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, R
 from src.configs.settings import settings
 from src.newsroom import compose as cmp
 from src.newsroom import entities as svc
+from src.newsroom import entity_csv
 from src.newsroom import links as lnk
 from src.newsroom import related as rel
 from src.newsroom.db import get_item_sources, get_newsroom_db
@@ -26,6 +27,9 @@ from src.newsroom.models import (
     ComposeRequest,
     ComposeRunList,
     ComposeRunOut,
+    CsvExport,
+    CsvImportRequest,
+    CsvImportResult,
     CountResponse,
     EntityCreate,
     EntityListResponse,
@@ -110,6 +114,21 @@ async def list_entities(
     db=Depends(get_newsroom_db),
 ):
     return await _call(svc.list_entities(db, kind, entity_status, entity_type, q, limit, skip))
+
+
+@router.get("/entities/export", response_model=CsvExport,
+            description="One kind as CSV (the layout the import reads). Formula-like cells start with an apostrophe.")
+async def export_entities(kind: Literal["organisation", "location"], db=Depends(get_newsroom_db)):
+    label = "companies-people" if kind == "organisation" else "places"
+    filename = f"newsroom-{label}-{datetime.now(timezone.utc):%Y-%m-%d}.csv"
+    return CsvExport(filename=filename, csv=await entity_csv.export_csv(db, kind))
+
+
+@router.post("/entities/import", response_model=CsvImportResult,
+             description="Add new entities from CSV. Names already in the list are skipped and never changed. "
+                         "dry_run (the default) only checks; rows with a problem are never added.")
+async def import_entities(payload: CsvImportRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+    return await _call(entity_csv.import_csv(db, payload.kind, payload.csv_text, actor, payload.dry_run))
 
 
 @router.get("/entities/{entity_id}", response_model=EntityOut)

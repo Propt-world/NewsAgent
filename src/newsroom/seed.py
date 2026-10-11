@@ -252,7 +252,9 @@ def compare_with_db(plan: SeedPlan, db) -> Dict[str, int]:
 
     result = {"entities_new": 0, "entities_existing": 0, "entities_name_taken": 0, "entities_deleted": 0,
               "aliases_new": 0, "aliases_existing": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0,
-              "ignore_new": 0, "ignore_existing": 0}
+              "aliases_name_taken": 0, "ignore_new": 0, "ignore_existing": 0}
+    name_taken = {e["_id"] for e in plan.entities if e["_id"] not in existing_entities
+                  and (e["kind"], e["canonical_norm"]) in existing_names}
     for e in plan.entities:
         if e["_id"] in deleted:
             result["entities_deleted"] += 1
@@ -265,7 +267,9 @@ def compare_with_db(plan: SeedPlan, db) -> Dict[str, int]:
     for a in plan.aliases:
         if a["entity_id"] in deleted:
             continue
-        if a["entity_id"] in merged:
+        if a["entity_id"] in name_taken:
+            result["aliases_name_taken"] += 1
+        elif a["entity_id"] in merged:
             result["aliases_merged_entity"] += 1
         elif (a["entity_id"], a["alias_norm"]) in alias_pairs:
             result["aliases_existing"] += 1
@@ -287,9 +291,9 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
         raise RuntimeError("Index creation failed: " + "; ".join(index_errors))
 
     result = {"entities_inserted": 0, "entities_skipped": 0, "entities_deleted": 0, "aliases_inserted": 0,
-              "aliases_skipped": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0,
+              "aliases_skipped": 0, "aliases_conflicting": 0, "aliases_merged_entity": 0, "aliases_name_taken": 0,
               "ignore_inserted": 0, "ignore_skipped": 0}
-    inserted_ids = set()
+    name_taken = set()
     # Entities a reviewer deleted stay deleted, with their names.
     deleted = set(db[ndb.ENTITY_AUDIT].distinct("entity_id", {"action": "delete"}))
     for e in plan.entities:
@@ -299,11 +303,12 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
         try:
             res = db[ndb.ENTITIES].update_one({"_id": e["_id"]}, {"$setOnInsert": e}, upsert=True)
         except DuplicateKeyError:
-            # Same canonical name already exists under another id (added by a reviewer).
+            # Same canonical name already exists under another id (added by a reviewer):
+            # its names are skipped too, so none point at an entity that does not exist.
             result["entities_skipped"] += 1
+            name_taken.add(e["_id"])
             continue
         if res.upserted_id is not None:
-            inserted_ids.add(e["_id"])
             result["entities_inserted"] += 1
         else:
             result["entities_skipped"] += 1
@@ -311,6 +316,9 @@ def apply_plan(plan: SeedPlan, db) -> Dict[str, int]:
     merged = set(db[ndb.ENTITIES].distinct("_id", {"status": "merged"}))
     for a in plan.aliases:
         if a["entity_id"] in deleted:
+            continue
+        if a["entity_id"] in name_taken:
+            result["aliases_name_taken"] += 1
             continue
         if a["entity_id"] in merged:
             result["aliases_merged_entity"] += 1

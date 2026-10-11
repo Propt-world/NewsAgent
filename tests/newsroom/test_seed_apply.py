@@ -62,3 +62,20 @@ def test_unique_exact_alias_enforced_by_index(sync_db, plan):
         "_id": "y", "entity_id": "someone-else", "kind": "organisation",
         "alias": "Wasl", "alias_norm": "wasl", "ambiguous": True,
     })
+
+
+def test_names_of_a_company_added_by_hand_first_are_skipped(sync_db, plan):
+    """A reviewer added "Arada" before the starting list was loaded: no names may point at the skipped seed id."""
+    ndb.ensure_indexes_sync(sync_db)
+    sync_db[ndb.ENTITIES].insert_one({"_id": "by-hand", "kind": "organisation", "canonical_name": "Arada",
+                                      "canonical_norm": "arada", "type": "developer", "status": "active", "path_ids": ["by-hand"]})
+    seed_arada = seed_entity_id("organisation", "Arada")
+    assert compare_with_db(plan, sync_db)["aliases_name_taken"] == 2  # "Arada" and "Arada Group"
+
+    result = apply_plan(plan, sync_db)
+    assert result["aliases_name_taken"] == 2
+    assert sync_db[ndb.ENTITIES].find_one({"_id": seed_arada}) is None
+    assert sync_db[ndb.ENTITY_ALIASES].count_documents({"entity_id": seed_arada}) == 0
+    # Nothing points at an entity that does not exist.
+    entity_ids = set(sync_db[ndb.ENTITIES].distinct("_id"))
+    assert set(sync_db[ndb.ENTITY_ALIASES].distinct("entity_id")) <= entity_ids

@@ -235,3 +235,38 @@ print("RESULT=" + json.dumps(out))
     # Archived stays in the company's history (labelled); deleted is gone.
     assert out["history"] == [["art-1", "archived"], ["art-3", "approved"]]
     assert out["nightly"] == "cron[hour='3', minute='0']"  # the link repair, every night (UAE time)
+
+
+def test_article_list_loads_older_items_by_date(mongo_url, db_name, sync_db):
+    """'Load more' asks for articles discovered at or before the last one shown, so new arrivals cannot shift it."""
+    script = f"""
+import json
+from datetime import datetime, timedelta, timezone
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+base = datetime(2026, 10, 1, tzinfo=timezone.utc)
+for n in range(5):
+    db.processed_articles.insert_one({{"_id": f"a{{n}}", "source_id": "feed", "url": f"https://example.com/{{n}}",
+        "status": "processed", "discovered_at": base + timedelta(hours=n), "final_output": {{"title": f"T{{n}}"}}}})
+from src.scheduler.main import app
+with TestClient(app) as c:
+    first = c.get("/articles", params={{"status": "processed", "limit": 2}}).json()
+    # A new article arrives before "load more"
+    db.processed_articles.insert_one({{"_id": "new", "source_id": "feed", "url": "https://example.com/new",
+        "status": "processed", "discovered_at": base + timedelta(hours=9), "final_output": {{"title": "New"}}}})
+    last = first["items"][-1]["discovered_at"]
+    more = c.get("/articles", params={{"status": "processed", "limit": 2, "discovered_before": last}}).json()
+print("RESULT=" + json.dumps({{"first": [i["_id"] for i in first["items"]], "more": [i["_id"] for i in more["items"]],
+                              "total": more["total"]}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "false", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["first"] == ["a4", "a3"]
+    # The boundary item comes back once (the screen drops repeats); the new arrival never shifts the list.
+    assert out["more"] == ["a3", "a2"]
+    assert out["total"] == 6

@@ -811,7 +811,10 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
 async def list_articles(
     page: int = Query(1, ge=1, description="Page number (starts at 1)"),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    discovered_before: Optional[datetime] = Query(
+        None, description="Only articles discovered at or before this time (for 'load more' that new arrivals "
+                          "cannot shift; use with page=1). The total still counts every article of the status."),
 ):
     collections = get_async_scheduler_collections()
     query = {}
@@ -820,6 +823,8 @@ async def list_articles(
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)
+    if discovered_before is not None:
+        query["discovered_at"] = {"$lte": discovered_before}
 
     # 2. Calculate Skip
     skip = (page - 1) * limit

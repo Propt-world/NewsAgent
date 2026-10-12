@@ -358,17 +358,20 @@ async def get_redis():
 
 @router.post("/compose", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,
              description="Queue a new Propt Newsroom article or signal from 2-5 approved or pending sources. "
-                         "Checked against the hourly, concurrency and daily budget limits before anything is spent.")
+                         "Checked against the hourly, concurrency and daily budget limits before anything is spent. "
+                         "Sources that share no company or specific place need an article type (not update) "
+                         "and cannot become one signal.")
 async def compose(payload: ComposeRequest, db=Depends(get_newsroom_db), sources=Depends(get_item_sources),
                   redis=Depends(get_redis), actor: str = Depends(get_actor)):
     return await _call(cmp.create_run(
         db, sources, redis, kind="compose", output_type=payload.output_type,
         items=[s.model_dump() for s in payload.sources], actor=actor, exclude_entity_ids=payload.exclude_entity_ids,
-        include_entity_ids=payload.include_entity_ids))
+        include_entity_ids=payload.include_entity_ids, compose_type=payload.compose_type))
 
 
 @router.post("/extract-signal", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,
-             description="Queue a check of one article: drafts a signal if there is one, otherwise says why not.")
+             description="Queue a check of one article: drafts up to 3 signals (one per angle the article states) "
+                         "if there is one, otherwise says why not.")
 async def extract_signal(payload: ExtractSignalRequest, db=Depends(get_newsroom_db), sources=Depends(get_item_sources),
                          redis=Depends(get_redis), actor: str = Depends(get_actor)):
     return await _call(cmp.create_run(
@@ -388,18 +391,18 @@ async def get_compose_run(run_id: PathId, db=Depends(get_newsroom_db)):
 
 
 @router.post("/compose/{run_id}/saved", response_model=ComposeRunOut,
-             description="The reviewer saved the drafted signal in social_scrapper; links the run's entities to it.")
+             description="The reviewer saved one drafted signal in social_scrapper; links the run's entities to it.")
 async def compose_signal_saved(run_id: PathId, payload: SignalSavedRequest, db=Depends(get_newsroom_db),
                                sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
-    return await _call(cmp.mark_signal_saved(db, sources, run_id, payload.signal_id, actor))
+    return await _call(cmp.mark_signal_saved(db, sources, run_id, payload.signal_id, actor, payload.draft))
 
 
 @router.post("/compose/{run_id}/recover-saved", response_model=ComposeRunOut,
              description="After a save that stopped halfway (the signal exists in social_scrapper but the run was not "
                          "marked saved): finds the signal by its generated_from and finishes the save.")
-async def compose_signal_recover(run_id: PathId, db=Depends(get_newsroom_db),
+async def compose_signal_recover(run_id: PathId, draft: int = Query(1, ge=1, le=3), db=Depends(get_newsroom_db),
                                  sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
-    return await _call(cmp.recover_saved_signal(db, sources, run_id, actor))
+    return await _call(cmp.recover_saved_signal(db, sources, run_id, actor, draft))
 
 
 def mount_newsroom(app: FastAPI, enabled: bool) -> bool:

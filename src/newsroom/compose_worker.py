@@ -80,7 +80,18 @@ class SignalDraft(BaseModel):
 class ExtractDecision(BaseModel):
     is_signal: bool
     reason: str = Field("", description="One sentence; required when it is not a signal")
-    draft: Optional[SignalDraft] = None
+    drafts: List[SignalDraft] = Field(default_factory=list, max_length=cmp.MAX_SIGNAL_DRAFTS,
+                                      description="1-3 drafts, at most one per signal_angle, only angles the article states")
+
+
+def one_per_angle(drafts: List[SignalDraft]) -> List[SignalDraft]:
+    """At most one draft per angle and at most MAX_SIGNAL_DRAFTS, in the model's order."""
+    kept, angles = [], set()
+    for d in drafts:
+        if d.signal_angle not in angles and len(kept) < cmp.MAX_SIGNAL_DRAFTS:
+            angles.add(d.signal_angle)
+            kept.append(d)
+    return kept
 
 
 # --- Helpers (replaceable in tests) ----------------------------------------------
@@ -347,8 +358,15 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
         names = ["newsroom_researcher", "newsroom_writer_signal", "newsroom_editor"]
     else:
         names = ["newsroom_researcher", "newsroom_writer_article", "newsroom_editor"]
-    prompts = await load_prompts(names)
+    type_prompt = f"newsroom_type_{run['compose_type']}" if run.get("compose_type") else None
+    prompts = await load_prompts(names + ([type_prompt] if type_prompt else []))
     update["prompts"] = {n: hashlib.sha256(p.encode()).hexdigest()[:12] for n, p in prompts.items()}
+    if type_prompt:
+        # The chosen type's rules go to the researcher (which facts and angle) and the writer.
+        # Escaped so the rules are never read as template inputs.
+        rules = "\n\n" + prompts[type_prompt].replace("{", "{{").replace("}", "}}")
+        for name in ("newsroom_researcher", "newsroom_writer_article"):
+            prompts[name] += rules
 
     texts = await load_source_texts(sources, run)
     source_block = format_sources(texts)
@@ -359,24 +377,26 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
                          {"sources": source_block, "entities": await entity_context(db, run["entity_ids"])}, ResearchNotes, tracer))
     notes = research.model_dump_json(indent=1)
 
-    if kind == "extract_signal":
-        decision = await paid(ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision, tracer))
-        if not decision.is_signal or decision.draft is None:
-            return {"reason": decision.reason or "The article does not describe a specific market movement."}, "not_a_signal"
-        draft = decision.draft
-    elif output_type == "signal":
-        draft = await paid(ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft, tracer))
-    else:
-        draft = await paid(ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft, tracer))
-
-    edited = await paid(ask(checker, prompts["newsroom_editor"],
-                            {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft), tracer))
+    async def edit(draft):
+        return await paid(ask(checker, prompts["newsroom_editor"],
+                              {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft), tracer))
 
     if output_type == "signal":
-        signal = edited.model_dump()
-        signal["entities_involved"] = signal.get("entities_involved") or []
-        return {"draft": signal, "author": AUTHOR,
+        if kind == "extract_signal":
+            decision = await paid(ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision, tracer))
+            drafts = one_per_angle(decision.drafts) if decision.is_signal else []
+            if not drafts:
+                return {"reason": decision.reason or "The article does not describe a specific market movement."}, "not_a_signal"
+        else:
+            drafts = [await paid(ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft, tracer))]
+        # Each draft is checked on its own; the editor may change an angle, so one per angle is kept again.
+        edited = one_per_angle([await edit(d) for d in drafts])
+        signals = [{**d.model_dump(), "entities_involved": d.entities_involved or []} for d in edited]
+        return {"drafts": signals, "author": AUTHOR,
                 "article_id": run["sources"][0]["source_id"] if kind == "extract_signal" else None}, "succeeded"
+
+    draft = await paid(ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft, tracer))
+    edited = await edit(draft)
 
     article, newsroom_names = await paid(run_article_pipeline(run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer))
     url = composed_url(run["_id"])

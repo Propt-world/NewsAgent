@@ -329,9 +329,16 @@ class SourceRef(BaseModel):
     source_id: str = Field(..., min_length=1, max_length=100)
 
 
+# Optional article types (no type = the regular prompts). Required when the sources share no company or specific place.
+ComposeType = Literal["roundup", "comparison", "update", "background"]
+
+
 class ComposeRequest(BaseModel):
     sources: List[SourceRef] = Field(..., min_length=2, max_length=5)
     output_type: Literal["article", "signal"]
+    compose_type: Optional[ComposeType] = Field(
+        None, description="Articles only. Leave empty for a regular article; required when the sources share "
+                          "no company or specific place (then update is not allowed).")
     exclude_entity_ids: List[ItemId] = Field(default_factory=list, max_length=100,
                                              description="Companies/places the reviewer removed before composing")
     include_entity_ids: List[ItemId] = Field(default_factory=list, max_length=20,
@@ -346,6 +353,7 @@ class ExtractSignalRequest(BaseModel):
 
 class SignalSavedRequest(BaseModel):
     signal_id: str = Field(..., min_length=1, max_length=100)
+    draft: int = Field(1, ge=1, le=3, description="Which of the run's drafts was saved (1-3)")
 
 
 class ComposeSourceOut(BaseModel):
@@ -361,6 +369,7 @@ class ComposeRunOut(BaseModel):
     kind: Literal["compose", "extract_signal"]
     output_type: Literal["article", "signal"]
     status: Literal["queued", "running", "succeeded", "not_a_signal", "failed"]
+    compose_type: Optional[ComposeType] = None
     sources: List[ComposeSourceOut]
     entity_ids: List[str] = []
     excluded_entity_ids: List[str] = []
@@ -375,7 +384,8 @@ class ComposeRunOut(BaseModel):
     cost_usd: float = 0.0
     result: Optional[dict] = None
     error: Optional[str] = None
-    saved: Optional[dict] = None
+    saved: Optional[dict] = Field(None, description="Draft 1's save (kept for older screens); see saved_drafts")
+    saved_drafts: Dict[str, dict] = Field(default_factory=dict, description='Saved drafts by number ("1"-"3")')
     source_rejected: bool = False
     source_rejected_key: Optional[str] = None
 

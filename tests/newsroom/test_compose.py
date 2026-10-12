@@ -38,7 +38,9 @@ def scene(api, sync_db):
     signal_id = ObjectId()
     sync_db["signals"].insert_one({"_id": signal_id, "summary_en": "DAMAC launches a tower in Dubai", "status": "draft",
                                    "generated_at": NOW, "evidence": [{"content_snippet": "Tower launch", "url": "https://x.example/p"}]})
-    for source_type, source_id, entity in [("article", "A1", EMAAR), ("article", "A1", DUBAI), ("signal", str(signal_id), DAMAC)]:
+    # The sources share Emaar (sources sharing nothing need an article type; see the type tests)
+    for source_type, source_id, entity in [("article", "A1", EMAAR), ("article", "A1", DUBAI), ("signal", str(signal_id), DAMAC),
+                                           ("signal", str(signal_id), EMAAR), ("article", "A2", EMAAR)]:
         api.post(f"/newsroom/items/{source_type}/{source_id}/links", json={"entity_id": entity})
     api.signal_id = str(signal_id)
     return api
@@ -84,7 +86,7 @@ def test_reviewer_can_add_switched_on_companies_and_places(scene):
         assert resp.status_code == 422 and bad in resp.json()["detail"]
     # Extract-signal takes additions too
     extract = scene.post("/newsroom/extract-signal", json={"article_id": "A2", "include_entity_ids": [nakheel]}).json()
-    assert extract["entity_ids"] == [nakheel]
+    assert extract["entity_ids"] == sorted([EMAAR, nakheel])
 
 
 @pytest.mark.parametrize("sources, code", [
@@ -233,6 +235,8 @@ class FakeModel:
                 if model.delay:
                     await asyncio.sleep(model.delay)
                 answer = model.answers[schema.__name__]
+                if isinstance(answer, list):  # a different answer for each call, in order
+                    answer = answer.pop(0)
                 if isinstance(answer, Exception):
                     raise answer
                 return answer
@@ -297,7 +301,7 @@ def job(scene, sync_db, mongo_url, db_name, monkeypatch):
 def test_signal_job_produces_a_draft(scene, job):
     run, model = job(_compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json())
     assert run["status"] == "succeeded", run.get("error")
-    assert run["result"]["draft"]["summary_en"] == "Emaar sold 500 units in Dubai."
+    assert [d["summary_en"] for d in run["result"]["drafts"]] == ["Emaar sold 500 units in Dubai."]
     assert run["result"]["author"] == "Propt Newsroom"
     assert [name for name, _ in model.prompts] == ["ResearchNotes", "SignalDraft", "SignalDraft"]  # researcher, writer, editor
     # Only the writer uses the livelier compose temperature; facts and checks use the pipeline's 0.5
@@ -319,7 +323,7 @@ def test_extract_signal_can_say_not_a_signal(scene, job):
 
 
 def test_extract_signal_drafts_when_it_is_one(scene, job):
-    answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, reason="", draft=SIGNAL)}
+    answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, reason="", drafts=[SIGNAL])}
     run, model = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
     assert run["status"] == "succeeded"
     # The decision is a check, not writing
@@ -518,6 +522,7 @@ def test_a_composed_article_can_be_a_source_and_is_shown_by_its_public_link(scen
     sync_db["processed_articles"].insert_one({
         "_id": "C1", "url": "newsroom://compose/run-old", "status": "approved", "source_id": "newsroom_compose",
         "processed_at": NOW, "final_output": {"title": "Emaar launch sells out", "content": "Composed text."}})
+    scene.post("/newsroom/items/article/C1/links", json={"entity_id": EMAAR})
     resp = _compose(scene, ("article", "A1"), ("article", "C1"))
     assert resp.status_code in (200, 201, 202), resp.text
     urls = {s["source_id"]: s["url"] for s in resp.json()["sources"]}
@@ -642,7 +647,7 @@ def test_the_30_topics_match_newsagent_s_article_categories():
 
 
 def test_a_half_finished_signal_save_can_be_completed(scene, sync_db):
-    run_id = _run(sync_db, output_type="signal", status="succeeded", entity_ids=[EMAAR])
+    run_id = _run(sync_db, output_type="signal", status="succeeded", entity_ids=[EMAAR], result={"draft": {}})
     # Not created in social_scrapper yet: nothing to recover.
     assert scene.post(f"/newsroom/compose/{run_id}/recover-saved").status_code == 404
     # The create worked, the "mark saved" step did not:
@@ -665,3 +670,117 @@ def test_init_db_keeps_newsroom_prompts_equal_to_the_code(sync_db):
     seed_newsroom_prompts(sync_db)
     stored = sync_db["prompts"].find_one({"name": "newsroom_writer_signal", "status": "active"})
     assert stored["_id"] == "old" and stored["content"] == cw.PROMPTS_BY_NAME["newsroom_writer_signal"]["content"]
+
+
+# --- Compose types and multiple signal drafts (2026-10-12) ---------------------------------
+
+def _article_with(sync_db, scene, article_id, *entity_ids):
+    sync_db["processed_articles"].insert_one({
+        "_id": article_id, "url": f"https://example.com/{article_id}", "status": "approved", "processed_at": NOW,
+        "final_output": {"title": f"Article {article_id}", "content": "Aldar sold 300 villas in Abu Dhabi."}})
+    for entity_id in entity_ids:
+        assert scene.post(f"/newsroom/items/article/{article_id}/links", json={"entity_id": entity_id}).status_code == 200
+
+
+def _compose_typed(api, *sources, compose_type, output_type="article"):
+    return api.post("/newsroom/compose", json={
+        "sources": [{"source_type": "article", "source_id": i} for i in sources],
+        "output_type": output_type, "compose_type": compose_type})
+
+
+def test_a_type_is_optional_when_the_sources_share_a_company(scene, sync_db):
+    assert _compose(scene, ("article", "A1"), ("article", "A2")).json()["compose_type"] is None  # regular
+    _article_with(sync_db, scene, "B4", EMAAR)
+    run = _compose_typed(scene, "A1", "B4", compose_type="update").json()
+    assert run["compose_type"] == "update"
+
+
+def test_a_type_is_required_when_the_sources_share_nothing(scene, sync_db):
+    aldar = seed_entity_id("organisation", "Aldar Properties")
+    _article_with(sync_db, scene, "B1", aldar)                      # another company
+    _article_with(sync_db, scene, "B2", DUBAI)                      # only the same city as A1
+    _article_with(sync_db, scene, "B3")                             # no links: cannot be shown to belong
+    for other in ("B1", "B2", "B3"):
+        resp = _compose(scene, ("article", "A1"), ("article", other))
+        assert resp.status_code == 422 and "Choose a type" in resp.json()["detail"], other
+        assert f'"Article {other}"' in resp.json()["detail"]
+    assert "same story" in _compose_typed(scene, "A1", "B1", compose_type="update").json()["detail"]
+    assert "one market movement" in _compose(scene, ("article", "A1"), ("article", "B1"), output_type="signal").json()["detail"]
+    assert scene.queue.pushed == []
+    run = _compose_typed(scene, "A1", "B1", compose_type="comparison")
+    assert run.status_code == 202 and run.json()["compose_type"] == "comparison"
+
+
+def test_a_type_is_for_articles_only(scene):
+    resp = _compose_typed(scene, "A1", "A2", compose_type="roundup", output_type="signal")
+    assert resp.status_code == 422 and "articles only" in resp.json()["detail"]
+    assert _compose_typed(scene, "A1", "A2", compose_type="opinion").status_code == 422  # not a type
+
+
+def test_the_chosen_type_s_rules_go_to_the_researcher_and_writer(scene, job, monkeypatch):
+    async def stop(*args, **kwargs):
+        raise RuntimeError("stop after the editor")
+    monkeypatch.setattr(cw, "run_article_pipeline", stop)
+
+    _, model = job(_compose_typed(scene, "A1", "A2", compose_type="comparison").json())
+    prompts = dict(model.prompts)
+    assert "ARTICLE TYPE: COMPARISON" in prompts["ResearchNotes"]
+    assert "ARTICLE TYPE: COMPARISON" in model.prompts[1][1]  # the writer
+    assert "ARTICLE TYPE" not in model.prompts[2][1]          # the editor checks facts as before
+
+    run, model = job(_compose(scene, ("article", "A2"), ("article", "A1")).json())
+    assert all("ARTICLE TYPE" not in text for _, text in model.prompts)  # no type: the regular prompts
+    assert "newsroom_type_comparison" not in run["prompts"]
+
+
+SIGNAL_DEV = SIGNAL.model_copy(update={"summary_en": "Emaar's sales point to a land bank strategy shift.",
+                                       "signal_angle": "Developer or Investor Implication"})
+
+
+def test_extract_signal_gives_one_draft_per_angle_up_to_three(scene, job):
+    duplicate = SIGNAL.model_copy(update={"summary_en": "Same angle again"})
+    answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, drafts=[SIGNAL, SIGNAL_DEV, duplicate]),
+               "SignalDraft": [SIGNAL, SIGNAL_DEV]}  # the editor's answer for each draft
+    run, model = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
+    assert run["status"] == "succeeded", run.get("error")
+    assert [d["signal_angle"] for d in run["result"]["drafts"]] == ["Market Movement", "Developer or Investor Implication"]
+    assert [name for name, _ in model.prompts] == ["ResearchNotes", "ExtractDecision", "SignalDraft", "SignalDraft"]
+    extract_prompt = model.prompts[1][1]
+    assert "AT MOST ONE PER ANGLE" in extract_prompt and "ONLY if the article itself states it" in extract_prompt
+
+
+def test_an_editor_that_makes_two_drafts_the_same_angle_leaves_one(scene, job):
+    answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, drafts=[SIGNAL, SIGNAL_DEV]),
+               "SignalDraft": [SIGNAL, SIGNAL]}
+    run, _ = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
+    assert len(run["result"]["drafts"]) == 1
+
+
+def test_a_signal_without_drafts_is_not_a_signal(scene, job):
+    answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, reason="", drafts=[])}
+    run, _ = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
+    assert run["status"] == "not_a_signal"
+
+
+def test_each_draft_is_saved_on_its_own(scene, sync_db):
+    run_id = _run(sync_db, output_type="signal", kind="extract_signal", entity_ids=[EMAAR],
+                  result={"drafts": [{"summary_en": "one"}, {"summary_en": "two"}]})
+    second, first = ObjectId(), ObjectId()
+    for oid, n in ((second, 2), (first, 1)):
+        sync_db["signals"].insert_one({"_id": oid, "summary_en": f"draft {n}", "status": "draft", "generated_at": NOW,
+                                       "generated_from": cmp.signal_key(run_id, n)})
+    assert cmp.signal_key(run_id, 2) == f"{run_id}#2" and cmp.signal_key(run_id, 1) == run_id
+
+    resp = scene.post(f"/newsroom/compose/{run_id}/saved", json={"signal_id": str(second), "draft": 2})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["saved_drafts"]["2"]["signal_id"] == str(second)
+    assert resp.json()["saved"] is None  # draft 1 is still open
+    assert scene.post(f"/newsroom/compose/{run_id}/saved", json={"signal_id": str(second), "draft": 2}).status_code == 409
+    assert scene.post(f"/newsroom/compose/{run_id}/saved", json={"signal_id": str(second), "draft": 3}).status_code == 422
+
+    # Draft 1's save stopped halfway: found by its generated_from (the run id)
+    done = scene.post(f"/newsroom/compose/{run_id}/recover-saved", params={"draft": 1}).json()
+    assert done["saved"]["signal_id"] == str(first) and done["saved_drafts"]["1"]["signal_id"] == str(first)
+    assert done["saved_drafts"]["2"]["signal_id"] == str(second)
+    linked = scene.get(f"/newsroom/items/signal/{second}/entities").json()["links"]
+    assert [l["entity_id"] for l in linked] == [EMAAR]  # each saved draft gets the run's links

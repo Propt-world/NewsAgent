@@ -10,6 +10,14 @@ Limits (B1), all checked before anything is queued:
 - at most NEWSROOM_COMPOSE_CONCURRENT runs queued or running at once
 - no new runs once today's spend (NEWSROOM_BUDGET_TIMEZONE day) reaches NEWSROOM_DAILY_BUDGET_USD
 - the same sources and output cannot be composed twice at the same time
+
+Compose types (articles only, optional): no type = the regular prompts. When the sources
+share no switched-on company or specific place (community, landmark), a type is required,
+"update" is not allowed (it joins reports of one story), and a signal cannot be composed
+(one signal is one market movement).
+
+Signal drafts: extract-signal may give up to 3 drafts (one per angle). Each is saved on its
+own; draft n is saved in social_scrapper with generated_from = signal_key(run_id, n).
 These checks and recording the run happen under one short lock, so a double click
 or two reviewers at once cannot both pass them. Today's spend includes what running
 jobs have spent so far, plus NEWSROOM_COMPOSE_RESERVE_USD held back per active job.
@@ -32,6 +40,7 @@ from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.entities import Conflict, Invalid, NotFound
+from src.newsroom.locations import items_query
 from src.newsroom.public_links import COMPOSED_SOURCE_ID  # re-exported: used by pipeline and the worker
 
 AUTHOR = "Propt Newsroom"
@@ -41,6 +50,10 @@ ALLOWED_SOURCE_STATUSES = {
 }
 ACTIVE_STATUSES = ["queued", "running"]
 MIN_SOURCES, MAX_SOURCES = 2, 5
+COMPOSE_TYPES = ("roundup", "comparison", "update", "background")
+MAX_SIGNAL_DRAFTS = 3
+# Places specific enough to say two items are about the same thing (as in related items)
+SPECIFIC_PLACE_TYPES = {"community", "landmark"}
 
 
 NEEDS_IMAGE = "Add an image before approving this Propt Newsroom article."
@@ -60,6 +73,55 @@ def approval_blocked_reason(article: Optional[dict]) -> Optional[str]:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def signal_key(run_id: str, draft: int = 1) -> str:
+    """generated_from of a saved draft: the run id for draft 1 (as before), "<run id>#2" and "#3" for the others.
+    social_scrapper keeps generated_from unique, so each draft can be saved once."""
+    return run_id if draft == 1 else f"{run_id}#{draft}"
+
+
+def run_drafts(run: dict) -> List[dict]:
+    """A finished signal run's drafts (runs from before multiple drafts have one, under "draft")."""
+    result = run.get("result") or {}
+    if result.get("drafts"):
+        return result["drafts"]
+    return [result["draft"]] if result.get("draft") is not None else []
+
+
+async def unrelated_sources(db, keys: List[tuple]) -> List[tuple]:
+    """Sources that share no switched-on company or specific place with any other source.
+    A source with no such links cannot be shown to belong and counts as unrelated."""
+    by_item = {key: set() for key in keys}
+    mentions = await db[ndb.ENTITY_MENTIONS].find(
+        {**items_query(keys), "status": "linked"}, {"source_type": 1, "source_id": 1, "entity_id": 1}).to_list(length=None)
+    entity_ids = list({m["entity_id"] for m in mentions})
+    specific = set(await db[ndb.ENTITIES].distinct("_id", {
+        "_id": {"$in": entity_ids}, "status": "active",
+        "$or": [{"kind": "organisation"}, {"kind": "location", "type": {"$in": list(SPECIFIC_PLACE_TYPES)}}]}))
+    for m in mentions:
+        if m["entity_id"] in specific:
+            by_item[(m["source_type"], m["source_id"])].add(m["entity_id"])
+    return [key for key, own in by_item.items()
+            if not own & set().union(*(other for k, other in by_item.items() if k != key))]
+
+
+def check_compose_type(output_type: str, compose_type: Optional[str], unrelated_titles: List[str]) -> None:
+    """The type rules (see the module notes)."""
+    if compose_type and output_type != "article":
+        raise Invalid("A type can be chosen for articles only")
+    if not unrelated_titles:
+        return
+    names = ", ".join(f'"{t}"' for t in unrelated_titles)
+    if output_type == "signal":
+        raise Invalid(f"These items share no company or specific place ({names}). A signal is one market movement: "
+                      "check each article for a signal on its own, or compose an article and choose a type.")
+    if not compose_type:
+        raise Invalid(f"These items share no company or specific place ({names}). Choose a type "
+                      "(roundup, comparison or background) so the writer knows how to combine them.")
+    if compose_type == "update":
+        raise Invalid(f"An update joins reports of the same story, but these items share no company or specific "
+                      f"place ({names}). Choose roundup, comparison or background.")
 
 
 def composed_url(run_id: str) -> str:
@@ -162,7 +224,7 @@ async def _source_entities(db, keys: List[tuple], exclude: List[str], include: O
 
 async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_type: str,
                      items: List[dict], actor: str, exclude_entity_ids: Optional[List[str]] = None,
-                     include_entity_ids: Optional[List[str]] = None) -> dict:
+                     include_entity_ids: Optional[List[str]] = None, compose_type: Optional[str] = None) -> dict:
     """Checks and records a compose request, then queues it for the worker."""
     keys = list(dict.fromkeys((i["source_type"], i["source_id"]) for i in items))
     if kind == "compose" and not (MIN_SOURCES <= len(keys) <= MAX_SOURCES):
@@ -179,6 +241,12 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
             raise Invalid(f'"{info["title"] or source_id}" is {info["item_status"]} and cannot be used as a source')
         source_docs.append({"source_type": source_type, "source_id": source_id, "title": info["title"],
                             "url": info["url"], "status_at_request": info["item_status"]})
+    if kind == "compose":
+        unrelated = set(await unrelated_sources(db, keys))
+        check_compose_type(output_type, compose_type, [d["title"] or d["source_id"] for d in source_docs
+                                                       if (d["source_type"], d["source_id"]) in unrelated])
+    elif compose_type:
+        raise Invalid("A type can be chosen when composing an article only")
 
     await reap_stale_runs(db)
     source_keys = sorted(f"{t}:{i}" for t, i in keys)
@@ -186,7 +254,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
 
     async with _create_lock(db):
         run = await _check_and_record(db, kind, output_type, source_keys, source_docs, entity_ids, actor,
-                                      exclude_entity_ids, include_entity_ids)
+                                      exclude_entity_ids, include_entity_ids, compose_type)
     try:
         await redis.rpush(settings.NEWSROOM_COMPOSE_QUEUE, json.dumps({"run_id": run["_id"]}))
     except Exception as e:
@@ -197,7 +265,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
 
 
 async def _check_and_record(db, kind, output_type, source_keys, source_docs, entity_ids, actor,
-                            exclude_entity_ids, include_entity_ids) -> dict:
+                            exclude_entity_ids, include_entity_ids, compose_type=None) -> dict:
     """The limits, then the new run. Called under _create_lock."""
     running = await db[ndb.COMPOSE_RUNS].find_one(
         {"source_keys": source_keys, "kind": kind, "output_type": output_type, "status": {"$in": ACTIVE_STATUSES}})
@@ -218,6 +286,7 @@ async def _check_and_record(db, kind, output_type, source_keys, source_docs, ent
         "_id": str(uuid.uuid4()),
         "kind": kind,
         "output_type": output_type,
+        "compose_type": compose_type,
         "status": "queued",
         "sources": source_docs,
         "source_keys": source_keys,
@@ -239,6 +308,7 @@ async def _check_and_record(db, kind, output_type, source_keys, source_docs, ent
         "result": None,
         "error": None,
         "saved": None,
+        "saved_drafts": {},
         "source_rejected": False,
     }
     await db[ndb.COMPOSE_RUNS].insert_one(run)
@@ -263,40 +333,52 @@ async def list_runs(db, limit: int = 20) -> dict:
     }
 
 
-async def recover_saved_signal(db, sources: ndb.ItemSources, run_id: str, actor: str) -> dict:
+async def recover_saved_signal(db, sources: ndb.ItemSources, run_id: str, actor: str, draft: int = 1) -> dict:
     """
-    A save that stopped halfway: social_scrapper created the signal (it allows one per run, by
-    generated_from) but the run was never marked saved, so a retry only got "already saved".
+    A save that stopped halfway: social_scrapper created the signal (it allows one per draft, by
+    generated_from) but the draft was never marked saved, so a retry only got "already saved".
     Finds that signal and finishes the save (links included). Safe to call again.
     """
     run = await db[ndb.COMPOSE_RUNS].find_one({"_id": run_id})
     if run is None:
         raise NotFound(f"Compose run {run_id} not found")
-    if run.get("saved"):
+    if _saved_record(run, draft):
         return await get_run(db, run_id)
-    signal = await sources.signals.find_one({"generated_from": run_id}, {"_id": 1})
+    signal = await sources.signals.find_one({"generated_from": signal_key(run_id, draft)}, {"_id": 1})
     if signal is None:
         raise NotFound("No signal has been saved for this draft yet")
     try:
-        return await mark_signal_saved(db, sources, run_id, str(signal["_id"]), actor)
+        return await mark_signal_saved(db, sources, run_id, str(signal["_id"]), actor, draft)
     except Conflict:
         return await get_run(db, run_id)  # finished by someone else at the same moment
 
 
-async def mark_signal_saved(db, sources: ndb.ItemSources, run_id: str, signal_id: str, actor: str) -> dict:
-    """The reviewer saved the drafted signal in social_scrapper: record it and link the run's entities to it."""
+def _saved_record(run: dict, draft: int) -> Optional[dict]:
+    # Draft 1 of runs from before multiple drafts is recorded only under "saved".
+    return (run.get("saved_drafts") or {}).get(str(draft)) or (run.get("saved") if draft == 1 else None)
+
+
+async def mark_signal_saved(db, sources: ndb.ItemSources, run_id: str, signal_id: str, actor: str,
+                            draft: int = 1) -> dict:
+    """The reviewer saved one drafted signal in social_scrapper: record it and link the run's entities to it."""
     run = await db[ndb.COMPOSE_RUNS].find_one({"_id": run_id})
     if run is None:
         raise NotFound(f"Compose run {run_id} not found")
     if run["output_type"] != "signal" or run["status"] != "succeeded":
         raise Invalid("Only a finished signal draft can be saved")
-    if run.get("saved"):
-        raise Conflict(f"This draft was already saved as signal {run['saved']['signal_id']}")
+    if not 1 <= draft <= len(run_drafts(run)):
+        raise Invalid(f"This job has no draft {draft}")
+    saved = _saved_record(run, draft)
+    if saved:
+        raise Conflict(f"This draft was already saved as signal {saved['signal_id']}")
     if await lnk.item_info(sources, "signal", signal_id) is None:
         raise NotFound(f"Signal {signal_id} not found")
-    res = await db[ndb.COMPOSE_RUNS].update_one(
-        {"_id": run_id, "saved": None},
-        {"$set": {"saved": {"signal_id": signal_id, "saved_by": actor, "saved_at": _now()}}})
+    record = {"signal_id": signal_id, "saved_by": actor, "saved_at": _now()}
+    if draft == 1:
+        query, fields = {"_id": run_id, "saved": None}, {"saved": record, "saved_drafts.1": record}
+    else:
+        query, fields = {"_id": run_id, f"saved_drafts.{draft}": {"$exists": False}}, {f"saved_drafts.{draft}": record}
+    res = await db[ndb.COMPOSE_RUNS].update_one(query, {"$set": fields})
     if res.modified_count == 0:
         raise Conflict("This draft was saved at the same moment by someone else")
     for entity_id in run.get("entity_ids", []):

@@ -274,6 +274,18 @@ async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optio
         raise NotFound(f"Entity {entity_id} not found")
     await _check_location(db, location_id)
 
+    match = filter_match(entity_id, location_id, source_type, item_statuses, q)
+    result = (await (await db[ndb.ENTITY_MENTIONS].aggregate(filter_pipeline(match, limit, skip))).to_list(length=1))[0]
+    total = result["total"][0]["n"] if result["total"] else 0
+    # Only the page's links are read in full.
+    page_ids = [r["mention_id"] for r in result["items"]]
+    docs = {d["_id"]: d async for d in db[ndb.ENTITY_MENTIONS].find({"_id": {"$in": page_ids}})}
+    items = [_history_item(docs[i]) for i in page_ids if i in docs]
+    return {"items": items, "total": total, "limit": limit, "skip": skip}
+
+
+def filter_match(entity_id: Optional[str], location_id: Optional[str], source_type: Optional[str],
+                 item_statuses: Optional[List[str]], q: Optional[str]) -> dict:
     match = {"status": "linked", "item_status": {"$nin": HIDDEN_ITEM_STATUSES}}
     if entity_id:
         match["entity_id"] = entity_id
@@ -286,14 +298,20 @@ async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optio
         match["item_status"] = {"$in": [s for s in item_statuses if s != "missing"]}
     if q and q.strip():
         match["title"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+    return match
 
-    pipeline = [
+
+def filter_pipeline(match: dict, limit: int, skip: int) -> list:
+    """
+    One row per item, newest first. A country matches nearly every link, so links are read in
+    date order straight from the index (no sort of all of them in memory) and only the fields
+    needed to pick each item's newest link are kept.
+    """
+    return [
         {"$match": match},
-        {"$sort": {"timestamp": -1, "_id": 1}},
-        {"$group": {"_id": {"t": "$source_type", "i": "$source_id"}, "doc": {"$first": "$$ROOT"}}},
-        {"$sort": {"doc.timestamp": -1, "_id.t": 1, "_id.i": 1}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {"_id": {"t": "$source_type", "i": "$source_id"},
+                    "timestamp": {"$first": "$timestamp"}, "mention_id": {"$first": "$_id"}}},
+        {"$sort": {"timestamp": -1, "_id.t": 1, "_id.i": 1}},
         {"$facet": {"total": [{"$count": "n"}], "items": [{"$skip": skip}, {"$limit": limit}]}},
     ]
-    result = (await (await db[ndb.ENTITY_MENTIONS].aggregate(pipeline)).to_list(length=1))[0]
-    total = result["total"][0]["n"] if result["total"] else 0
-    return {"items": [_history_item(r["doc"]) for r in result["items"]], "total": total, "limit": limit, "skip": skip}

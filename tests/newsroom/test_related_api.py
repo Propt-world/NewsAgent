@@ -7,6 +7,7 @@ import pytest
 from bson import ObjectId
 
 from src.newsroom import links as lnk
+from src.newsroom import related
 from src.newsroom.seed import apply_plan, build_plan, seed_entity_id
 
 ORG, LOC = "organisation", "location"
@@ -148,6 +149,20 @@ def test_entity_history(scene):
     assert scene.get("/newsroom/entities/missing/history").status_code == 404
 
 
+def _stages_below_group(explain: dict) -> list:
+    """The winning plan's stages under its GROUP stage, top to bottom (e.g. FETCH, IXSCAN)."""
+    stages = explain.get("stages") or [{"$cursor": explain}]
+    node = stages[0]["$cursor"]["queryPlanner"]["winningPlan"]
+    node = node.get("queryPlan", node)
+    chain, below_group = [], False
+    while node:
+        if below_group:
+            chain.append(node["stage"])
+        below_group = below_group or node["stage"] == "GROUP"
+        node = node.get("inputStage")
+    return chain
+
+
 def test_queries_use_indexes_and_stay_fast(scene, sync_db):
     """About 6,000 links, similar to a backfilled year; both lookups must use an index."""
     docs = []
@@ -161,10 +176,13 @@ def test_queries_use_indexes_and_stay_fast(scene, sync_db):
         })
     sync_db["entity_mentions"].insert_many(docs)
 
-    plan = sync_db["entity_mentions"].find(
-        {"entity_id": EMAAR, "status": "linked", "item_status": {"$nin": ["rejected"]}, "location_ids": DUBAI}
-    ).sort([("timestamp", -1)]).limit(50).explain()
-    assert "IXSCAN" in str(plan["queryPlanner"]["winningPlan"])
+    # The list filter's real queries read links in date order from an index: no sort of every link in memory.
+    for entity_id, location_id in [(EMAAR, None), (None, UAE), (EMAAR, DUBAI)]:
+        match = related.filter_match(entity_id, location_id, None, None, None)
+        plan = sync_db.command("explain", {"aggregate": "entity_mentions", "cursor": {},
+                                           "pipeline": related.filter_pipeline(match, 20, 0)})
+        chain = _stages_below_group(plan)
+        assert chain and chain[-1] == "IXSCAN" and "SORT" not in chain, (entity_id, location_id, chain)
 
     started = time.perf_counter()
     body = _related(scene, limit=20)

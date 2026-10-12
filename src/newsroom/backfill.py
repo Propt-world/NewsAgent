@@ -27,7 +27,7 @@ from src.newsroom import db as ndb
 from src.newsroom import entities as ent
 from src.newsroom import links as lnk
 from src.newsroom import resolve as rs
-from src.newsroom.locations import refresh_item_locations
+from src.newsroom.locations import refresh_items_locations
 from src.newsroom.normalize import normalize_alias
 
 ACTOR = "backfill"
@@ -230,7 +230,6 @@ async def undo(db, apply: bool) -> UndoReport:
             {"$set": {"status": "open", "decided_at": None, "decided_by": None}})
         await ent.audit(db, UNDO_ACTOR, "unlink", m["entity_id"],
                         {"source_type": m["source_type"], "source_id": m["source_id"]}, None)
-    for source_type, source_id in items:
-        await refresh_item_locations(db, source_type, source_id)
+    await refresh_items_locations(db, items)
     return report
 

@@ -21,10 +21,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from pymongo.errors import DuplicateKeyError
+from pymongo import UpdateMany, UpdateOne
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from src.newsroom import db as ndb
-from src.newsroom.locations import refresh_item_locations, refresh_items_for_places
+from src.newsroom.locations import refresh_items_for_places, refresh_items_locations
 from src.newsroom.models import AliasCreate, EntityCreate, EntityUpdate, IgnoreCreate
 from src.newsroom.normalize import looks_like_handle, normalize_alias, raw_key
 
@@ -341,12 +342,14 @@ async def update_entity(db, entity_id: str, payload: EntityUpdate, actor: str) -
     if parent_changed:
         # Rewrite the ancestor path of every descendant (they all contain this entity's id).
         new_prefix = changes["path_ids"]
-        moved = [entity_id]
-        async for child in db[ndb.ENTITIES].find({"path_ids": entity_id, "_id": {"$ne": entity_id}}):
+        moved, path_updates = [entity_id], []
+        async for child in db[ndb.ENTITIES].find({"path_ids": entity_id, "_id": {"$ne": entity_id}}, {"path_ids": 1}):
             old = child["path_ids"]
-            new_path = new_prefix + old[old.index(entity_id) + 1:]
-            await db[ndb.ENTITIES].update_one({"_id": child["_id"]}, {"$set": {"path_ids": new_path}})
+            path_updates.append(UpdateOne({"_id": child["_id"]},
+                                          {"$set": {"path_ids": new_prefix + old[old.index(entity_id) + 1:]}}))
             moved.append(child["_id"])
+        if path_updates:
+            await db[ndb.ENTITIES].bulk_write(path_updates, ordered=False)
         if current["kind"] == "location":
             # Links store each place's ancestors, so items with any moved place are recomputed.
             await refresh_items_for_places(db, moved)
@@ -461,27 +464,40 @@ async def merge_entities(db, entity_id: str, into_id: str, actor: str, dry_run: 
     # 3. Links: the kept entity's decision wins where both had one.
     if both:
         await db[ndb.ENTITY_MENTIONS].delete_many({"_id": {"$in": [m["_id"] for m in both]}})
-    for mention in moves:
+    if moves:
         try:
-            await db[ndb.ENTITY_MENTIONS].update_one({"_id": mention["_id"]}, {"$set": {"entity_id": into_id}})
-        except DuplicateKeyError:
-            await db[ndb.ENTITY_MENTIONS].delete_one({"_id": mention["_id"]})  # linked to the target meanwhile
+            await db[ndb.ENTITY_MENTIONS].bulk_write(
+                [UpdateOne({"_id": m["_id"]}, {"$set": {"entity_id": into_id}}) for m in moves], ordered=False)
+        except BulkWriteError as e:
+            errors = e.details.get("writeErrors", [])
+            if any(err.get("code") != 11000 for err in errors):
+                raise
+            # Linked to the target meanwhile: the target's decision stays.
+            await db[ndb.ENTITY_MENTIONS].delete_many({"_id": {"$in": [moves[err["index"]]["_id"] for err in errors]}})
 
     # 4. Suggestions point at the kept entity; open ones on items it is already decided on are closed the same way.
     touched = await db[ndb.ENTITY_SUGGESTIONS].find(
         {"entity_id": entity_id}, {"source_type": 1, "source_id": 1}).to_list(length=None)
     await db[ndb.ENTITY_SUGGESTIONS].update_many(
         {"entity_id": entity_id}, {"$set": {"entity_id": into_id, "entity_status": target["status"]}})
-    for source_type, source_id in {(s["source_type"], s["source_id"]) for s in touched}:
-        decision = await db[ndb.ENTITY_MENTIONS].find_one(
-            {"entity_id": into_id, "source_type": source_type, "source_id": source_id}, {"status": 1})
-        if decision is None:
-            continue
-        await db[ndb.ENTITY_SUGGESTIONS].update_many(
-            {"entity_id": into_id, "source_type": source_type, "source_id": source_id, "status": "open"},
-            {"$set": {"status": "linked" if decision["status"] == "linked" else "dismissed",
-                      "decided_at": now, "decided_by": actor}},
-        )
+    touched_items = {(s["source_type"], s["source_id"]) for s in touched}
+    decisions = {}
+    if touched_items:
+        by_type = {}
+        for source_type, source_id in touched_items:
+            by_type.setdefault(source_type, []).append(source_id)
+        async for m in db[ndb.ENTITY_MENTIONS].find(
+            {"entity_id": into_id, "$or": [{"source_type": t, "source_id": {"$in": ids}} for t, ids in by_type.items()]},
+            {"source_type": 1, "source_id": 1, "status": 1},
+        ):
+            decisions[(m["source_type"], m["source_id"])] = m["status"]
+    if decisions:
+        await db[ndb.ENTITY_SUGGESTIONS].bulk_write([
+            UpdateMany({"entity_id": into_id, "source_type": t, "source_id": i, "status": "open"},
+                       {"$set": {"status": "linked" if status == "linked" else "dismissed",
+                                 "decided_at": now, "decided_by": actor}})
+            for (t, i), status in decisions.items()
+        ], ordered=False)
 
     # 5. Children move under the kept entity (their paths and items' places are recomputed).
     for child in children:
@@ -491,8 +507,7 @@ async def merge_entities(db, entity_id: str, into_id: str, actor: str, dry_run: 
 
     # 6. Items that had the duplicate place now carry the kept place's decision and ancestors.
     if source["kind"] == "location":
-        for source_type, source_id in {(m["source_type"], m["source_id"]) for m in mentions}:
-            await refresh_item_locations(db, source_type, source_id)
+        await refresh_items_locations(db, ((m["source_type"], m["source_id"]) for m in mentions))
 
     audited = {k: v for k, v in result.items() if k not in ("dry_run", "merged_id", "into_id")}
     status_before = source.get("status_before_merge") if resuming else source["status"]
@@ -557,8 +572,7 @@ async def delete_entity(db, entity_id: str, actor: str, confirm: Optional[str], 
     await db[ndb.ENTITY_ALIASES].delete_many({"entity_id": entity_id})
     await db[ndb.ENTITIES].delete_one({"_id": entity_id})
     if entity["kind"] == "location":
-        for source_type, source_id in {(m["source_type"], m["source_id"]) for m in mentions if m["status"] == "linked"}:
-            await refresh_item_locations(db, source_type, source_id)
+        await refresh_items_locations(db, ((m["source_type"], m["source_id"]) for m in mentions if m["status"] == "linked"))
     return result
 
 

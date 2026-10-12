@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     NEWSROOM_COMPOSE_CONCURRENT: int = int(os.getenv('NEWSROOM_COMPOSE_CONCURRENT', '2'))
     NEWSROOM_DAILY_BUDGET_USD: float = float(os.getenv('NEWSROOM_DAILY_BUDGET_USD', '10'))
     NEWSROOM_BUDGET_TIMEZONE: str = os.getenv('NEWSROOM_BUDGET_TIMEZONE', 'Asia/Dubai')
+    # Held back from the daily budget for each queued or running job, so jobs in progress cannot overshoot it.
+    NEWSROOM_COMPOSE_RESERVE_USD: float = float(os.getenv('NEWSROOM_COMPOSE_RESERVE_USD', '0.05'))
+    # Used when the price list does not know the model (it would report $0 and the cap would never stop
+    # anything). Default: gpt-4o's price per 1M tokens, so the cap errs on the safe side.
+    NEWSROOM_FALLBACK_INPUT_USD_PER_1M: float = float(os.getenv('NEWSROOM_FALLBACK_INPUT_USD_PER_1M', '2.50'))
+    NEWSROOM_FALLBACK_OUTPUT_USD_PER_1M: float = float(os.getenv('NEWSROOM_FALLBACK_OUTPUT_USD_PER_1M', '10.00'))
     # Counted from when the worker starts the job, not from when it was requested.
     NEWSROOM_COMPOSE_TIMEOUT_MINUTES: int = int(os.getenv('NEWSROOM_COMPOSE_TIMEOUT_MINUTES', '15'))
     # How long a job may wait in the queue (busy or restarting worker) before it is given up; nothing is charged.

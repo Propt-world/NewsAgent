@@ -10,16 +10,23 @@ Limits (B1), all checked before anything is queued:
 - at most NEWSROOM_COMPOSE_CONCURRENT runs queued or running at once
 - no new runs once today's spend (NEWSROOM_BUDGET_TIMEZONE day) reaches NEWSROOM_DAILY_BUDGET_USD
 - the same sources and output cannot be composed twice at the same time
+These checks and recording the run happen under one short lock, so a double click
+or two reviewers at once cannot both pass them. Today's spend includes what running
+jobs have spent so far, plus NEWSROOM_COMPOSE_RESERVE_USD held back per active job.
 
 Deadlines: a queued run may wait up to NEWSROOM_COMPOSE_MAX_WAIT_HOURS for a
 worker (busy or restarting); NEWSROOM_COMPOSE_TIMEOUT_MINUTES counts only from
 when a worker starts it. deadline_at always holds the current one.
 """
+import asyncio
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from zoneinfo import ZoneInfo
+
+from pymongo.errors import DuplicateKeyError
 
 from src.configs.settings import settings
 from src.newsroom import db as ndb
@@ -68,11 +75,37 @@ def budget_day_start(now: Optional[datetime] = None) -> datetime:
 
 
 async def spent_today(db, now: Optional[datetime] = None) -> float:
+    """Today's spend: finished starts (cost_usd) plus what running jobs have spent so far."""
     rows = await (await db[ndb.COMPOSE_RUNS].aggregate([
         {"$match": {"created_at": {"$gte": budget_day_start(now)}}},
-        {"$group": {"_id": None, "cost": {"$sum": {"$ifNull": ["$cost_usd", 0]}}}},
+        {"$group": {"_id": None, "cost": {"$sum": {"$add": [
+            {"$ifNull": ["$cost_usd", 0]}, {"$ifNull": ["$running_cost_usd", 0]}]}}}},
     ])).to_list(length=1)
     return float(rows[0]["cost"]) if rows else 0.0
+
+
+CREATE_LOCK = "compose_create"
+LOCK_SECONDS = 10
+
+
+@asynccontextmanager
+async def _create_lock(db):
+    """One request at a time checks the limits and records its run (a few milliseconds)."""
+    locks, token = db[ndb.NEWSROOM_LOCKS], str(uuid.uuid4())
+    for _ in range(30):
+        now = _now()
+        await locks.delete_one({"_id": CREATE_LOCK, "expires_at": {"$lt": now}})  # left by a crashed request
+        try:
+            await locks.insert_one({"_id": CREATE_LOCK, "token": token, "expires_at": now + timedelta(seconds=LOCK_SECONDS)})
+            break
+        except DuplicateKeyError:
+            await asyncio.sleep(0.1)
+    else:
+        raise TooManyRequests("Another compose job is being started; try again in a moment")
+    try:
+        yield
+    finally:
+        await locks.delete_one({"_id": CREATE_LOCK, "token": token})
 
 
 NEVER_STARTED = "No worker started this job in time (busy or restarting). Nothing more was charged; try again."
@@ -149,17 +182,36 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
 
     await reap_stale_runs(db)
     source_keys = sorted(f"{t}:{i}" for t, i in keys)
+    entity_ids = await _source_entities(db, keys, exclude_entity_ids or [], include_entity_ids or [])
+
+    async with _create_lock(db):
+        run = await _check_and_record(db, kind, output_type, source_keys, source_docs, entity_ids, actor,
+                                      exclude_entity_ids, include_entity_ids)
+    try:
+        await redis.rpush(settings.NEWSROOM_COMPOSE_QUEUE, json.dumps({"run_id": run["_id"]}))
+    except Exception as e:
+        await db[ndb.COMPOSE_RUNS].update_one(
+            {"_id": run["_id"]}, {"$set": {"status": "failed", "error": f"Could not queue: {e}", "finished_at": _now()}})
+        raise
+    return _out(run)
+
+
+async def _check_and_record(db, kind, output_type, source_keys, source_docs, entity_ids, actor,
+                            exclude_entity_ids, include_entity_ids) -> dict:
+    """The limits, then the new run. Called under _create_lock."""
     running = await db[ndb.COMPOSE_RUNS].find_one(
         {"source_keys": source_keys, "kind": kind, "output_type": output_type, "status": {"$in": ACTIVE_STATUSES}})
     if running:
         raise Conflict(f"These sources are already being composed (run {running['_id']})")
 
     now = _now()
+    active = await db[ndb.COMPOSE_RUNS].count_documents({"status": {"$in": ACTIVE_STATUSES}})
     if await db[ndb.COMPOSE_RUNS].count_documents({"created_at": {"$gte": now - timedelta(hours=1)}}) >= settings.NEWSROOM_COMPOSE_PER_HOUR:
         raise TooManyRequests(f"The limit of {settings.NEWSROOM_COMPOSE_PER_HOUR} compose jobs per hour is reached; try again later")
-    if await db[ndb.COMPOSE_RUNS].count_documents({"status": {"$in": ACTIVE_STATUSES}}) >= settings.NEWSROOM_COMPOSE_CONCURRENT:
+    if active >= settings.NEWSROOM_COMPOSE_CONCURRENT:
         raise TooManyRequests(f"{settings.NEWSROOM_COMPOSE_CONCURRENT} compose jobs are already running; try again in a minute")
-    if await spent_today(db, now) >= settings.NEWSROOM_DAILY_BUDGET_USD:
+    # Jobs in progress hold back a small amount each, so they cannot push the day past the budget.
+    if await spent_today(db, now) + active * settings.NEWSROOM_COMPOSE_RESERVE_USD >= settings.NEWSROOM_DAILY_BUDGET_USD:
         raise TooManyRequests("Daily AI budget reached, try again tomorrow")
 
     run = {
@@ -169,7 +221,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
         "status": "queued",
         "sources": source_docs,
         "source_keys": source_keys,
-        "entity_ids": await _source_entities(db, keys, exclude_entity_ids or [], include_entity_ids or []),
+        "entity_ids": entity_ids,
         "excluded_entity_ids": sorted(set(exclude_entity_ids or [])),
         "included_entity_ids": sorted(set(include_entity_ids or [])),
         "requested_by": actor,
@@ -190,13 +242,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
         "source_rejected": False,
     }
     await db[ndb.COMPOSE_RUNS].insert_one(run)
-    try:
-        await redis.rpush(settings.NEWSROOM_COMPOSE_QUEUE, json.dumps({"run_id": run["_id"]}))
-    except Exception as e:
-        await db[ndb.COMPOSE_RUNS].update_one(
-            {"_id": run["_id"]}, {"$set": {"status": "failed", "error": f"Could not queue: {e}", "finished_at": _now()}})
-        raise
-    return _out(run)
+    return run
 
 
 async def get_run(db, run_id: str) -> dict:

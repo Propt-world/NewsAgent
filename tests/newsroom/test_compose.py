@@ -265,6 +265,7 @@ def job(scene, sync_db, mongo_url, db_name, monkeypatch):
     """Runs a compose job against the throwaway database with a fake model (and no real Opik)."""
     monkeypatch.setattr(cw, "get_openai_callback", fake_usage)
     monkeypatch.setattr(settings, "OPIK_API_KEY", "")
+    monkeypatch.setattr(settings, "WEBHOOK_URL", "http://scheduler.test/webhook/store-result")
 
     async def no_registry(names):
         return {n: cw.PROMPTS_BY_NAME[n]["content"] for n in names}
@@ -524,3 +525,86 @@ def test_a_composed_article_can_be_a_source_and_is_shown_by_its_public_link(scen
 
     run = sync_db["compose_runs"].find_one({"_id": resp.json()["id"]})
     assert all(not (s["url"] or "").startswith("newsroom://") for s in run["sources"])
+
+
+
+# --- Money and duplicates (Slice 3) ------------------------------------------------------
+
+def test_two_requests_at_once_start_only_one_job(scene, sync_db):
+    """A double click or two reviewers: the checks and recording are one step."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        codes = list(pool.map(lambda _: _compose(scene, ("article", "A1"), ("article", "A2")).status_code, range(4)))
+    assert sorted(codes).count(202) + sorted(codes).count(200) + sorted(codes).count(201) == 1
+    assert sync_db["compose_runs"].count_documents({}) == 1
+    assert all(c in (200, 201, 202, 409, 429) for c in codes)
+
+
+def test_running_jobs_count_toward_the_budget(scene, sync_db, monkeypatch):
+    monkeypatch.setattr(settings, "NEWSROOM_DAILY_BUDGET_USD", 1.0)
+    # A job still running has spent 0.98 so far; with the reserve held for it the day is full.
+    _run(sync_db, status="running", running_cost_usd=0.98, created_at=NOW)
+    resp = _compose(scene, ("article", "A1"), ("article", "A2"))
+    assert resp.status_code == 429 and "budget" in resp.json()["detail"]
+
+
+def test_spend_is_written_after_each_step_and_settled_at_the_end(scene, job, sync_db, monkeypatch):
+    body = _compose(scene, ("article", "A1"), ("article", "A2"), output_type="signal").json()
+    original, seen_mid_run = cw.ask, []
+
+    async def ask_and_look(*args, **kwargs):
+        # Before each AI step: what today's spend can already see of this job.
+        seen_mid_run.append(sync_db["compose_runs"].find_one({"_id": body["id"]}).get("running_cost_usd"))
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(cw, "ask", ask_and_look)
+
+    run, _ = job(body)
+    assert run["status"] == "succeeded"
+    assert seen_mid_run == [None, 0.00036, 0.00036]  # written after research, then after the draft
+    assert "running_cost_usd" not in run  # folded into cost_usd at the end
+    assert run["cost_usd"] == 0.00036
+
+
+def test_unknown_model_price_uses_the_fallback(monkeypatch):
+    class Usage:
+        prompt_tokens, completion_tokens, total_tokens, total_cost = 1_000_000, 100_000, 1_100_000, 0.0
+    monkeypatch.setattr(settings, "NEWSROOM_FALLBACK_INPUT_USD_PER_1M", 2.50)
+    monkeypatch.setattr(settings, "NEWSROOM_FALLBACK_OUTPUT_USD_PER_1M", 10.00)
+    assert cw.run_cost(Usage()) == 3.5  # 1M in at $2.50 + 0.1M out at $10
+    Usage.total_cost = 0.42
+    assert cw.run_cost(Usage()) == 0.42  # a known price is used as is
+
+
+def test_no_money_is_spent_without_a_webhook(scene, job, monkeypatch):
+    body = _compose(scene, ("article", "A1"), ("article", "A2")).json()
+    monkeypatch.setattr(settings, "WEBHOOK_URL", "")
+    run, model = job(body)
+    assert run["status"] == "failed" and "WEBHOOK_URL" in run["error"]
+    assert model.prompts == []  # no AI call was made
+
+
+def test_a_registry_prompt_without_its_placeholders_is_not_used(monkeypatch):
+    class Docs:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def __aiter__(self):
+            self.it = iter(self.docs)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.it)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class Collection:
+        def find(self, *a, **k):
+            return Docs([{"name": "newsroom_writer_article", "content": "Write something nice."},
+                         {"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+
+    import src.graph.nodes.load_agent_configuration as lac
+    monkeypatch.setattr(lac, "get_async_config_database", lambda: {"prompts": Collection()})
+    prompts = asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor"]))
+    assert prompts["newsroom_writer_article"] == cw.PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
+    assert prompts["newsroom_editor"].endswith("EDITED")  # a complete registry prompt is used

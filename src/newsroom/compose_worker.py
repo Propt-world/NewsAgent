@@ -99,9 +99,17 @@ async def load_prompts(names: List[str]) -> dict:
         logger.warning(f"[NEWSROOM] Prompt registry unavailable, using defaults: {e}")
     prompts = {}
     for name in names:
-        if name not in found:
+        content = found.get(name)
+        if not content:
             logger.warning(f"[NEWSROOM] Prompt {name} not in the registry; using the built-in default")
-        prompts[name] = found.get(name) or PROMPTS_BY_NAME[name]["content"]
+        else:
+            # A registry prompt without e.g. {sources} would make the writer work from nothing.
+            needed = set(PROMPTS_BY_NAME[name]["input_variables"])
+            missing = needed - set(PromptTemplate.from_template(content).input_variables)
+            if missing:
+                logger.warning(f"[NEWSROOM] Prompt {name} in the registry lacks {sorted(missing)}; using the built-in default")
+                content = None
+        prompts[name] = content or PROMPTS_BY_NAME[name]["content"]
     return prompts
 
 
@@ -222,6 +230,18 @@ async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dic
 
 # --- The job ----------------------------------------------------------------------
 
+def run_cost(usage) -> float:
+    """What the calls cost. A model missing from the price list reports $0 although tokens were used,
+    which would switch the daily cap off: then the fallback price (gpt-4o by default) is used."""
+    cost = float(usage.total_cost or 0)
+    if cost == 0 and usage.total_tokens:
+        cost = (usage.prompt_tokens * settings.NEWSROOM_FALLBACK_INPUT_USD_PER_1M
+                + usage.completion_tokens * settings.NEWSROOM_FALLBACK_OUTPUT_USD_PER_1M) / 1_000_000
+        logger.warning(f"[NEWSROOM] No price known for model {settings.NEWSROOM_COMPOSE_MODEL}; "
+                       f"counting {usage.total_tokens} tokens at the fallback price (${cost:.6f})")
+    return round(cost, 6)
+
+
 REQUEUE = "requeue"
 INTERRUPTED = "Stopped {n} times because the worker was shutting down; try again."
 
@@ -249,9 +269,14 @@ async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSource
     update["opik_traced"] = tracer is not None
     interrupted = False
     with get_openai_callback() as usage:
+        async def checkpoint() -> None:
+            """After each paid step: today's spend sees this job's cost so far (kept even if the worker dies)."""
+            await db[ndb.COMPOSE_RUNS].update_one(
+                {"_id": run_id, "status": "running"}, {"$set": {"running_cost_usd": run_cost(usage)}})
+
         try:
             result, status = await asyncio.wait_for(
-                _compose(db, sources, run, update, tracer), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
+                _compose(db, sources, run, update, tracer, checkpoint), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
             update.update({"status": status, "result": result, "finished_at": _now()})
         except asyncio.CancelledError:
             # The worker is shutting down: wait in the queue again unless it has had its starts.
@@ -268,23 +293,21 @@ async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSource
         finally:
             # Spend adds up over every start; written only while this worker still owns the run,
             # so a run the clean-up already marked failed is not turned back into a success.
+            spent = {
+                "tokens.prompt": usage.prompt_tokens,
+                "tokens.completion": usage.completion_tokens,
+                "tokens.total": usage.total_tokens,
+                "cost_usd": run_cost(usage),
+            }
+            # The running figure becomes part of cost_usd now.
             res = await db[ndb.COMPOSE_RUNS].update_one(
                 {"_id": run_id, "status": "running"},
-                {"$set": update, "$inc": {
-                    "tokens.prompt": usage.prompt_tokens,
-                    "tokens.completion": usage.completion_tokens,
-                    "tokens.total": usage.total_tokens,
-                    "cost_usd": round(float(usage.total_cost), 6),
-                }},
+                {"$set": update, "$inc": spent, "$unset": {"running_cost_usd": ""}},
             )
             if res.matched_count == 0:
                 # Already given up (timed out): still count what was spent.
-                await db[ndb.COMPOSE_RUNS].update_one({"_id": run_id}, {"$inc": {
-                    "tokens.prompt": usage.prompt_tokens,
-                    "tokens.completion": usage.completion_tokens,
-                    "tokens.total": usage.total_tokens,
-                    "cost_usd": round(float(usage.total_cost), 6),
-                }})
+                await db[ndb.COMPOSE_RUNS].update_one(
+                    {"_id": run_id}, {"$inc": spent, "$unset": {"running_cost_usd": ""}})
                 logger.warning(f"[NEWSROOM] Compose run {run_id} ended after it was given up; its result was not kept")
                 interrupted = False
     if tracer is not None:
@@ -295,8 +318,18 @@ async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSource
     return REQUEUE if interrupted else None
 
 
-async def _compose(db, sources, run, update: dict, tracer=None):
+async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None):
     kind, output_type = run["kind"], run["output_type"]
+    if output_type == "article" and not settings.WEBHOOK_URL:
+        # Checked before any paid call: the article could not be stored at the end.
+        raise RuntimeError("WEBHOOK_URL is not configured on this worker; nothing was spent")
+
+    async def paid(step):
+        result = await step
+        if checkpoint is not None:
+            await checkpoint()
+        return result
+
     if kind == "extract_signal":
         names = ["newsroom_researcher", "newsroom_extract_signal", "newsroom_editor"]
     elif output_type == "signal":
@@ -311,22 +344,22 @@ async def _compose(db, sources, run, update: dict, tracer=None):
     checker = get_compose_model(settings.NEWSROOM_COMPOSE_CHECK_TEMPERATURE)
     writer = get_compose_model(settings.NEWSROOM_COMPOSE_TEMPERATURE)
 
-    research = await ask(checker, prompts["newsroom_researcher"],
-                         {"sources": source_block, "entities": await entity_context(db, run["entity_ids"])}, ResearchNotes, tracer)
+    research = await paid(ask(checker, prompts["newsroom_researcher"],
+                         {"sources": source_block, "entities": await entity_context(db, run["entity_ids"])}, ResearchNotes, tracer))
     notes = research.model_dump_json(indent=1)
 
     if kind == "extract_signal":
-        decision = await ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision, tracer)
+        decision = await paid(ask(checker, prompts["newsroom_extract_signal"], {"research": notes, "sources": source_block}, ExtractDecision, tracer))
         if not decision.is_signal or decision.draft is None:
             return {"reason": decision.reason or "The article does not describe a specific market movement."}, "not_a_signal"
         draft = decision.draft
     elif output_type == "signal":
-        draft = await ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft, tracer)
+        draft = await paid(ask(writer, prompts["newsroom_writer_signal"], {"research": notes, "sources": source_block}, SignalDraft, tracer))
     else:
-        draft = await ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft, tracer)
+        draft = await paid(ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft, tracer))
 
-    edited = await ask(checker, prompts["newsroom_editor"],
-                       {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft), tracer)
+    edited = await paid(ask(checker, prompts["newsroom_editor"],
+                            {"draft": draft.model_dump_json(indent=1), "sources": source_block}, type(draft), tracer))
 
     if output_type == "signal":
         signal = edited.model_dump()
@@ -334,7 +367,7 @@ async def _compose(db, sources, run, update: dict, tracer=None):
         return {"draft": signal, "author": AUTHOR,
                 "article_id": run["sources"][0]["source_id"] if kind == "extract_signal" else None}, "succeeded"
 
-    article, newsroom_names = await run_article_pipeline(run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer)
+    article, newsroom_names = await paid(run_article_pipeline(run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer))
     url = composed_url(run["_id"])
     payload = {
         "source_url": url,

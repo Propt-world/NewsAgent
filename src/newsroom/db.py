@@ -24,6 +24,8 @@ ENTITY_IGNORE = "entity_ignore"
 ENTITY_AUDIT = "entity_audit"
 ENTITY_SUGGESTIONS = "entity_suggestions"
 COMPOSE_RUNS = "compose_runs"
+# Short-lived locks (e.g. starting a compose job: limits are checked and the run recorded as one step)
+NEWSROOM_LOCKS = "newsroom_locks"
 
 # (collection, keys, options)
 INDEX_SPECS = [

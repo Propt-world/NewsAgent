@@ -187,13 +187,16 @@ def mongo():
     client.close()
 
 
-def test_init_db_adds_the_prompts_only_when_missing(mongo):
+def test_init_db_keeps_the_prompts_equal_to_the_code(mongo):
+    """Prompts are only changed in code (user, 2026-10-12): upsert writes the code's text, without duplicates."""
+    from src.graph.nodes.check_real_estate import REAL_ESTATE_CHECK_PROMPTS
     from src.scripts.init_db import seed_real_estate_check_prompts
     _, _, db = mongo
     seed_real_estate_check_prompts(db)
     db.prompts.update_one({"name": "real_estate_check_system"}, {"$set": {"content": "EDITED IN REGISTRY"}})
     seed_real_estate_check_prompts(db)
-    assert db.prompts.find_one({"name": "real_estate_check_system"})["content"] == "EDITED IN REGISTRY"
+    code = next(p for p in REAL_ESTATE_CHECK_PROMPTS if p["name"] == "real_estate_check_system")["content"]
+    assert db.prompts.find_one({"name": "real_estate_check_system"})["content"] == code
     assert db.prompts.count_documents({}) == 2
 
 

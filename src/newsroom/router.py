@@ -387,6 +387,14 @@ async def compose_signal_saved(run_id: str, payload: SignalSavedRequest, db=Depe
     return await _call(cmp.mark_signal_saved(db, sources, run_id, payload.signal_id, actor))
 
 
+@router.post("/compose/{run_id}/recover-saved", response_model=ComposeRunOut,
+             description="After a save that stopped halfway (the signal exists in social_scrapper but the run was not "
+                         "marked saved): finds the signal by its generated_from and finishes the save.")
+async def compose_signal_recover(run_id: str, db=Depends(get_newsroom_db),
+                                 sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
+    return await _call(cmp.recover_saved_signal(db, sources, run_id, actor))
+
+
 def mount_newsroom(app: FastAPI, enabled: bool) -> bool:
     """Registers the Newsroom routes on the app if enabled. Returns whether it did."""
     if not enabled:

@@ -543,17 +543,17 @@ def seed_prompts(db):
 
 
 def seed_newsroom_prompts(db):
-    """Newsroom compose prompts: inserted only when missing, so edits made in the registry are kept."""
-    seed_prompts_if_missing(db, NEWSROOM_PROMPTS, "Newsroom")
+    """Newsroom compose prompts: kept equal to the code, like the other prompts (prompts are only changed in code)."""
+    upsert_prompt_list(db, NEWSROOM_PROMPTS, "Newsroom")
 
 
 def seed_real_estate_check_prompts(db):
-    """Real-estate check prompts: inserted only when missing, so edits made in the registry are kept."""
-    seed_prompts_if_missing(db, REAL_ESTATE_CHECK_PROMPTS, "Real-estate check")
+    """Real-estate check prompts: kept equal to the code, like the other prompts."""
+    upsert_prompt_list(db, REAL_ESTATE_CHECK_PROMPTS, "Real-estate check")
 
 
-def seed_prompts_if_missing(db, prompts, label):
-    print(f"--- Setting up {label} Prompts (insert only if missing) ---")
+def upsert_prompt_list(db, prompts, label):
+    print(f"--- Setting up {label} Prompts ---")
     prompts_col = db["prompts"]
     active_status = PromptStatus.ACTIVE.value
     for data in prompts:
@@ -561,16 +561,18 @@ def seed_prompts_if_missing(db, prompts, label):
         result = prompts_col.update_one(
             {"name": data["name"], "status": active_status},
             {
-                "$setOnInsert": {
-                    "_id": str(uuid.uuid4()),
+                "$set": {
                     "name": data["name"],
                     "content": data["content"],
                     "description": data["description"],
                     "input_variables": data["input_variables"],
                     "version": PROMPT_VERSION,
                     "status": active_status,
-                    "created_at": now,
                     "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "_id": str(uuid.uuid4()),
+                    "created_at": now,
                 },
             },
             upsert=True,
@@ -578,7 +580,7 @@ def seed_prompts_if_missing(db, prompts, label):
         if result.upserted_id:
             print(f"  [+] Added {label} Prompt: {data['name']}")
         else:
-            print(f"  [=] Kept existing {label} Prompt: {data['name']}")
+            print(f"  [>] Upserted {label} Prompt: {data['name']}")
 
 
 def seed_email_recipients(db):

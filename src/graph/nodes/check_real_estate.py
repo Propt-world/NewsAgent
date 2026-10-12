@@ -54,7 +54,7 @@ DEFAULT_USER = """---TITLE---
 ---END---"""
 
 
-# Registry entries (init_db.py adds them only when missing, so registry edits are kept)
+# Registry entries (init_db.py --mode upsert keeps them equal to this code, like every prompt)
 REAL_ESTATE_CHECK_PROMPTS = [
     {"name": "real_estate_check_system", "content": DEFAULT_SYSTEM, "input_variables": [],
      "description": "Real-estate check before processing: what belongs on Propt (keep when unsure)."},

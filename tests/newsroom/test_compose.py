@@ -240,7 +240,8 @@ class FakeModel:
 
 
 SIGNAL = cw.SignalDraft(summary_en="Emaar sold 500 units in Dubai.", summary_ar="باعت إعمار 500 وحدة في دبي.",
-                        signal_category="Sale", regions=["United Arab Emirates"], areas_mentioned=["Dubai"],
+                        signal_category="Market", signal_angle="Market Movement", regions=["United Arab Emirates"],
+                        categories=["Off-Plan & New Launches"], areas_mentioned=["Dubai"],
                         entities_involved=["Emaar"], confidence=80)
 ANSWERS = {
     "ResearchNotes": cw.ResearchNotes(key_facts=["Emaar sold 500 units (source 1)"], angle="Demand"),
@@ -608,3 +609,59 @@ def test_a_registry_prompt_without_its_placeholders_is_not_used(monkeypatch):
     prompts = asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor"]))
     assert prompts["newsroom_writer_article"] == cw.PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
     assert prompts["newsroom_editor"].endswith("EDITED")  # a complete registry prompt is used
+
+
+
+# --- Composed signals use Grok's lists; recovering a half-finished save (Slice 3) ---------
+
+def test_signal_fields_only_accept_grok_s_lists():
+    from pydantic import ValidationError
+    base = dict(summary_en="x", summary_ar="x", signal_category="Launch", signal_angle="Adjacent Impact",
+                regions=["Saudi Arabia"], categories=["Mortgage & Financing"], confidence=70)
+    assert cw.SignalDraft(**base).signal_category == "Launch"
+    for bad in ({"signal_category": "Sale"}, {"regions": ["UAE"]}, {"signal_angle": "Opinion"},
+                {"categories": ["Financing"]}, {"categories": ["People", "PropTech & AI", "Future Forecast", "Luxury Residences"]}):
+        with pytest.raises(ValidationError):
+            cw.SignalDraft(**{**base, **bad})
+
+
+def test_signal_prompts_list_the_allowed_values():
+    from src.newsroom.signal_options import GCC_REGIONS, SIGNAL_CATEGORIES
+    for name in ("newsroom_writer_signal", "newsroom_extract_signal"):
+        content = cw.PROMPTS_BY_NAME[name]["content"]
+        assert all(f'"{c}"' in content for c in SIGNAL_CATEGORIES + GCC_REGIONS)
+        assert '"Villa, Apartments & Townhouses"' in content and "signal_angle" in content
+        assert "such as Launch, Sale" not in content
+
+
+def test_the_30_topics_match_newsagent_s_article_categories():
+    """Grok's list (social_scrapper config) = NewsAgent's article categories; this keeps our copy equal."""
+    from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
+    from src.scripts.init_db import INITIAL_CATEGORIES
+    assert sorted(REAL_ESTATE_CATEGORIES) == sorted(c["name"] for c in INITIAL_CATEGORIES)
+
+
+def test_a_half_finished_signal_save_can_be_completed(scene, sync_db):
+    run_id = _run(sync_db, output_type="signal", status="succeeded", entity_ids=[EMAAR])
+    # Not created in social_scrapper yet: nothing to recover.
+    assert scene.post(f"/newsroom/compose/{run_id}/recover-saved").status_code == 404
+    # The create worked, the "mark saved" step did not:
+    signal_id = ObjectId()
+    sync_db["signals"].insert_one({"_id": signal_id, "summary_en": "Emaar ...", "status": "draft", "generated_from": run_id,
+                                   "generated_at": NOW, "evidence": []})
+    resp = scene.post(f"/newsroom/compose/{run_id}/recover-saved")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["saved"]["signal_id"] == str(signal_id)
+    linked = scene.get(f"/newsroom/items/signal/{signal_id}/entities").json()["links"]
+    assert [l["entity_id"] for l in linked] == [EMAAR]  # the run's companies are linked as in a normal save
+    again = scene.post(f"/newsroom/compose/{run_id}/recover-saved")
+    assert again.status_code == 200 and again.json()["saved"]["signal_id"] == str(signal_id)
+
+
+def test_init_db_keeps_newsroom_prompts_equal_to_the_code(sync_db):
+    from src.scripts.init_db import seed_newsroom_prompts
+    sync_db["prompts"].insert_one({"_id": "old", "name": "newsroom_writer_signal", "status": "active",
+                                   "content": "old text: such as Launch, Sale"})
+    seed_newsroom_prompts(sync_db)
+    stored = sync_db["prompts"].find_one({"name": "newsroom_writer_signal", "status": "active"})
+    assert stored["_id"] == "old" and stored["content"] == cw.PROMPTS_BY_NAME["newsroom_writer_signal"]["content"]

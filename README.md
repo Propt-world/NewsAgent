@@ -72,7 +72,7 @@ The system is composed of seven Dockerized services:
     * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`) and creates its indexes at startup; in the worker, the country step also returns company, project and place names, which become entity suggestions when the result is stored. Set it on the worker and the scheduler together. Unset or `false` leaves both unchanged.
     * `NEWSROOM_DB_NAME`: Database for the Newsroom knowledge graph (default `newsroom`).
     * `NEWSROOM_SIMILARITY_MIN_SCORE`: Minimum score (default `0.8`) for "similar articles". Shown only for approved articles with no links, using their stored embeddings and the `MONGO_VECTOR_INDEX_NAME` Atlas index; no new AI call is made.
-    * `NEWSROOM_COMPOSE_*` / `NEWSROOM_DAILY_BUDGET_USD`: Compose (Propt Newsroom articles and signals). Model (default `gpt-4o-mini`), at most 10 jobs per hour and 2 at once, and new jobs stop once the day's spend (UAE day, from real token usage) reaches the budget (default 10 USD). Compose jobs run in the worker from their own Redis queue; prompts `newsroom_*` are added by `init_db.py` only when missing.
+    * `NEWSROOM_COMPOSE_*` / `NEWSROOM_DAILY_BUDGET_USD`: Compose (Propt Newsroom articles and signals). Model (default `gpt-4o-mini`), at most 10 jobs per hour and 2 at once, and new jobs stop once the day's spend (UAE day, from real token usage) reaches the budget (default 10 USD). Compose jobs run in the worker from their own Redis queue; prompts `newsroom_*` are written by `init_db.py --mode upsert` like every other prompt.
 
 ---
 

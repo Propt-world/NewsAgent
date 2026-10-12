@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import httpx
 from langchain_community.callbacks.manager import get_openai_callback
@@ -33,6 +33,7 @@ from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.prompts import PROMPTS_BY_NAME
 from src.newsroom.public_links import shown_url
+from src.newsroom.signal_options import GCC_REGIONS, REAL_ESTATE_CATEGORIES, SIGNAL_ANGLES, SIGNAL_CATEGORIES
 
 logger = logging.getLogger("newsroom")
 
@@ -55,11 +56,21 @@ class ArticleDraft(BaseModel):
     changes: List[str] = Field(default_factory=list, description="Editor only: what was corrected")
 
 
+# Grok Scout's lists (signal_options.py): the model can only answer with these values, so a saved
+# signal gets its category and countries (ids, Arabic names) like a Grok signal.
+SignalCategory = Literal[tuple(SIGNAL_CATEGORIES)]
+SignalAngle = Literal[tuple(SIGNAL_ANGLES)]
+GccRegion = Literal[tuple(GCC_REGIONS)]
+RealEstateCategory = Literal[tuple(REAL_ESTATE_CATEGORIES)]
+
+
 class SignalDraft(BaseModel):
     summary_en: str
     summary_ar: str
-    signal_category: str
-    regions: List[str] = Field(default_factory=list)
+    signal_category: SignalCategory
+    signal_angle: SignalAngle
+    regions: List[GccRegion] = Field(default_factory=list)
+    categories: List[RealEstateCategory] = Field(default_factory=list, max_length=3)
     areas_mentioned: List[str] = Field(default_factory=list)
     entities_involved: List[str] = Field(default_factory=list)
     confidence: float = Field(..., ge=0, le=100)

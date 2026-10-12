@@ -263,6 +263,26 @@ async def list_runs(db, limit: int = 20) -> dict:
     }
 
 
+async def recover_saved_signal(db, sources: ndb.ItemSources, run_id: str, actor: str) -> dict:
+    """
+    A save that stopped halfway: social_scrapper created the signal (it allows one per run, by
+    generated_from) but the run was never marked saved, so a retry only got "already saved".
+    Finds that signal and finishes the save (links included). Safe to call again.
+    """
+    run = await db[ndb.COMPOSE_RUNS].find_one({"_id": run_id})
+    if run is None:
+        raise NotFound(f"Compose run {run_id} not found")
+    if run.get("saved"):
+        return await get_run(db, run_id)
+    signal = await sources.signals.find_one({"generated_from": run_id}, {"_id": 1})
+    if signal is None:
+        raise NotFound("No signal has been saved for this draft yet")
+    try:
+        return await mark_signal_saved(db, sources, run_id, str(signal["_id"]), actor)
+    except Conflict:
+        return await get_run(db, run_id)  # finished by someone else at the same moment
+
+
 async def mark_signal_saved(db, sources: ndb.ItemSources, run_id: str, signal_id: str, actor: str) -> dict:
     """The reviewer saved the drafted signal in social_scrapper: record it and link the run's entities to it."""
     run = await db[ndb.COMPOSE_RUNS].find_one({"_id": run_id})

@@ -263,6 +263,33 @@ def test_items_summary_for_list_badges(seeded, sync_db):
     assert seeded.post("/newsroom/items/summary", json={"source_type": "article", "source_ids": []}).status_code == 422
 
 
+def test_new_names_page_reads_few_items_in_few_queries(seeded, sync_db, run_counted):
+    """A name on 40 items sends back its count and 5 examples with titles; titles are read in batches."""
+    signal_ids = [ObjectId() for _ in range(10)]
+    sync_db["signals"].insert_many([{"_id": oid, "summary_en": f"Signal {n}", "status": "approved"}
+                                    for n, oid in enumerate(signal_ids)])
+    sync_db["processed_articles"].insert_many([{"_id": f"big-{n}", "status": "approved",
+                                                "final_output": {"title": f"Big {n}"}} for n in range(30)])
+    refs = [("article", f"big-{n}") for n in range(30)] + [("signal", str(oid)) for oid in signal_ids]
+    rows = []
+    for n, (source_type, source_id) in enumerate(refs):
+        for name in ["Popular Co"] + ([f"Rare Co {n}"] if n % 2 else []):
+            rows.append({"_id": f"s-{n}-{name}", "source_type": source_type, "source_id": source_id,
+                         "field": ORG, "name": name, "name_norm": name.lower(), "entity_id": None,
+                         "status": "open", "in_new_names_queue": True,
+                         "created_at": datetime(2026, 9, 1, n // 60, n % 60, tzinfo=timezone.utc)})
+    sync_db["entity_suggestions"].insert_many(rows)
+
+    groups, queries = run_counted(lambda db, sources: lnk.list_new_names(db, 100, sources))
+    assert len(groups) == 21
+    popular = groups[0]
+    assert (popular["name"], popular["count"], len(popular["items"])) == ("Popular Co", 40, 5)
+    assert [i["title"] for i in popular["items"]] == ["Big 0", "Big 1", "Big 2", "Big 3", "Big 4"]
+    by_name = {g["name"]: g for g in groups}
+    assert by_name["Rare Co 39"]["items"][0]["title"] == "Signal 9"  # signal titles too
+    assert queries <= 6, queries  # was one lookup per example
+
+
 def test_new_names_show_where_they_were_found(seeded, run_async):
     _suggest(seeded, **NAMES)
     run_async(lnk.on_item_status, "article", ARTICLE, "approved")

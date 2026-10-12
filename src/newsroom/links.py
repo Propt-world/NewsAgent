@@ -396,8 +396,9 @@ async def items_summary(db, source_type: str, source_ids: List[str]) -> Dict[str
 
 
 async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources] = None,
-                         titles_per_group: int = 5) -> List[dict]:
-    """Unknown names from approved items, grouped by name, most frequent first."""
+                         items_per_group: int = 5) -> List[dict]:
+    """Unknown names from approved items, grouped by name, most frequent first.
+    Each group lists its first few items (with titles) and the full count."""
     pipeline = [
         {"$match": {"status": "open", "entity_id": None, "in_new_names_queue": True}},
         {"$sort": {"created_at": 1}},
@@ -409,19 +410,21 @@ async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources
         }},
         {"$sort": {"count": -1, "_id.name_norm": 1}},
         {"$limit": limit},
+        # A name found on hundreds of items sends back only its first few examples.
+        {"$project": {"name": 1, "count": 1, "items": {"$slice": ["$items", items_per_group]}}},
     ]
     groups = await (await db[ndb.ENTITY_SUGGESTIONS].aggregate(pipeline)).to_list(length=limit)
-    result = []
-    for g in groups:
-        items = g["items"]
-        if sources is not None:
-            # Titles for the first few items, so a reviewer can see where the name was found.
-            for item in items[:titles_per_group]:
-                info = await item_info(sources, item["source_type"], item["source_id"])
-                item["title"] = info["title"] if info else None
-        result.append({"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
-                       "count": g["count"], "items": items})
-    return result
+    if sources is not None:
+        # Titles so a reviewer can see where the name was found: one batch per item type.
+        for source_type in SOURCE_TYPES:
+            ids = [i["source_id"] for g in groups for i in g["items"] if i["source_type"] == source_type]
+            infos = await items_info(sources, source_type, ids) if ids else {}
+            for g in groups:
+                for item in g["items"]:
+                    if item["source_type"] == source_type:
+                        item["title"] = (infos.get(item["source_id"]) or {}).get("title")
+    return [{"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
+             "count": g["count"], "items": g["items"]} for g in groups]
 
 
 async def link_new_name(db, sources: ndb.ItemSources, field: str, name_norm: str, entity_id: str, actor: str,

@@ -12,7 +12,7 @@ import uuid
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pymongo import AsyncMongoClient, MongoClient
+from pymongo import AsyncMongoClient, MongoClient, monitoring
 
 from src.configs.settings import settings
 from src.newsroom.db import ItemSources, ensure_indexes_sync, get_item_sources, get_newsroom_db
@@ -106,5 +106,51 @@ def run_async(mongo_url, db_name):
             finally:
                 await client.close()
         return asyncio.run(go())
+
+    return runner
+
+
+
+class QueryCounter(monitoring.CommandListener):
+    """Counts the database commands (finds, aggregates, writes...) a client sends."""
+
+    def __init__(self):
+        self.count = 0
+
+    def started(self, event):
+        if event.command_name not in ("endSessions", "hello", "isMaster", "ping"):
+            self.count += 1
+
+    def succeeded(self, event):
+        pass
+
+    def failed(self, event):
+        pass
+
+
+@pytest.fixture
+def run_counted(mongo_url, db_name):
+    """Runs fn(db, sources) on the throwaway database (articles and signals live there too)
+    and returns (result, number of database commands it sent)."""
+    import asyncio
+
+    def runner(fn):
+        counter = QueryCounter()
+
+        async def go():
+            client = AsyncMongoClient(mongo_url, serverSelectionTimeoutMS=3000, event_listeners=[counter])
+            db = client[db_name]
+            sources = ItemSources(articles=db["processed_articles"], signals=db["signals"],
+                                  chunks=db["vectorized_articles"], archived=db["archived_articles"],
+                                  deleted=db["deleted_articles"])
+            try:
+                await client.admin.command("ping")
+                counter.count = 0
+                return await fn(db, sources)
+            finally:
+                await client.close()
+
+        result = asyncio.run(go())
+        return result, counter.count
 
     return runner

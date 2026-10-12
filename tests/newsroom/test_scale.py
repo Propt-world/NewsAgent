@@ -9,7 +9,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.newsroom import entities as ent
+from src.newsroom import links as lnk
 from src.newsroom import locations
+from src.newsroom.entities import Conflict, Invalid
 from src.newsroom.models import EntityUpdate
 from src.newsroom.seed import apply_plan, build_plan, seed_entity_id
 
@@ -83,3 +85,76 @@ def test_deleting_a_place_recomputes_its_items_in_batches(many, run_counted):
     assert _location_ids(many, "c") == {()}
     assert many["entity_mentions"].count_documents({"source_id": {"$regex": "^c"}}) == ITEMS  # Emaar links stay
     assert queries <= 30, queries
+
+
+# --- Bulk linking (New Names "Link", "Link all") ---------------------------------
+
+STAGED = seed_entity_id(LOC, "Dubai Creek Harbour")  # switched off in the starting list
+
+
+def _queued(sync_db, source_id, name="Big Name Co", field=ORG):
+    sync_db["entity_suggestions"].insert_one({
+        "_id": f"q-{source_id}-{field}", "source_type": "article", "source_id": source_id, "field": field,
+        "name": name, "name_norm": name.lower(), "entity_id": None, "status": "open", "in_new_names_queue": True,
+        "created_at": NOW})
+
+
+@pytest.fixture
+def queue(api, sync_db):
+    """'Big Name Co' queued on 30 approved articles; n0 had Emaar removed by a reviewer, n1 already has it,
+    n2 was deleted since. Every article is in Dubai."""
+    apply_plan(build_plan(), sync_db)
+    sync_db["processed_articles"].insert_many([
+        {"_id": f"n{n}", "status": "approved", "final_output": {"title": f"Story {n}", "summary": "..."},
+         "processed_at": NOW} for n in range(30) if n != 2])
+    sync_db["entity_mentions"].insert_many(
+        [_mention(DUBAI, LOC, f"n{n}", sorted([UAE, DUBAI])) for n in range(30)]
+        + [_mention(EMAAR, ORG, "n0", sorted([UAE, DUBAI]), status="removed"),
+           _mention(EMAAR, ORG, "n1", sorted([UAE, DUBAI]))])
+    for n in range(30):
+        _queued(sync_db, f"n{n}")
+    return sync_db
+
+
+def test_new_name_link_is_bulk_with_the_same_rules(queue, run_counted):
+    count, queries = run_counted(lambda db, sources: lnk.link_new_name(db, sources, ORG, "big name co", EMAAR, "t"))
+    assert count == 28  # 27 new + n1 already linked; n0 stays removed, n2 no longer exists
+    linked = {m["source_id"]: m for m in queue["entity_mentions"].find({"entity_id": EMAAR})}
+    assert linked["n0"]["status"] == "removed"
+    assert linked["n5"]["status"] == "linked" and linked["n5"]["title"] == "Story 5"
+    assert linked["n5"]["location_ids"] == sorted([UAE, DUBAI])  # the item's places are copied onto the new link
+    assert "n2" not in linked
+    by_item = {s["source_id"]: s for s in queue["entity_suggestions"].find()}
+    assert by_item["n0"]["status"] == "dismissed"
+    assert by_item["n5"]["status"] == "linked" and by_item["n5"]["entity_id"] == EMAAR
+    assert by_item["n2"]["status"] == "open" and by_item["n2"]["in_new_names_queue"] is False
+    assert queue["entity_audit"].count_documents({"action": "link", "entity_id": EMAAR}) == 27
+    assert queries <= 25, queries  # was about 14 per item (400+ here)
+
+
+def test_bulk_link_refuses_before_writing(queue, run_counted):
+    with pytest.raises(Invalid):  # a company name cannot become a place
+        run_counted(lambda db, sources: lnk.link_new_name(db, sources, ORG, "big name co", DUBAI, "t"))
+    _queued(queue, "n3", name="Creek", field=LOC)
+    with pytest.raises(Conflict):  # switched off, not asked to switch on
+        run_counted(lambda db, sources: lnk.link_new_name(db, sources, LOC, "creek", STAGED, "t"))
+    assert queue["entity_mentions"].count_documents({"entity_id": {"$in": [DUBAI, STAGED]}, "source_id": "n3"}) == 1
+    assert queue["entity_audit"].count_documents({"action": "link"}) == 0
+
+    count, _ = run_counted(lambda db, sources: lnk.link_new_name(db, sources, LOC, "creek", STAGED, "t", activate=True))
+    assert count == 1
+    assert queue["entities"].find_one({"_id": STAGED})["status"] == "active"
+    assert queue["entity_mentions"].find_one({"source_id": "n3", "entity_id": EMAAR}) is None
+    assert queue["entity_mentions"].find_one({"source_id": "n3", "entity_id": DUBAI})["location_ids"] == \
+        sorted([UAE, DUBAI, STAGED])  # a new place link changes the item's places
+
+
+def test_link_all_is_one_bulk_step(queue, run_counted):
+    companies = [e["_id"] for e in queue["entities"].find({"kind": ORG, "status": "active"}).limit(10)]
+    queue["entity_suggestions"].insert_many([{
+        "_id": f"s{n}", "source_type": "article", "source_id": "n7", "field": ORG, "name": f"c{n}",
+        "name_norm": f"c{n}", "entity_id": eid, "status": "open"} for n, eid in enumerate(companies)])
+    result, queries = run_counted(lambda db, sources: lnk.link_all(db, sources, "article", "n7", "t"))
+    assert {l["entity_id"] for l in result["links"]} >= set(companies)
+    assert [s for s in result["suggestions"] if s["entity_id"]] == []
+    assert queries <= 20, queries  # was about 14 per suggestion

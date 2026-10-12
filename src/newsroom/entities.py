@@ -25,7 +25,7 @@ from pymongo import UpdateMany, UpdateOne
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from src.newsroom import db as ndb
-from src.newsroom.locations import refresh_items_for_places, refresh_items_locations
+from src.newsroom.locations import items_query, refresh_items_for_places, refresh_items_locations
 from src.newsroom.models import AliasCreate, EntityCreate, EntityUpdate, IgnoreCreate
 from src.newsroom.normalize import looks_like_handle, normalize_alias, raw_key
 
@@ -73,6 +73,15 @@ async def audit(db, actor: str, action: str, entity_id: Optional[str], before=No
         "before": before,
         "after": after,
     })
+
+
+async def audit_many(db, actor: str, action: str, records: List[tuple]) -> None:
+    """One audit entry per (entity_id, after) record, written in one call."""
+    if records:
+        now = _now()
+        await db[ndb.ENTITY_AUDIT].insert_many([{
+            "_id": str(uuid.uuid4()), "at": now, "actor": actor, "action": action,
+            "entity_id": entity_id, "before": None, "after": after} for entity_id, after in records])
 
 
 async def _aliases_for(db, entity_ids: List[str]) -> dict:
@@ -483,12 +492,8 @@ async def merge_entities(db, entity_id: str, into_id: str, actor: str, dry_run: 
     touched_items = {(s["source_type"], s["source_id"]) for s in touched}
     decisions = {}
     if touched_items:
-        by_type = {}
-        for source_type, source_id in touched_items:
-            by_type.setdefault(source_type, []).append(source_id)
         async for m in db[ndb.ENTITY_MENTIONS].find(
-            {"entity_id": into_id, "$or": [{"source_type": t, "source_id": {"$in": ids}} for t, ids in by_type.items()]},
-            {"source_type": 1, "source_id": 1, "status": 1},
+            {"entity_id": into_id, **items_query(touched_items)}, {"source_type": 1, "source_id": 1, "status": 1}
         ):
             decisions[(m["source_type"], m["source_id"])] = m["status"]
     if decisions:

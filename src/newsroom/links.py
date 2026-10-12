@@ -12,15 +12,16 @@ Suggestion-first entity linking.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from bson import ObjectId
-from pymongo.errors import DuplicateKeyError
+from pymongo import UpdateMany, UpdateOne
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from src.newsroom import db as ndb
 from src.newsroom import entities as ent
 from src.newsroom.entities import Conflict, Invalid, NotFound
-from src.newsroom.locations import refresh_item_locations
+from src.newsroom.locations import items_query, refresh_item_locations, refresh_items_locations
 from src.newsroom.models import EntityUpdate
 from src.newsroom import resolve as rs
 from src.newsroom.public_links import shown_url
@@ -290,6 +291,127 @@ async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, e
     return await item_entities(db, source_type, source_id)
 
 
+async def link_many(db, sources: ndb.ItemSources, requests: List[Tuple[str, str, str, str]], actor: str,
+                    activate: bool = False) -> Dict[str, list]:
+    """
+    Links many (source_type, source_id, entity_id, suggestion_id) at once with link()'s rules, in a
+    few database calls instead of about a dozen per link:
+    - an ignored, merged or missing entity, or a switched-off one without activate, refuses everything
+      before anything is written; a suggestion must be on its item and of the entity's kind
+    - a link a reviewer removed on an item stays removed (that item's chosen suggestion is dismissed)
+    - every new link is audited; chosen and other open suggestions for the entity on the item are closed
+    - items that no longer exist are left alone
+    Returns the (source_type, source_id, entity_id) keys per outcome: linked, already_linked,
+    kept_removed, missing_items.
+    """
+    for source_type, *_ in requests:
+        _check_source_type(source_type)
+    requests = list(dict.fromkeys(requests))
+    outcome = {"linked": [], "already_linked": [], "kept_removed": [], "missing_items": []}
+    if not requests:
+        return outcome
+
+    entities = {e["_id"]: e async for e in db[ndb.ENTITIES].find({"_id": {"$in": list({r[2] for r in requests})}})}
+    for entity_id in {r[2] for r in requests}:
+        entity = entities.get(entity_id)
+        if entity is None:
+            raise NotFound(f"Entity {entity_id} not found")
+        if entity["status"] == "ignored":
+            raise Invalid("This entity is set to ignored and cannot be linked")
+        if entity["status"] == "merged":
+            raise Invalid(f'"{entity["canonical_name"]}" was merged into another entity; link that one instead')
+        if entity["status"] == "staged" and not activate:
+            raise Conflict("This entity is switched off; link with activate=true to switch it on")
+
+    suggestions = {s["_id"]: s async for s in db[ndb.ENTITY_SUGGESTIONS].find(
+        {"_id": {"$in": [r[3] for r in requests if r[3]]}})}
+    for source_type, source_id, entity_id, suggestion_id in requests:
+        if not suggestion_id:
+            continue
+        suggestion = suggestions.get(suggestion_id)
+        if suggestion is None or (suggestion["source_type"], suggestion["source_id"]) != (source_type, source_id):
+            raise NotFound(f"Suggestion {suggestion_id} not found on this item")
+        if suggestion["field"] != entities[entity_id]["kind"]:
+            raise Invalid(f"A {suggestion['field']} name cannot be linked to a {entities[entity_id]['kind']}")
+
+    infos = {}
+    for source_type in {r[0] for r in requests}:
+        found = await items_info(sources, source_type, [r[1] for r in requests if r[0] == source_type])
+        infos.update({(source_type, i): info for i, info in found.items()})
+
+    for entity_id, entity in entities.items():
+        if entity["status"] == "staged":
+            await ent.update_entity(db, entity_id, EntityUpdate(status="active"), actor)
+
+    existing = {(m["source_type"], m["source_id"], m["entity_id"]): m["status"]
+                async for m in db[ndb.ENTITY_MENTIONS].find(
+                    {"entity_id": {"$in": list(entities)}, **items_query((r[0], r[1]) for r in requests)},
+                    {"source_type": 1, "source_id": 1, "entity_id": 1, "status": 1})}
+
+    now = _now()
+    upserts, audits, chosen_linked, chosen_dismissed = [], [], [], []
+    for source_type, source_id, entity_id, suggestion_id in requests:
+        key = (source_type, source_id, entity_id)
+        info = infos.get((source_type, source_id))
+        if info is None:
+            outcome["missing_items"].append(key)
+            continue
+        state = existing.get(key)
+        if state == "linked":
+            outcome["already_linked"].append(key)
+        elif state is not None:
+            outcome["kept_removed"].append(key)
+            if suggestion_id:
+                chosen_dismissed.append(suggestion_id)
+            continue
+        else:
+            outcome["linked"].append(key)
+            suggestion = suggestions.get(suggestion_id) if suggestion_id else None
+            upserts.append(UpdateOne(
+                {"entity_id": entity_id, "source_type": source_type, "source_id": source_id},
+                {"$set": {
+                    "kind": entities[entity_id]["kind"], "status": "linked", "link_source": "reviewer",
+                    "matched_alias": suggestion.get("matched_alias") if suggestion else None,
+                    "suggestion_id": suggestion_id, "title": info["title"], "snippet": info["snippet"],
+                    "url": info["url"], "timestamp": info["timestamp"], "item_status": info["item_status"],
+                    "linked_by": actor, "linked_at": now, "removed_by": None, "removed_at": None},
+                 "$setOnInsert": {"_id": str(uuid.uuid4()), "topics": [], "location_ids": []}},
+                upsert=True))
+            audits.append((entity_id, {"source_type": source_type, "source_id": source_id}))
+        if suggestion_id:
+            chosen_linked.append(suggestion_id)
+
+    if upserts:
+        try:
+            await db[ndb.ENTITY_MENTIONS].bulk_write(upserts, ordered=False)
+        except BulkWriteError as e:
+            # Linked at the same moment by another request; the result is the same.
+            if any(err.get("code") != 11000 for err in e.details.get("writeErrors", [])):
+                raise
+        await ent.audit_many(db, actor, "link", audits)
+
+    decided = {"status": "linked", "decided_at": now, "decided_by": actor}
+    if chosen_linked:
+        # A chosen name (also an unknown one from the New Names queue) now points at the entity.
+        chosen = set(chosen_linked)
+        await db[ndb.ENTITY_SUGGESTIONS].bulk_write([
+            UpdateOne({"_id": s}, {"$set": {**decided, "entity_id": e, "in_new_names_queue": False}})
+            for _, _, e, s in requests if s in chosen], ordered=False)
+    if chosen_dismissed:
+        await db[ndb.ENTITY_SUGGESTIONS].update_many(
+            {"_id": {"$in": chosen_dismissed}},
+            {"$set": {"status": "dismissed", "in_new_names_queue": False, "decided_at": now, "decided_by": actor}})
+    done = outcome["linked"] + outcome["already_linked"]
+    if done:
+        await db[ndb.ENTITY_SUGGESTIONS].bulk_write([
+            UpdateMany({"source_type": t, "source_id": i, "entity_id": e, "status": "open"}, {"$set": decided})
+            for t, i, e in done], ordered=False)
+    if outcome["linked"]:
+        # New links take the item's places (and new place links change them).
+        await refresh_items_locations(db, ((t, i) for t, i, _ in outcome["linked"]))
+    return outcome
+
+
 async def link_all(db, sources: ndb.ItemSources, source_type: str, source_id: str, actor: str) -> dict:
     """Links every open suggestion that points at a switched-on entity (the reviewer's bulk action)."""
     _check_source_type(source_type)
@@ -298,11 +420,11 @@ async def link_all(db, sources: ndb.ItemSources, source_type: str, source_id: st
          "entity_id": {"$ne": None}}, {"entity_id": 1}).to_list(length=None)
     active = {e["_id"] async for e in db[ndb.ENTITIES].find(
         {"_id": {"$in": [s["entity_id"] for s in open_ids]}, "status": "active"}, {"_id": 1})}
-    result = None
-    for s in open_ids:
-        if s["entity_id"] in active:
-            result = await link(db, sources, source_type, source_id, s["entity_id"], actor, suggestion_id=s["_id"])
-    return result or await item_entities(db, source_type, source_id)
+    outcome = await link_many(db, sources, [(source_type, source_id, s["entity_id"], s["_id"])
+                                            for s in open_ids if s["entity_id"] in active], actor)
+    if outcome["missing_items"]:
+        raise NotFound(f"{source_type} {source_id} not found")
+    return await item_entities(db, source_type, source_id)
 
 
 async def unlink(db, source_type: str, source_id: str, entity_id: str, actor: str) -> dict:
@@ -435,9 +557,15 @@ async def link_new_name(db, sources: ndb.ItemSources, field: str, name_norm: str
     ).to_list(length=None)
     if not queued:
         raise NotFound("No queued items carry that name")
-    for s in queued:
-        await link(db, sources, s["source_type"], s["source_id"], entity_id, actor, suggestion_id=s["_id"], activate=activate)
-    return len(queued)
+    outcome = await link_many(db, sources, [(s["source_type"], s["source_id"], entity_id, s["_id"]) for s in queued],
+                              actor, activate=activate)
+    if outcome["missing_items"]:
+        # Items deleted since they were queued leave the queue.
+        missing = {(t, i) for t, i, _ in outcome["missing_items"]}
+        await db[ndb.ENTITY_SUGGESTIONS].update_many(
+            {"_id": {"$in": [s["_id"] for s in queued if (s["source_type"], s["source_id"]) in missing]}},
+            {"$set": {"in_new_names_queue": False}})
+    return len(outcome["linked"]) + len(outcome["already_linked"])
 
 
 async def dismiss_new_name(db, field: str, name_norm: str, actor: str) -> int:

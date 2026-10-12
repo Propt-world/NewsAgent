@@ -19,15 +19,19 @@ BATCH_SIZE = 500
 ItemKey = Tuple[str, str]
 
 
+def items_query(items: Iterable[ItemKey]) -> dict:
+    """A filter matching these (source_type, source_id) items, one $in per type."""
+    by_type = defaultdict(list)
+    for source_type, source_id in dict.fromkeys(items):
+        by_type[source_type].append(source_id)
+    return {"$or": [{"source_type": t, "source_id": {"$in": ids}} for t, ids in by_type.items()]}
+
+
 async def _refresh_batch(db, items: List[ItemKey], paths: Dict[str, list]) -> Dict[ItemKey, list]:
     """Recomputes location_ids for up to BATCH_SIZE items. `paths` caches places' path_ids between batches."""
-    by_type = defaultdict(list)
-    for source_type, source_id in items:
-        by_type[source_type].append(source_id)
     places = defaultdict(set)
     async for mention in db[ndb.ENTITY_MENTIONS].find(
-        {"$or": [{"source_type": t, "source_id": {"$in": ids}} for t, ids in by_type.items()],
-         "status": "linked", "kind": "location"},
+        {**items_query(items), "status": "linked", "kind": "location"},
         {"source_type": 1, "source_id": 1, "entity_id": 1},
     ):
         places[(mention["source_type"], mention["source_id"])].add(mention["entity_id"])

@@ -34,6 +34,8 @@ INDEX_SPECS = [
     (ENTITIES, [("parent_id", ASCENDING)], {"name": "parent"}),
     (ENTITIES, [("path_ids", ASCENDING)], {"name": "path"}),
     (ENTITIES, [("context_slug", ASCENDING)], {"name": "context_slug", "sparse": True}),
+    # "Which companies use this country" (merge and delete checks)
+    (ENTITIES, [("country_id", ASCENDING)], {"name": "country"}),
     # An exact (non-ambiguous) alias belongs to one entity per kind; ambiguous aliases may repeat.
     (ENTITY_ALIASES, [("kind", ASCENDING), ("alias_norm", ASCENDING)],
      {"unique": True, "partialFilterExpression": {"ambiguous": False}, "name": "kind_alias_exact_unique"}),
@@ -48,6 +50,8 @@ INDEX_SPECS = [
     # The Newsroom list's place-only filter ("everything in Dubai")
     (ENTITY_MENTIONS, [("location_ids", ASCENDING), ("timestamp", DESCENDING)], {"name": "location_time"}),
     (ENTITY_MENTIONS, [("entity_id", ASCENDING), ("topics", ASCENDING), ("timestamp", DESCENDING)], {"name": "entity_topic_time"}),
+    # Backfill report and undo find the links it made
+    (ENTITY_MENTIONS, [("link_source", ASCENDING), ("status", ASCENDING)], {"name": "link_source_status"}),
     # One suggestion per item, field and name; dismissed ones stay so they are never shown again.
     (ENTITY_SUGGESTIONS, [("source_type", ASCENDING), ("source_id", ASCENDING), ("field", ASCENDING), ("name_norm", ASCENDING)],
      {"unique": True, "name": "suggestion_unique"}),
@@ -57,6 +61,8 @@ INDEX_SPECS = [
     (ENTITY_IGNORE, [("string_key", ASCENDING)], {"unique": True, "name": "ignore_unique"}),
     (ENTITY_AUDIT, [("entity_id", ASCENDING), ("at", DESCENDING)], {"name": "entity_time"}),
     (ENTITY_AUDIT, [("at", DESCENDING)], {"name": "time"}),
+    # The seed skips entities a reviewer deleted
+    (ENTITY_AUDIT, [("action", ASCENDING), ("entity_id", ASCENDING)], {"name": "action_entity"}),
     (COMPOSE_RUNS, [("created_at", DESCENDING)], {"name": "created"}),
     (COMPOSE_RUNS, [("status", ASCENDING), ("deadline_at", ASCENDING)], {"name": "status_deadline"}),
     (COMPOSE_RUNS, [("source_keys", ASCENDING), ("status", ASCENDING)], {"name": "source_keys"}),

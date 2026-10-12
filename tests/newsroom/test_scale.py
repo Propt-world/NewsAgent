@@ -158,3 +158,28 @@ def test_link_all_is_one_bulk_step(queue, run_counted):
     assert {l["entity_id"] for l in result["links"]} >= set(companies)
     assert [s for s in result["suggestions"] if s["entity_id"]] == []
     assert queries <= 20, queries  # was about 14 per suggestion
+
+
+def _index_used(explain: dict) -> set:
+    found, stack = set(), [explain]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("stage") in ("IXSCAN", "DISTINCT_SCAN", "COUNT_SCAN"):
+                found.add(node.get("indexName"))
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return found
+
+
+def test_lookups_use_their_indexes(api, sync_db):
+    plans = {
+        "country": sync_db.command("explain", {"count": "entities", "query": {"country_id": UAE}}),
+        "link_source_status": sync_db.command("explain", {"find": "entity_mentions",
+                                                          "filter": {"link_source": "backfill", "status": "linked"}}),
+        "action_entity": sync_db.command("explain", {"distinct": "entity_audit", "key": "entity_id",
+                                                     "query": {"action": "delete"}}),
+    }
+    for index, plan in plans.items():
+        assert index in _index_used(plan["queryPlanner"]), (index, plan["queryPlanner"]["winningPlan"])

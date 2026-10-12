@@ -156,20 +156,44 @@ async def list_audit(db, entity_id: str, limit: int = 50) -> List[dict]:
 
 # --- Validation ----------------------------------------------------------
 
-async def _check_alias(db, kind: str, alias: str, ambiguous: bool, entity_id: Optional[str]) -> str:
+class AliasSnapshot:
+    """One kind's aliases and the ignore list, read once, so checking thousands of names (CSV import)
+    needs no lookup per name. Same rules as _check_alias without it."""
+
+    def __init__(self, exact: dict, marked: dict, ignored: set):
+        self.exact, self.marked, self.ignored = exact, marked, ignored
+
+    @classmethod
+    async def load(cls, db, kind: str) -> "AliasSnapshot":
+        exact, marked = {}, {}
+        async for a in db[ndb.ENTITY_ALIASES].find({"kind": kind}, {"alias_norm": 1, "ambiguous": 1, "entity_id": 1}):
+            (marked if a.get("ambiguous") else exact).setdefault(a["alias_norm"], a)
+        ignored = set(await db[ndb.ENTITY_IGNORE].distinct("string_key"))
+        return cls(exact, marked, ignored)
+
+
+async def _check_alias(db, kind: str, alias: str, ambiguous: bool, entity_id: Optional[str],
+                       snapshot: Optional[AliasSnapshot] = None) -> str:
     norm = normalize_alias(alias)
     if not norm:
         raise Invalid(f"Alias '{alias}' is empty after normalising")
     if looks_like_handle(alias):
         raise Invalid(f"'{alias}' looks like a website or social handle; those are never entities")
-    if await db[ndb.ENTITY_IGNORE].find_one({"string_key": raw_key(alias)}):
+    ignored = (raw_key(alias) in snapshot.ignored) if snapshot else \
+        await db[ndb.ENTITY_IGNORE].find_one({"string_key": raw_key(alias)})
+    if ignored:
         raise Conflict(f"'{alias}' is on the ignore list")
     if entity_id and await db[ndb.ENTITY_ALIASES].find_one({"entity_id": entity_id, "alias_norm": norm}):
         raise Conflict(f"'{alias}' is already an alias of this entity")
-    exact = await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": False})
+    exact = snapshot.exact.get(norm) if snapshot else \
+        await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": False})
     if exact:
         raise Conflict(f"'{alias}' is already an exact alias of {await _entity_label(db, exact['entity_id'])}")
-    marked = None if ambiguous else await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": True})
+    if ambiguous:
+        marked = None
+    else:
+        marked = snapshot.marked.get(norm) if snapshot else \
+            await db[ndb.ENTITY_ALIASES].find_one({"kind": kind, "alias_norm": norm, "ambiguous": True})
     if marked:
         raise Conflict(f"'{alias}' is marked ambiguous on {await _entity_label(db, marked['entity_id'])}, "
                        "so it cannot be an exact alias")

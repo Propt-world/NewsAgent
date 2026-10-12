@@ -30,6 +30,8 @@ from src.newsroom.normalize import normalize_alias
 SOURCE_TYPES = ("article", "signal")
 FIELDS = ("organisation", "location")
 SNIPPET_CHARS = 300
+# Longer text is not a company or place name (and could not be linked or dismissed: requests allow 200).
+NAME_MAX_CHARS = 200
 
 
 def _now() -> datetime:
@@ -126,7 +128,7 @@ async def suggest(db, source_type: str, source_id: str, organisations: List[str]
         for name in values or []:
             name = (name or "").strip()
             norm = normalize_alias(name)
-            if not norm or (field, norm) in seen:
+            if not norm or len(name) > NAME_MAX_CHARS or (field, norm) in seen:
                 continue
             seen.add((field, norm))
             names.append((field, name, norm))

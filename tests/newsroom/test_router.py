@@ -102,3 +102,25 @@ def test_scheduler_mounts_newsroom_when_enabled():
     paths = _scheduler_newsroom_paths("true")
     assert "'/newsroom/health'" in paths
     assert "'/newsroom/entities'" in paths
+
+
+LONG_ID, LONG_NAME = "x" * 101, "n" * 201
+
+
+@pytest.mark.parametrize("method,path,kwargs", [
+    ("get", f"/newsroom/entities/{LONG_ID}", {}),
+    ("get", f"/newsroom/items/article/{LONG_ID}/entities", {}),
+    ("get", "/newsroom/items", {"params": {"location": LONG_ID}}),
+    ("get", "/newsroom/items", {"params": {"entity": "e", "status": ["processed"] * 21}}),
+    ("get", "/newsroom/items", {"params": {"entity": "e", "status": ["s" * 41]}}),
+    ("post", "/newsroom/suggest", {"json": {"source_type": "article", "source_id": "a", "organisations": [LONG_NAME]}}),
+    ("post", "/newsroom/items/changed", {"json": {"source_type": "article", "source_ids": [LONG_ID]}}),
+    ("post", "/newsroom/items/summary", {"json": {"source_type": "article", "source_ids": [LONG_ID]}}),
+    ("post", "/newsroom/new-names/link", {"json": {"field": "organisation", "name_norm": LONG_NAME, "entity_id": "e"}}),
+    ("post", "/newsroom/entities", {"json": {"kind": "organisation", "type": "developer", "canonical_name": "A",
+                                             "aliases": [LONG_NAME]}}),
+])
+def test_oversized_input_is_refused_before_any_work(api_key, method, path, kwargs):
+    """Each id, name and list has a size limit (no database is needed to refuse these)."""
+    resp = getattr(_client(True), method)(path, headers={"X-API-Key": api_key}, **kwargs)
+    assert resp.status_code == 422, resp.text

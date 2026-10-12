@@ -9,10 +9,11 @@ X-Newsroom-User is recorded in the audit log as the acting user. It is sent
 by the backoffice and is informational only (not verified) in this build.
 """
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Path, Query, Response, status
+from pydantic import StringConstraints
 
 from src.configs.settings import settings
 from src.newsroom import compose as cmp
@@ -64,6 +65,10 @@ from src.newsroom.models import (
 )
 from src.utils.security import verify_api_key
 
+# Ids in the address are short (uuids, ObjectIds, article keys); anything longer is refused.
+PathId = Annotated[str, Path(min_length=1, max_length=100)]
+StatusText = Annotated[str, StringConstraints(min_length=1, max_length=40)]
+
 router = APIRouter(
     prefix="/newsroom",
     tags=["Newsroom"],
@@ -108,7 +113,7 @@ async def list_entities(
     kind: Optional[Literal["organisation", "location"]] = None,
     entity_status: Optional[Literal["active", "staged", "ignored", "merged"]] = Query(
         None, alias="status", description="Merged duplicates are listed only with status=merged"),
-    entity_type: Optional[str] = Query(None, alias="type"),
+    entity_type: Optional[str] = Query(None, alias="type", max_length=64),
     q: Optional[str] = Query(None, max_length=200, description="Matches the name or any alias"),
     limit: int = Query(100, ge=1, le=500),
     skip: int = Query(0, ge=0),
@@ -142,12 +147,12 @@ async def import_entities(payload: CsvImportRequest, db=Depends(get_newsroom_db)
 
 
 @router.get("/entities/{entity_id}", response_model=EntityOut)
-async def get_entity(entity_id: str, db=Depends(get_newsroom_db)):
+async def get_entity(entity_id: PathId, db=Depends(get_newsroom_db)):
     return await _call(svc.get_entity(db, entity_id))
 
 
 @router.get("/entities/{entity_id}/audit", response_model=List[AuditOut], description="Most recent changes first.")
-async def get_entity_audit(entity_id: str, limit: int = Query(50, ge=1, le=200), db=Depends(get_newsroom_db)):
+async def get_entity_audit(entity_id: PathId, limit: int = Query(50, ge=1, le=200), db=Depends(get_newsroom_db)):
     return await _call(svc.list_audit(db, entity_id, limit))
 
 
@@ -159,14 +164,14 @@ async def create_entity(payload: EntityCreate, db=Depends(get_newsroom_db), acto
 
 @router.patch("/entities/{entity_id}", response_model=EntityOut,
               description="Edit name, type, status (on/off), parent, country or notes. Entities are switched off, never deleted.")
-async def update_entity(entity_id: str, payload: EntityUpdate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+async def update_entity(entity_id: PathId, payload: EntityUpdate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(svc.update_entity(db, entity_id, payload, actor))
 
 
 @router.post("/entities/{entity_id}/merge", response_model=MergeResult,
              description="Merge this duplicate into into_id: its aliases, links, suggestions and children move there. "
                          "Use dry_run to see the counts first. The duplicate stays as status 'merged'.")
-async def merge_entity(entity_id: str, payload: MergeRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+async def merge_entity(entity_id: PathId, payload: MergeRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(svc.merge_entities(db, entity_id, payload.into_id, actor, payload.dry_run))
 
 
@@ -174,18 +179,18 @@ async def merge_entity(entity_id: str, payload: MergeRequest, db=Depends(get_new
              description='Delete an entity for good (its aliases and links; never articles or signals). '
                          'Needs confirm="delete"; use dry_run to see the counts first. Refused while entries sit '
                          'inside it or companies use it as their country.')
-async def delete_entity(entity_id: str, payload: DeleteRequest, db=Depends(get_newsroom_db),
+async def delete_entity(entity_id: PathId, payload: DeleteRequest, db=Depends(get_newsroom_db),
                         actor: str = Depends(get_actor)):
     return await _call(svc.delete_entity(db, entity_id, actor, payload.confirm, payload.dry_run))
 
 
 @router.post("/entities/{entity_id}/aliases", response_model=EntityOut, status_code=status.HTTP_201_CREATED)
-async def add_alias(entity_id: str, payload: AliasCreate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+async def add_alias(entity_id: PathId, payload: AliasCreate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(svc.add_alias(db, entity_id, payload, actor))
 
 
 @router.delete("/entities/{entity_id}/aliases/{alias_id}", response_model=EntityOut)
-async def delete_alias(entity_id: str, alias_id: str, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+async def delete_alias(entity_id: PathId, alias_id: PathId, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(svc.delete_alias(db, entity_id, alias_id, actor))
 
 
@@ -202,7 +207,7 @@ async def add_ignore(payload: IgnoreCreate, db=Depends(get_newsroom_db), actor: 
 
 
 @router.delete("/ignore/{ignore_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ignore(ignore_id: str, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+async def delete_ignore(ignore_id: PathId, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     await _call(svc.delete_ignore(db, ignore_id, actor))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -219,13 +224,13 @@ async def suggest(payload: SuggestRequest, db=Depends(get_newsroom_db), actor: s
 
 @router.get("/items/{source_type}/{source_id}/entities", response_model=ItemEntitiesResponse,
             description="Linked entities and open suggestions for one article or signal.")
-async def item_entities(source_type: SourceType, source_id: str, db=Depends(get_newsroom_db)):
+async def item_entities(source_type: SourceType, source_id: PathId, db=Depends(get_newsroom_db)):
     return await _call(lnk.item_entities(db, source_type, source_id))
 
 
 @router.post("/items/{source_type}/{source_id}/links", response_model=ItemEntitiesResponse,
              description="Reviewer links an entity to the item (the only way a link is created).")
-async def link_entity(source_type: SourceType, source_id: str, payload: LinkRequest, db=Depends(get_newsroom_db),
+async def link_entity(source_type: SourceType, source_id: PathId, payload: LinkRequest, db=Depends(get_newsroom_db),
                       sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
     return await _call(lnk.link(db, sources, source_type, source_id, payload.entity_id, actor,
                                 suggestion_id=payload.suggestion_id, activate=payload.activate))
@@ -233,14 +238,14 @@ async def link_entity(source_type: SourceType, source_id: str, payload: LinkRequ
 
 @router.post("/items/{source_type}/{source_id}/links/all", response_model=ItemEntitiesResponse,
              description="Links every open suggestion that points at a switched-on entity.")
-async def link_all(source_type: SourceType, source_id: str, db=Depends(get_newsroom_db),
+async def link_all(source_type: SourceType, source_id: PathId, db=Depends(get_newsroom_db),
                    sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
     return await _call(lnk.link_all(db, sources, source_type, source_id, actor))
 
 
 @router.delete("/items/{source_type}/{source_id}/links/{entity_id}", response_model=ItemEntitiesResponse,
                description="Removes a link. It is remembered and never suggested again for this item.")
-async def unlink_entity(source_type: SourceType, source_id: str, entity_id: str, db=Depends(get_newsroom_db),
+async def unlink_entity(source_type: SourceType, source_id: PathId, entity_id: PathId, db=Depends(get_newsroom_db),
                         actor: str = Depends(get_actor)):
     return await _call(lnk.unlink(db, source_type, source_id, entity_id, actor))
 
@@ -251,8 +256,9 @@ async def unlink_entity(source_type: SourceType, source_id: str, entity_id: str,
                         "An approved article with no links shows similar approved articles instead (no AI call).")
 async def related_items(
     source_type: SourceType,
-    source_id: str,
-    location: Optional[str] = Query(None, description="Only items in this place (location entity id), e.g. Dubai"),
+    source_id: PathId,
+    location: Optional[str] = Query(None, max_length=100,
+                                    description="Only items in this place (location entity id), e.g. Dubai"),
     days: Optional[int] = Query(None, ge=1, le=3650, description="Only items from the last N days"),
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
@@ -265,8 +271,8 @@ async def related_items(
 @router.get("/entities/{entity_id}/history", response_model=HistoryResponse,
             description="An entity's confirmed articles and signals, newest first, e.g. Emaar only in Dubai.")
 async def entity_history(
-    entity_id: str,
-    location: Optional[str] = Query(None, description="Only items in this place (location entity id)"),
+    entity_id: PathId,
+    location: Optional[str] = Query(None, max_length=100, description="Only items in this place (location entity id)"),
     before: Optional[datetime] = Query(None, description="Only items before this date"),
     after: Optional[datetime] = Query(None, description="Only items after this date"),
     limit: int = Query(50, ge=1, le=200),
@@ -280,10 +286,11 @@ async def entity_history(
             description="Articles and signals linked to a company and/or in a place (a place includes its "
                         "communities), newest first: the Newsroom list's company/place filter.")
 async def filtered_items(
-    entity: Optional[str] = Query(None, description="Only items linked to this entity"),
-    location: Optional[str] = Query(None, description="Only items in this place (location entity id)"),
+    entity: Optional[str] = Query(None, max_length=100, description="Only items linked to this entity"),
+    location: Optional[str] = Query(None, max_length=100, description="Only items in this place (location entity id)"),
     source_type: Optional[SourceType] = Query(None, description="article or signal"),
-    status: Optional[List[str]] = Query(None, description="Item statuses, e.g. processed and draft for pending"),
+    status: Optional[List[StatusText]] = Query(None, max_length=20,
+                                               description="Item statuses, e.g. processed and draft for pending"),
     q: Optional[str] = Query(None, max_length=100, description="Plain text in the title"),
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
@@ -306,7 +313,7 @@ async def items_changed(payload: ItemsChangedRequest, db=Depends(get_newsroom_db
 
 
 @router.post("/suggestions/{suggestion_id}/dismiss", response_model=SuggestionOut)
-async def dismiss_suggestion(suggestion_id: str, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
+async def dismiss_suggestion(suggestion_id: PathId, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
     return await _call(lnk.dismiss(db, suggestion_id, actor))
 
 
@@ -376,13 +383,13 @@ async def list_compose_runs(limit: int = Query(20, ge=1, le=100), db=Depends(get
 
 
 @router.get("/compose/{run_id}", response_model=ComposeRunOut)
-async def get_compose_run(run_id: str, db=Depends(get_newsroom_db)):
+async def get_compose_run(run_id: PathId, db=Depends(get_newsroom_db)):
     return await _call(cmp.get_run(db, run_id))
 
 
 @router.post("/compose/{run_id}/saved", response_model=ComposeRunOut,
              description="The reviewer saved the drafted signal in social_scrapper; links the run's entities to it.")
-async def compose_signal_saved(run_id: str, payload: SignalSavedRequest, db=Depends(get_newsroom_db),
+async def compose_signal_saved(run_id: PathId, payload: SignalSavedRequest, db=Depends(get_newsroom_db),
                                sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
     return await _call(cmp.mark_signal_saved(db, sources, run_id, payload.signal_id, actor))
 
@@ -390,7 +397,7 @@ async def compose_signal_saved(run_id: str, payload: SignalSavedRequest, db=Depe
 @router.post("/compose/{run_id}/recover-saved", response_model=ComposeRunOut,
              description="After a save that stopped halfway (the signal exists in social_scrapper but the run was not "
                          "marked saved): finds the signal by its generated_from and finishes the save.")
-async def compose_signal_recover(run_id: str, db=Depends(get_newsroom_db),
+async def compose_signal_recover(run_id: PathId, db=Depends(get_newsroom_db),
                                  sources=Depends(get_item_sources), actor: str = Depends(get_actor)):
     return await _call(cmp.recover_saved_signal(db, sources, run_id, actor))
 

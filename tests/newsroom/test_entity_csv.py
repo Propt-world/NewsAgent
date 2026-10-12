@@ -4,6 +4,7 @@ import io
 
 import pytest
 
+from src.newsroom import entity_csv
 from src.newsroom.seed import SEED_DIR, apply_plan, build_plan, seed_entity_id
 
 ORG, LOC = "organisation", "location"
@@ -143,6 +144,22 @@ def test_rows_with_problems_are_reported_and_left_out(seeded, sync_db):
     assert (result["added"], result["problems"]) == (2, 10)
     added = {d["canonical_name"] for d in sync_db["entities"].find({"created_by": "tester@propt.global"})}
     assert added == {"Good Co", "Row A"}
+
+
+def test_import_checks_names_against_the_list_read_once(seeded, run_counted):
+    """Ignored and ambiguous names are caught as on the screen; 300 rows need no lookup per name."""
+    text = HEADER + "\n".join([
+        "Ignored Name Co,developer,off,waslgroup,,,,",       # on the ignore list
+        "Wasl Exact Co,developer,off,Wasl,,,,",              # marked ambiguous on Wasl, so not exact here
+        "Wasl Too Co,developer,off,,Wasl,,,",                # ambiguous names may repeat
+    ] + [f"Bulk Co {n},developer,off,Bulk Alias {n},,,," for n in range(300)]) + "\n"
+    result, queries = run_counted(lambda db, sources: entity_csv.import_csv(db, ORG, text, "t", dry_run=True))
+    outcomes = _outcomes(result)
+    assert "ignore list" in outcomes["Ignored Name Co"][1]
+    assert "marked ambiguous" in outcomes["Wasl Exact Co"][1]
+    assert outcomes["Wasl Too Co"][0] == "add"
+    assert (result["to_add"], result["problems"]) == (301, 2)
+    assert queries <= 15, queries  # was up to 4 lookups per name (about 1,800 here)
 
 
 def test_apostrophe_from_an_export_is_removed(seeded, sync_db):

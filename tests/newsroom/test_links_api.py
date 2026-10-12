@@ -70,6 +70,12 @@ def test_suggest_rules(seeded):
     assert (again["created"], again["existing"]) == (0, 7)
 
 
+def test_overlong_names_are_never_suggested(seeded, run_async):
+    # Found automatically (not through the API's limits): text this long is not a name.
+    counts = run_async(lnk.suggest, "article", ARTICLE, ["Emaar " + "x" * 200], [])
+    assert counts["created"] == 0 and _open(seeded) == {}
+
+
 def test_names_are_tried_in_the_other_list(seeded):
     # "Yas Island" given as a company/project is the place; "KEZAD" given as a place is the company.
     counts = _suggest(seeded, organisations=["Yas Island"], locations=["KEZAD", "Nowhere Town"])

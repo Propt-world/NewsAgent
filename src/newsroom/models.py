@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Dict, List, Literal, Optional
 
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -10,6 +10,10 @@ def _as_utc(value: datetime) -> datetime:
 
 
 UtcDatetime = Annotated[datetime, AfterValidator(_as_utc)]
+
+# Size limits on what a request may send: ids (uuids, ObjectIds, article keys) and company/place names.
+ItemId = Annotated[str, StringConstraints(min_length=1, max_length=100)]
+NameText = Annotated[str, StringConstraints(max_length=200)]
 
 EntityKind = Literal["organisation", "location"]
 # "merged" is set only by a merge; reviewers choose between the other three.
@@ -63,11 +67,11 @@ class EntityCreate(BaseModel):
     type: str = Field(..., min_length=1, max_length=64)
     canonical_name: str = Field(..., min_length=1, max_length=200)
     status: EditableStatus = "staged"
-    parent_id: Optional[str] = None
-    country_id: Optional[str] = None
+    parent_id: Optional[ItemId] = None
+    country_id: Optional[ItemId] = None
     notes: Optional[str] = Field(None, max_length=2000)
-    aliases: List[str] = Field(default_factory=list, max_length=50)
-    ambiguous_aliases: List[str] = Field(default_factory=list, max_length=50)
+    aliases: List[NameText] = Field(default_factory=list, max_length=50)
+    ambiguous_aliases: List[NameText] = Field(default_factory=list, max_length=50)
 
 
 class EntityUpdate(BaseModel):
@@ -75,8 +79,8 @@ class EntityUpdate(BaseModel):
     type: Optional[str] = Field(None, min_length=1, max_length=64)
     canonical_name: Optional[str] = Field(None, min_length=1, max_length=200)
     status: Optional[EditableStatus] = None
-    parent_id: Optional[str] = None
-    country_id: Optional[str] = None
+    parent_id: Optional[ItemId] = None
+    country_id: Optional[ItemId] = None
     notes: Optional[str] = Field(None, max_length=2000)
 
 
@@ -86,7 +90,7 @@ class AliasCreate(BaseModel):
 
 
 class MergeRequest(BaseModel):
-    into_id: str = Field(..., min_length=1, description="The entity that is kept")
+    into_id: ItemId = Field(..., description="The entity that is kept")
     dry_run: bool = Field(False, description="Only count what would change")
 
 
@@ -105,7 +109,7 @@ class MergeResult(BaseModel):
 
 
 class DeleteRequest(BaseModel):
-    confirm: Optional[str] = Field(None, description='Must be "delete" (any case) unless dry_run')
+    confirm: Optional[str] = Field(None, max_length=50, description='Must be "delete" (any case) unless dry_run')
     dry_run: bool = Field(False, description="Only count what would be removed")
 
 
@@ -174,8 +178,8 @@ SuggestionField = Literal["organisation", "location"]
 class SuggestRequest(BaseModel):
     source_type: SourceType
     source_id: str = Field(..., min_length=1, max_length=100)
-    organisations: List[str] = Field(default_factory=list, max_length=100)
-    locations: List[str] = Field(default_factory=list, max_length=100)
+    organisations: List[NameText] = Field(default_factory=list, max_length=100)
+    locations: List[NameText] = Field(default_factory=list, max_length=100)
 
 
 class SuggestResponse(BaseModel):
@@ -222,8 +226,8 @@ class ItemEntitiesResponse(BaseModel):
 
 
 class LinkRequest(BaseModel):
-    entity_id: str
-    suggestion_id: Optional[str] = None
+    entity_id: ItemId
+    suggestion_id: Optional[ItemId] = None
     activate: bool = Field(False, description="Required to link an entity that is switched off; it is switched on.")
 
 
@@ -244,14 +248,14 @@ class NewNameGroup(BaseModel):
 
 class NewNameLinkRequest(BaseModel):
     field: SuggestionField
-    name_norm: str
-    entity_id: str
+    name_norm: NameText
+    entity_id: ItemId
     activate: bool = False
 
 
 class NewNameDismissRequest(BaseModel):
     field: SuggestionField
-    name_norm: str
+    name_norm: NameText
 
 
 class CountResponse(BaseModel):
@@ -328,16 +332,16 @@ class SourceRef(BaseModel):
 class ComposeRequest(BaseModel):
     sources: List[SourceRef] = Field(..., min_length=2, max_length=5)
     output_type: Literal["article", "signal"]
-    exclude_entity_ids: List[str] = Field(default_factory=list, max_length=100,
-                                          description="Companies/places the reviewer removed before composing")
-    include_entity_ids: List[str] = Field(default_factory=list, max_length=20,
+    exclude_entity_ids: List[ItemId] = Field(default_factory=list, max_length=100,
+                                             description="Companies/places the reviewer removed before composing")
+    include_entity_ids: List[ItemId] = Field(default_factory=list, max_length=20,
                                           description="Switched-on companies/places the reviewer added before composing")
 
 
 class ExtractSignalRequest(BaseModel):
     article_id: str = Field(..., min_length=1, max_length=100)
-    exclude_entity_ids: List[str] = Field(default_factory=list, max_length=100)
-    include_entity_ids: List[str] = Field(default_factory=list, max_length=20)
+    exclude_entity_ids: List[ItemId] = Field(default_factory=list, max_length=100)
+    include_entity_ids: List[ItemId] = Field(default_factory=list, max_length=20)
 
 
 class SignalSavedRequest(BaseModel):
@@ -384,7 +388,7 @@ class ComposeRunList(BaseModel):
 
 class ItemsSummaryRequest(BaseModel):
     source_type: SourceType
-    source_ids: List[str] = Field(..., min_length=1, max_length=200)
+    source_ids: List[ItemId] = Field(..., min_length=1, max_length=200)
 
 
 class ItemSummary(BaseModel):
@@ -398,7 +402,7 @@ class ItemsSummaryResponse(BaseModel):
 
 class ItemsChangedRequest(BaseModel):
     source_type: SourceType
-    source_ids: List[str] = Field(..., min_length=1, max_length=500)
+    source_ids: List[ItemId] = Field(..., min_length=1, max_length=500)
 
 
 class ItemsChangedResponse(BaseModel):

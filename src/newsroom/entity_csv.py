@@ -202,7 +202,8 @@ def _parse(text: str, kind: str) -> List[_Row]:
 
 
 async def _check_row(db, row: _Row, kind: str, countries: Dict[str, str], types: Dict[str, str],
-                     in_file_exact: Dict[str, int], in_file_ambiguous: Dict[str, int]) -> None:
+                     in_file_exact: Dict[str, int], in_file_ambiguous: Dict[str, int],
+                     aliases: ent.AliasSnapshot) -> None:
     """Same checks as adding on the screen, plus clashes with other rows of the file."""
     v = row.values
     given_type = v.get("type", "").strip()
@@ -238,13 +239,13 @@ async def _check_row(db, row: _Row, kind: str, countries: Dict[str, str], types:
                 raise ent.Invalid(f"'{alias}' cannot be both an exact and an ambiguous alias")
             if in_file_exact.get(norm, row.number) != row.number or norm in in_file_ambiguous:
                 raise ent.Conflict(f"'{alias}' is also used on another row")
-            await ent._check_alias(db, kind, alias, False, None)
+            await ent._check_alias(db, kind, alias, False, None, aliases)
             in_file_exact[norm] = row.number
         for alias in payload.ambiguous_aliases:
             norm = normalize_alias(alias)
             if norm in in_file_exact:
                 raise ent.Conflict(f"'{alias}' is an exact name on another row")
-            await ent._check_alias(db, kind, alias, True, None)
+            await ent._check_alias(db, kind, alias, True, None, aliases)
             in_file_ambiguous[norm] = row.number
     except (ent.Invalid, ent.Conflict) as e:
         return row.fail(str(e))
@@ -308,6 +309,7 @@ async def import_csv(db, kind: str, text: str, actor: str, dry_run: bool = True)
             countries.setdefault(a["alias_norm"], a["entity_id"])
 
     types = {t.lower(): t for t in await allowed_types(db, kind)}
+    aliases = await ent.AliasSnapshot.load(db, kind)
     in_file_exact: Dict[str, int] = {}
     in_file_ambiguous: Dict[str, int] = {}
     first_row: Dict[str, int] = {}
@@ -324,7 +326,7 @@ async def import_csv(db, kind: str, text: str, actor: str, dry_run: bool = True)
             row.outcome, row.message = "skip", f"Same name as row {first_row[row.norm]}"
         else:
             first_row[row.norm] = row.number
-            await _check_row(db, row, kind, countries, types, in_file_exact, in_file_ambiguous)
+            await _check_row(db, row, kind, countries, types, in_file_exact, in_file_ambiguous, aliases)
 
     order = _creation_order(rows, parents)
 

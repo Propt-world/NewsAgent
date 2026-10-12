@@ -48,6 +48,7 @@ from src.newsroom.db import ensure_newsroom_indexes
 from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
 from src.newsroom.resync import nightly_repair
 from src.newsroom.router import mount_newsroom
+from src.newsroom.status import log_alerts
 from src.models.Responses import (
     GenericResponse,
     SchedulerDatabaseHealthResponse,
@@ -341,6 +342,9 @@ async def lifespan(app: FastAPI):
         # Every night the Newsroom repairs link details that missed an update (logged; never raises).
         scheduler.add_job(nightly_repair, CronTrigger(hour=3, minute=0, timezone=settings.NEWSROOM_BUDGET_TIMEZONE),
                           id="newsroom_nightly_repair", replace_existing=True)
+        # Alerts for CloudWatch: one "NEWSROOM_ALERT <code>: ..." log line per problem (never raises).
+        scheduler.add_job(log_alerts, IntervalTrigger(minutes=settings.NEWSROOM_ALERT_CHECK_MINUTES),
+                          id="newsroom_alerts", replace_existing=True)
 
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()

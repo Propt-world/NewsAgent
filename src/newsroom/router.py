@@ -21,6 +21,7 @@ from src.newsroom import entities as svc
 from src.newsroom import entity_csv
 from src.newsroom import links as lnk
 from src.newsroom import related as rel
+from src.newsroom import status as health
 from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.newsroom.models import (
     AliasCreate,
@@ -56,6 +57,7 @@ from src.newsroom.models import (
     NewNameGroup,
     NewNameLinkRequest,
     NewsroomHealthResponse,
+    NewsroomStatusResponse,
     RelatedResponse,
     SignalSavedRequest,
     SourceType,
@@ -104,6 +106,21 @@ async def newsroom_health():
         status="healthy",
         timestamp=datetime.now(timezone.utc),
     )
+
+
+@router.get(
+    "/status",
+    response_model=NewsroomStatusResponse,
+    description="Problems that need attention (for the backoffice banner): database, compose queue and worker, "
+                "waiting or failed compose jobs (last 24 h), the daily AI budget, and the real-estate filter rate. "
+                "The scheduler logs the same problems as NEWSROOM_ALERT lines for CloudWatch.",
+)
+async def newsroom_status(db=Depends(get_newsroom_db), sources=Depends(get_item_sources)):
+    client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        return await health.check_status(db, sources.articles, client)
+    finally:
+        await client.aclose()
 
 
 # --- Entities ------------------------------------------------------------

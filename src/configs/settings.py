@@ -143,6 +143,14 @@ class Settings(BaseSettings):
     # A job cut off by a worker shutdown is put back in the queue, at most this many starts in total.
     NEWSROOM_COMPOSE_MAX_ATTEMPTS: int = int(os.getenv('NEWSROOM_COMPOSE_MAX_ATTEMPTS', '3'))
     NEWSROOM_COMPOSE_QUEUE: str = os.getenv('NEWSROOM_COMPOSE_QUEUE', 'newsroom_compose_jobs')
+    # Alerts (banner in the backoffice + "NEWSROOM_ALERT <code>: ..." log lines for CloudWatch).
+    # The scheduler checks every NEWSROOM_ALERT_CHECK_MINUTES; the compose worker reports in every 30 s.
+    NEWSROOM_ALERT_CHECK_MINUTES: int = int(os.getenv('NEWSROOM_ALERT_CHECK_MINUTES', '10'))
+    NEWSROOM_ALERT_WORKER_MINUTES: int = int(os.getenv('NEWSROOM_ALERT_WORKER_MINUTES', '5'))
+    NEWSROOM_ALERT_QUEUE_MINUTES: int = int(os.getenv('NEWSROOM_ALERT_QUEUE_MINUTES', '10'))
+    NEWSROOM_ALERT_BUDGET_SHARE: float = float(os.getenv('NEWSROOM_ALERT_BUDGET_SHARE', '0.8'))
+    # Real-estate check (when on): alert when more than this share of the last 24 h's articles was filtered out
+    NEWSROOM_ALERT_FILTERED_SHARE: float = float(os.getenv('NEWSROOM_ALERT_FILTERED_SHARE', '0.5'))
 
     @property
     def newsroom_enabled(self) -> bool:

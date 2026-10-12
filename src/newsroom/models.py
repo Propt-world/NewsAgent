@@ -27,6 +27,19 @@ class NewsroomHealthResponse(BaseModel):
     timestamp: UtcDatetime
 
 
+class StatusProblem(BaseModel):
+    code: str = Field(..., examples=["no_compose_worker"])
+    level: Literal["warning", "error"]
+    message: str
+
+
+class NewsroomStatusResponse(BaseModel):
+    status: Literal["ok", "warning", "error"]
+    checked_at: UtcDatetime
+    problems: List[StatusProblem]
+    facts: Dict[str, object] = {}
+
+
 class AliasOut(BaseModel):
     id: str
     alias: str

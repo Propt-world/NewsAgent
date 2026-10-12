@@ -52,12 +52,15 @@ async def compose_loop(shutdown_requested: asyncio.Event) -> None:
     Uses its own Redis connection so the hand-back never depends on the article loop's teardown.
     """
     from src.newsroom.compose_worker import REQUEUE, run_compose_job
+    from src.newsroom.status import heartbeat_loop
 
     queue = settings.NEWSROOM_COMPOSE_QUEUE
     slots = asyncio.Semaphore(max(1, settings.NEWSROOM_COMPOSE_CONCURRENT))
     running: dict = {}  # task -> raw job
     r = redis.from_url(settings.REDIS_URL, decode_responses=True)
     print(f"--- Listening on Queue: {queue} (Newsroom compose, {settings.NEWSROOM_COMPOSE_CONCURRENT} at once) ---")
+    # Reports in every 30 s, so the backoffice and CloudWatch notice a missing compose worker.
+    heartbeat = asyncio.create_task(heartbeat_loop(r, shutdown_requested))
 
     def finished(task: asyncio.Task) -> None:
         running.pop(task, None)
@@ -99,6 +102,7 @@ async def compose_loop(shutdown_requested: asyncio.Event) -> None:
                 if held:
                     slots.release()
     finally:
+        heartbeat.cancel()
         # Shutdown (or the worker's final cancellation): hand back every compose job still running.
         for task in list(running):
             task.cancel()

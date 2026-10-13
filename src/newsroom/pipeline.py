@@ -8,7 +8,8 @@ import logging
 from typing import Any, List, Tuple
 
 from src.newsroom import links as lnk
-from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
+from src.newsroom.compose import COMPOSED_SOURCE_ID, composed_url
+from src.newsroom.desks import is_newsroom_byline
 from src.newsroom.db import get_item_sources, get_newsroom_db
 from src.scheduler.db import get_async_scheduler_collections
 
@@ -41,7 +42,8 @@ def newsroom_composed(url: str, newsroom: Any) -> bool:
         and url.startswith(COMPOSED_URL_PREFIX)
         and newsroom.get("generated_from") == url[len(COMPOSED_URL_PREFIX):]
         and newsroom.get("source_id") == COMPOSED_SOURCE_ID
-        and newsroom.get("author") == AUTHOR
+        # "Propt Newsroom", or with a desk: "Propt Newsroom · Rental Desk"
+        and is_newsroom_byline(newsroom.get("author"))
     )
 
 

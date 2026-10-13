@@ -356,7 +356,7 @@ def test_article_job_stores_and_links(scene, job, sync_db, monkeypatch):
             article.seo = seo
             return {"news_article": article, "newsroom_names": {"companies": ["Emaar"], "projects": [], "places": []}}
 
-    monkeypatch.setattr("src.newsroom.compose_graph.get_compose_graph", lambda: FakeGraph())
+    monkeypatch.setattr("src.newsroom.compose_graph.get_compose_graph", lambda desk_rules=None: FakeGraph())
 
     async def fake_webhook(payload):
         # Stands in for the scheduler's result webhook (tested separately).
@@ -784,3 +784,64 @@ def test_each_draft_is_saved_on_its_own(scene, sync_db):
     assert done["saved_drafts"]["2"]["signal_id"] == str(second)
     linked = scene.get(f"/newsroom/items/signal/{second}/entities").json()["links"]
     assert [l["entity_id"] for l in linked] == [EMAAR]  # each saved draft gets the run's links
+
+
+# --- Specialist desks (2026-10-13) ------------------------------------------------------
+
+def test_a_desk_is_optional_and_for_articles_only(scene):
+    run = scene.post("/newsroom/compose", json={
+        "sources": [{"source_type": "article", "source_id": "A1"}, {"source_type": "article", "source_id": "A2"}],
+        "output_type": "article", "desk": "rental"}).json()
+    assert run["desk"] == "rental"
+    signal = scene.post("/newsroom/compose", json={
+        "sources": [{"source_type": "article", "source_id": "A1"}, {"source_type": "signal", "source_id": scene.signal_id}],
+        "output_type": "signal", "desk": "rental"})
+    assert signal.status_code == 422 and "article only" in signal.json()["detail"]
+    assert _compose(scene, ("article", "A1"), ("signal", scene.signal_id)).json()["desk"] is None  # general writer
+    bogus = scene.post("/newsroom/compose", json={
+        "sources": [{"source_type": "article", "source_id": "A1"}, {"source_type": "article", "source_id": "A2"}],
+        "output_type": "article", "desk": "gossip"})
+    assert bogus.status_code == 422
+
+
+def test_desk_suggestion_comes_from_the_sources_topics(scene, sync_db):
+    sync_db["processed_articles"].update_one({"_id": "A1"}, {"$set": {"final_output.category": ["Rental Market Watch"]}})
+    sync_db["signals"].update_one({"_id": ObjectId(scene.signal_id)}, {"$set": {"categories": ["Rental Market Watch"]}})
+    body = scene.post("/newsroom/compose/desk-suggestion", json={"sources": [
+        {"source_type": "article", "source_id": "A1"}, {"source_type": "signal", "source_id": scene.signal_id},
+        {"source_type": "article", "source_id": "A2"}]}).json()
+    assert body == {"desk": "rental", "label": "Rental", "reason": "Rental Market Watch (2 sources)"}
+    none = scene.post("/newsroom/compose/desk-suggestion", json={"sources": [{"source_type": "article", "source_id": "A2"}]})
+    assert none.json() == {"desk": None, "label": None, "reason": None}
+
+
+def test_the_desk_shapes_research_writing_why_this_matters_and_the_byline(scene, job, sync_db, monkeypatch):
+    graphs, posted = [], {}
+
+    class FakeGraph:
+        async def ainvoke(self, state, config=None):
+            return {"news_article": ArticleModel(title="T", content=state.news_article.content,
+                                                 author=state.news_article.author)}
+
+    def fake_graph(desk_rules=None):
+        graphs.append(desk_rules)
+        return FakeGraph()
+    monkeypatch.setattr("src.newsroom.compose_graph.get_compose_graph", fake_graph)
+
+    async def fake_webhook(payload):
+        posted.update(payload)
+        sync_db["processed_articles"].insert_one({"_id": "composed-2", "url": payload["source_url"], "status": "processed",
+                                                  "source_id": "newsroom_compose", "final_output": payload["data"]})
+    monkeypatch.setattr(cw, "post_to_webhook", fake_webhook)
+
+    body = scene.post("/newsroom/compose", json={
+        "sources": [{"source_type": "article", "source_id": "A1"}, {"source_type": "article", "source_id": "A2"}],
+        "output_type": "article", "desk": "rental"}).json()
+    run, model = job(body)
+    assert run["status"] == "succeeded", run.get("error")
+    assert "SPECIALIST DESK: RENTAL" in model.prompts[0][1] and "SPECIALIST DESK: RENTAL" in model.prompts[1][1]
+    assert "SPECIALIST DESK" not in model.prompts[2][1]  # the editor checks facts as before
+    assert graphs == [cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]]  # given to "why this matters"
+    assert posted["newsroom"]["author"] == posted["data"]["author"] == "Propt Newsroom · Rental Desk"
+    assert run["result"]["author"] == "Propt Newsroom · Rental Desk"
+    assert "newsroom_desk_rental" in run["prompts"]

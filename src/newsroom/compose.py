@@ -39,11 +39,11 @@ from pymongo.errors import DuplicateKeyError
 from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
+from src.newsroom.desks import AUTHOR, DESKS, suggest_desk  # AUTHOR re-exported: used by the worker
 from src.newsroom.entities import Conflict, Invalid, NotFound
 from src.newsroom.locations import items_query
 from src.newsroom.public_links import COMPOSED_SOURCE_ID  # re-exported: used by pipeline and the worker
 
-AUTHOR = "Propt Newsroom"
 ALLOWED_SOURCE_STATUSES = {
     "article": {"processed", "approved"},           # Pending review or approved
     "signal": {"draft", "pending_review", "approved"},
@@ -122,6 +122,22 @@ def check_compose_type(output_type: str, compose_type: Optional[str], unrelated_
     if compose_type == "update":
         raise Invalid(f"An update joins reports of the same story, but these items share no company or specific "
                       f"place ({names}). Choose roundup, comparison or background.")
+
+
+async def desk_suggestion(sources: ndb.ItemSources, items: List[dict]) -> Optional[dict]:
+    """The desk the sources' topics point to (a hint for the compose window; no AI call), or None."""
+    from bson import ObjectId
+
+    topics = []
+    article_ids = [i["source_id"] for i in items if i["source_type"] == "article"]
+    if article_ids:
+        async for doc in sources.articles.find({"_id": {"$in": article_ids}}, {"final_output.category": 1}):
+            topics.append((doc.get("final_output") or {}).get("category") or [])
+    signal_ids = [ObjectId(i["source_id"]) for i in items if i["source_type"] == "signal" and ObjectId.is_valid(i["source_id"])]
+    if signal_ids:
+        async for doc in sources.signals.find({"_id": {"$in": signal_ids}}, {"categories": 1}):
+            topics.append(doc.get("categories") or [])
+    return suggest_desk(topics)
 
 
 def composed_url(run_id: str) -> str:
@@ -224,7 +240,8 @@ async def _source_entities(db, keys: List[tuple], exclude: List[str], include: O
 
 async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_type: str,
                      items: List[dict], actor: str, exclude_entity_ids: Optional[List[str]] = None,
-                     include_entity_ids: Optional[List[str]] = None, compose_type: Optional[str] = None) -> dict:
+                     include_entity_ids: Optional[List[str]] = None, compose_type: Optional[str] = None,
+                     desk: Optional[str] = None) -> dict:
     """Checks and records a compose request, then queues it for the worker."""
     keys = list(dict.fromkeys((i["source_type"], i["source_id"]) for i in items))
     if kind == "compose" and not (MIN_SOURCES <= len(keys) <= MAX_SOURCES):
@@ -247,6 +264,10 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
                                                        if (d["source_type"], d["source_id"]) in unrelated])
     elif compose_type:
         raise Invalid("A type can be chosen when composing an article only")
+    if desk and not (kind == "compose" and output_type == "article"):
+        raise Invalid("A desk can be chosen when composing an article only")
+    if desk and desk not in DESKS:
+        raise Invalid(f"Unknown desk '{desk}'")
 
     await reap_stale_runs(db)
     source_keys = sorted(f"{t}:{i}" for t, i in keys)
@@ -254,7 +275,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
 
     async with _create_lock(db):
         run = await _check_and_record(db, kind, output_type, source_keys, source_docs, entity_ids, actor,
-                                      exclude_entity_ids, include_entity_ids, compose_type)
+                                      exclude_entity_ids, include_entity_ids, compose_type, desk)
     try:
         await redis.rpush(settings.NEWSROOM_COMPOSE_QUEUE, json.dumps({"run_id": run["_id"]}))
     except Exception as e:
@@ -265,7 +286,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
 
 
 async def _check_and_record(db, kind, output_type, source_keys, source_docs, entity_ids, actor,
-                            exclude_entity_ids, include_entity_ids, compose_type=None) -> dict:
+                            exclude_entity_ids, include_entity_ids, compose_type=None, desk=None) -> dict:
     """The limits, then the new run. Called under _create_lock."""
     running = await db[ndb.COMPOSE_RUNS].find_one(
         {"source_keys": source_keys, "kind": kind, "output_type": output_type, "status": {"$in": ACTIVE_STATUSES}})
@@ -287,6 +308,7 @@ async def _check_and_record(db, kind, output_type, source_keys, source_docs, ent
         "kind": kind,
         "output_type": output_type,
         "compose_type": compose_type,
+        "desk": desk,
         "status": "queued",
         "sources": source_docs,
         "source_keys": source_keys,

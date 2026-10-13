@@ -346,16 +346,31 @@ class SourceRef(BaseModel):
 ComposeType = Literal["roundup", "comparison", "update", "background"]
 
 
+# Optional specialist desks for articles (desks.py); no desk = the general writer.
+Desk = Literal["sales", "rental", "finance", "market", "policy", "projects", "commercial", "luxury", "communities"]
+
+
 class ComposeRequest(BaseModel):
     sources: List[SourceRef] = Field(..., min_length=2, max_length=5)
     output_type: Literal["article", "signal"]
     compose_type: Optional[ComposeType] = Field(
         None, description="Articles only. Leave empty for a regular article; required when the sources share "
                           "no company or specific place (then update is not allowed).")
+    desk: Optional[Desk] = Field(None, description="Articles only. A specialist desk; empty = the general writer.")
     exclude_entity_ids: List[ItemId] = Field(default_factory=list, max_length=100,
                                              description="Companies/places the reviewer removed before composing")
     include_entity_ids: List[ItemId] = Field(default_factory=list, max_length=20,
                                           description="Switched-on companies/places the reviewer added before composing")
+
+
+class DeskSuggestionRequest(BaseModel):
+    sources: List[SourceRef] = Field(..., min_length=1, max_length=5)
+
+
+class DeskSuggestion(BaseModel):
+    desk: Optional[Desk] = None
+    label: Optional[str] = None
+    reason: Optional[str] = Field(None, description="The topics behind the suggestion")
 
 
 class ExtractSignalRequest(BaseModel):
@@ -383,6 +398,7 @@ class ComposeRunOut(BaseModel):
     output_type: Literal["article", "signal"]
     status: Literal["queued", "running", "succeeded", "not_a_signal", "failed"]
     compose_type: Optional[ComposeType] = None
+    desk: Optional[Desk] = None
     sources: List[ComposeSourceOut]
     entity_ids: List[str] = []
     excluded_entity_ids: List[str] = []

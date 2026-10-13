@@ -8,9 +8,11 @@ followed as instructions.
 
 Compose types (optional, articles only): with no type the regular prompts are used
 unchanged; with a type, its rules (newsroom_type_<type>) are added to the researcher
-and writer prompts.
+and writer prompts. Specialist desks (optional, articles only) work the same way
+(newsroom_desk_<desk>, see desks.py) and also shape the article's "why this matters".
 """
 
+from src.newsroom.desks import DESKS, desk_prompt
 from src.newsroom.signal_options import SIGNAL_FIELD_RULES
 
 SOURCE_RULES = """SOURCE RULES:
@@ -170,6 +172,16 @@ NEWSROOM_PROMPTS += [
         "content": content,
     }
     for name, content in COMPOSE_TYPE_PROMPTS.items()
+]
+
+NEWSROOM_PROMPTS += [
+    {
+        "name": f"newsroom_desk_{key}",
+        "description": f"Newsroom compose: rules added for the {d['label']} desk (optional, chosen by the reviewer).",
+        "input_variables": [],
+        "content": desk_prompt(key),
+    }
+    for key, d in DESKS.items()
 ]
 
 PROMPTS_BY_NAME = {p["name"]: p for p in NEWSROOM_PROMPTS}

@@ -50,6 +50,8 @@ from src.newsroom.models import (
     ItemsSummaryResponse,
     LinkRequest,
     DeleteRequest,
+    DeskSuggestion,
+    DeskSuggestionRequest,
     DeleteResult,
     MergeRequest,
     MergeResult,
@@ -383,7 +385,15 @@ async def compose(payload: ComposeRequest, db=Depends(get_newsroom_db), sources=
     return await _call(cmp.create_run(
         db, sources, redis, kind="compose", output_type=payload.output_type,
         items=[s.model_dump() for s in payload.sources], actor=actor, exclude_entity_ids=payload.exclude_entity_ids,
-        include_entity_ids=payload.include_entity_ids, compose_type=payload.compose_type))
+        include_entity_ids=payload.include_entity_ids, compose_type=payload.compose_type, desk=payload.desk))
+
+
+@router.post("/compose/desk-suggestion", response_model=DeskSuggestion,
+             description="The specialist desk the sources' topics point to, as a hint for the compose window "
+                         "(no AI call). Empty when no desk fits.")
+async def compose_desk_suggestion(payload: DeskSuggestionRequest, sources=Depends(get_item_sources)):
+    found = await cmp.desk_suggestion(sources, [s.model_dump() for s in payload.sources])
+    return found or {}
 
 
 @router.post("/extract-signal", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,

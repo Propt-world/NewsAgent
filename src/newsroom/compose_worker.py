@@ -31,6 +31,7 @@ from src.newsroom import compose as cmp
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
+from src.newsroom.desks import byline
 from src.newsroom.prompts import PROMPTS_BY_NAME
 from src.newsroom.public_links import shown_url
 from src.newsroom.signal_options import GCC_REGIONS, REAL_ESTATE_CATEGORIES, SIGNAL_ANGLES, SIGNAL_CATEGORIES
@@ -224,24 +225,26 @@ async def post_to_webhook(payload: dict) -> None:
 
 
 async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dict],
-                               tracer=None) -> Tuple[ArticleModel, Optional[dict]]:
-    """The normal article steps from the summary onwards (compose_graph)."""
+                               tracer=None, author: str = AUTHOR,
+                               desk_rules: Optional[str] = None) -> Tuple[ArticleModel, Optional[dict]]:
+    """The normal article steps from the summary onwards (compose_graph). desk_rules: the chosen desk's
+    rules, also given to the "why this matters" step."""
     from src.newsroom.compose_graph import get_compose_graph
 
     state = MainWorkflowState(
         source_url=composed_url(run_id),
         cleaned_article_text=draft.content,
-        news_article=ArticleModel(title=draft.title, content=draft.content, author=AUTHOR,
+        news_article=ArticleModel(title=draft.title, content=draft.content, author=author,
                                   published_date=_now().isoformat()),
         # The chosen sources replace the web search for "other sources" (used for "why this matters").
         other_sources=[{"title": t["title"], "url": t["url"], "source": "Newsroom source", "content": t["text"]}
                        for t in texts if t["url"]],
     )
-    final = await get_compose_graph().ainvoke(state, config=_config(tracer))
+    final = await get_compose_graph(desk_rules).ainvoke(state, config=_config(tracer))
     if final.get("error_message"):
         raise RuntimeError(final["error_message"])
     article: ArticleModel = final["news_article"]
-    article.author = AUTHOR
+    article.author = author
     if article.seo and isinstance(article.seo.json_ld_schema, dict):
         # The internal newsroom:// address must never appear in published page data.
         page = article.seo.json_ld_schema.get("mainEntityOfPage")
@@ -359,14 +362,16 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     else:
         names = ["newsroom_researcher", "newsroom_writer_article", "newsroom_editor"]
     type_prompt = f"newsroom_type_{run['compose_type']}" if run.get("compose_type") else None
-    prompts = await load_prompts(names + ([type_prompt] if type_prompt else []))
+    desk_prompt = f"newsroom_desk_{run['desk']}" if run.get("desk") else None
+    extra = [p for p in (type_prompt, desk_prompt) if p]
+    prompts = await load_prompts(names + extra)
     update["prompts"] = {n: hashlib.sha256(p.encode()).hexdigest()[:12] for n, p in prompts.items()}
-    if type_prompt:
-        # The chosen type's rules go to the researcher (which facts and angle) and the writer.
+    for name in extra:
+        # The chosen type's and desk's rules go to the researcher (which facts and angle) and the writer.
         # Escaped so the rules are never read as template inputs.
-        rules = "\n\n" + prompts[type_prompt].replace("{", "{{").replace("}", "}}")
-        for name in ("newsroom_researcher", "newsroom_writer_article"):
-            prompts[name] += rules
+        rules = "\n\n" + prompts[name].replace("{", "{{").replace("}", "}}")
+        for target in ("newsroom_researcher", "newsroom_writer_article"):
+            prompts[target] += rules
 
     texts = await load_source_texts(sources, run)
     source_block = format_sources(texts)
@@ -398,13 +403,16 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     draft = await paid(ask(writer, prompts["newsroom_writer_article"], {"research": notes, "sources": source_block}, ArticleDraft, tracer))
     edited = await edit(draft)
 
-    article, newsroom_names = await paid(run_article_pipeline(run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer))
+    author = byline(run.get("desk"))
+    article, newsroom_names = await paid(run_article_pipeline(
+        run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer, author=author,
+        desk_rules=prompts[desk_prompt] if desk_prompt else None))
     url = composed_url(run["_id"])
     payload = {
         "source_url": url,
         "status": "success",
         "data": article.model_dump(mode="json"),
-        "newsroom": {"generated_from": run["_id"], "author": AUTHOR, "source_id": COMPOSED_SOURCE_ID},
+        "newsroom": {"generated_from": run["_id"], "author": author, "source_id": COMPOSED_SOURCE_ID},
     }
     if newsroom_names:
         payload["newsroom_names"] = newsroom_names
@@ -419,4 +427,4 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
             await lnk.link(db, sources, "article", stored["_id"], entity_id, run["requested_by"], link_source="compose")
         except Exception as e:
             logger.warning(f"[NEWSROOM] Could not link {entity_id} to composed article: {e}")
-    return {"article_id": stored["_id"], "title": article.title, "editor_changes": edited.changes, "author": AUTHOR}, "succeeded"
+    return {"article_id": stored["_id"], "title": article.title, "editor_changes": edited.changes, "author": author}, "succeeded"

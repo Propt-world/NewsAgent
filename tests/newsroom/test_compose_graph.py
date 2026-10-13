@@ -44,6 +44,7 @@ class FakeLLM:
 
     def __init__(self):
         self.calls = []
+        self.messages = {}  # the messages each step was given
 
     async def ainvoke(self, messages):  # the summary step (plain text)
         self.calls.append("summary")
@@ -55,6 +56,7 @@ class FakeLLM:
         class Structured:
             async def ainvoke(self, messages):
                 llm.calls.append(schema.__name__)
+                llm.messages[schema.__name__] = messages
                 return ANSWERS[schema.__name__]
         return Structured()
 
@@ -69,14 +71,14 @@ def pipeline(mongo_url, db_name, sync_db, monkeypatch):
         monkeypatch.setattr(settings, key, value)
     monkeypatch.setattr(config_node, "_async_config_client", None)
 
-    def run():
+    def run(**kwargs):
         draft = cw.ArticleDraft(title="[TEST] Editor title", content="[TEST] Paragraph one.\n\n[TEST] Paragraph two.")
         texts = [{"title": "Source A", "url": "https://example.com/a", "text": "Emaar launched a tower."},
                  {"title": "Source B", "url": "https://example.com/b", "text": "DAMAC launched villas."}]
 
         async def go():
             try:
-                return await cw.run_article_pipeline("run-1", draft, texts)
+                return await cw.run_article_pipeline("run-1", draft, texts, **kwargs)
             finally:
                 await config_node.close_async_config_client()
         return asyncio.run(go())
@@ -105,3 +107,18 @@ def test_composed_article_gets_categories_like_any_article(pipeline):
     assert article.title_ar and article.content_ar and article.reading_time
     assert names == {"companies": ["Emaar"], "projects": [], "places": ["Dubai"]}
     assert "@id" not in (article.seo.json_ld_schema.get("mainEntityOfPage") or {})
+
+
+def test_a_desk_gives_why_this_matters_its_readers(pipeline):
+    rules = cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
+    article, _ = pipeline(author="Propt Newsroom · Rental Desk", desk_rules=rules)
+    system = dict(pipeline.fake.messages["WhyThisMattersLLMOutput"])["system"]
+    assert rules in system and 'Write "why this matters" for these readers.' in system
+    assert article.author == "Propt Newsroom · Rental Desk"
+    # Other steps are not given the desk
+    assert "SPECIALIST DESK" not in str(pipeline.fake.messages["SeoLLMOutput"])
+
+
+def test_without_a_desk_why_this_matters_is_unchanged(pipeline):
+    pipeline()
+    assert "SPECIALIST DESK" not in str(pipeline.fake.messages["WhyThisMattersLLMOutput"])

@@ -1,7 +1,7 @@
 """Specialist desks for composed articles (no database needed)."""
 from src.newsroom import desks
 from src.newsroom.pipeline import newsroom_composed
-from src.newsroom.prompts import PROMPTS_BY_NAME
+from src.newsroom.prompts import EDITOR_RULES, NEWSROOM_RULES, PROMPTS_BY_NAME
 from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
 
 
@@ -21,10 +21,16 @@ def test_every_desk_has_a_registry_prompt_without_template_inputs():
         for part in ("READERS:", "VOICE:", "LOOK FOR:", "ALWAYS CHECK", "LEAD:", "BODY ORDER:", "NEVER:",
                      "TERMS (approved meanings):", "WHY THIS MATTERS:", "STYLE EXAMPLE:"):
             assert part in content, (key, part)
-        assert content.endswith(desks.DESK_RULES)
-    for rule in ("Never give investment, legal or financial advice", "Do not calculate new figures",
-                 "Never imply firsthand visits", "STAGE RESPONSIBILITIES"):
-        assert rule in desks.DESK_RULES
+        assert content.endswith(desks.DESK_RULES) and "STAGE RESPONSIBILITIES" in content
+        assert "NEWSROOM RULES" not in content  # every composed article gets those already; not repeated
+
+
+def test_every_composed_article_follows_the_newsroom_rules():
+    for rule in ("Never give investment, legal or financial advice", "Separate established facts from claims",
+                 "Avoid promotional language", "Do not calculate new figures", "Never imply firsthand visits"):
+        assert rule in NEWSROOM_RULES
+    assert NEWSROOM_RULES in PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
+    assert EDITOR_RULES.endswith(NEWSROOM_RULES) and "list each fix" in EDITOR_RULES
 
 
 def test_every_composed_article_follows_the_news_structure():

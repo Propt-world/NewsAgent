@@ -356,7 +356,7 @@ def test_article_job_stores_and_links(scene, job, sync_db, monkeypatch):
             article.seo = seo
             return {"news_article": article, "newsroom_names": {"companies": ["Emaar"], "projects": [], "places": []}}
 
-    monkeypatch.setattr("src.newsroom.compose_graph.get_compose_graph", lambda desk_rules=None: FakeGraph())
+    monkeypatch.setattr("src.newsroom.compose_graph.get_compose_graph", lambda wtm_rules=None: FakeGraph())
 
     async def fake_webhook(payload):
         # Stands in for the scheduler's result webhook (tested separately).
@@ -730,6 +730,9 @@ def test_the_chosen_type_s_rules_go_to_the_researcher_and_writer(scene, job, mon
 
     run, model = job(_compose(scene, ("article", "A2"), ("article", "A1")).json())
     assert all("ARTICLE TYPE" not in text for _, text in model.prompts)  # no type: the regular prompts
+    # No desk: no desk voice anywhere, but the researcher and editor still follow the newsroom rules
+    assert all("SPECIALIST DESK" not in text for _, text in model.prompts)
+    assert "NEWSROOM RULES" in model.prompts[0][1] and "EDITORIAL RULES" in model.prompts[2][1]
     assert "newsroom_type_comparison" not in run["prompts"]
 
 
@@ -823,8 +826,8 @@ def test_the_desk_shapes_research_writing_why_this_matters_and_the_byline(scene,
             return {"news_article": ArticleModel(title="T", content=state.news_article.content,
                                                  author=state.news_article.author)}
 
-    def fake_graph(desk_rules=None):
-        graphs.append(desk_rules)
+    def fake_graph(wtm_rules=None):
+        graphs.append(wtm_rules)
         return FakeGraph()
     monkeypatch.setattr("src.newsroom.compose_graph.get_compose_graph", fake_graph)
 
@@ -840,8 +843,13 @@ def test_the_desk_shapes_research_writing_why_this_matters_and_the_byline(scene,
     run, model = job(body)
     assert run["status"] == "succeeded", run.get("error")
     assert "SPECIALIST DESK: RENTAL" in model.prompts[0][1] and "SPECIALIST DESK: RENTAL" in model.prompts[1][1]
-    assert "SPECIALIST DESK" not in model.prompts[2][1]  # the editor checks facts as before
-    assert graphs == [cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]]  # given to "why this matters"
+    editor = model.prompts[2][1]
+    assert "SPECIALIST DESK" not in editor  # the editor does not get the desk's voice...
+    assert "EDITORIAL RULES" in editor and "Never give investment, legal or financial advice" in editor  # ...but the rules
+    assert "STAGE RESPONSIBILITIES" not in editor
+    # "why this matters": the newsroom rules, then the desk's rules for its readers
+    desk = cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
+    assert graphs == [f'{cw.NEWSROOM_RULES}\n\n{desk}\nWrite "why this matters" for these readers.']
     assert posted["newsroom"]["author"] == posted["data"]["author"] == "Propt Newsroom · Rental Desk"
     assert run["result"]["author"] == "Propt Newsroom · Rental Desk"
     assert "newsroom_desk_rental" in run["prompts"]

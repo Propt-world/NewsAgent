@@ -11,21 +11,13 @@ from typing import Dict, Iterable, List, Optional
 
 AUTHOR = "Propt Newsroom"
 
-# Added to every desk (revision 3 of the desk prompts, user-approved 2026-10-15). The article structure
-# (inverted pyramid, the lead as the hook) is in the general writer prompt, so every composed article has it.
-DESK_RULES = """RULES FOR EVERY DESK
-- Never give investment, legal or financial advice. Never tell readers to buy, sell, rent or wait.
-- Separate established facts from claims, opinions and forecasts made by developers, brokers, companies, analysts and other interested parties. Attribute such claims and present forecasts as expectations, not outcomes. Never invent quotations or present a paraphrase as a direct quotation.
-- Avoid promotional language and superlatives, even when the sources use them. Include such wording only when it is editorially relevant, attribute it, and never adopt it as the newsroom's own assessment.
-- No predictions or opinions of your own. Do not fill gaps with general knowledge, typical figures or estimates. If the sources do not say it, leave it out.
-- Do not calculate new figures (for example price per square foot, yearly rent differences, yields, returns or percentage changes). Report figures exactly as the sources give them, with their period, area and basis.
-- Use a term only when it is relevant to the story and fits its jurisdiction (the emirate, Saudi Arabia or another GCC country) and property type. Explain a term briefly only with the meaning given in the sources or in this desk's term list, and add no other facts while explaining it.
-- Write in the third person; never "I" or "we". Never imply firsthand visits, inspections or experience.
-
-STAGE RESPONSIBILITIES
+# Added to every desk prompt (revision 3 of the desk prompts, user-approved 2026-10-15). The rules every composed
+# article follows (NEWSROOM_RULES) and the article structure are in prompts.py, given to every composed article.
+STAGE_RESPONSIBILITIES = """STAGE RESPONSIBILITIES
 - Researcher: collect the facts, figures, dates and attributions this desk needs from the sources. Keep the distinctions this desk asks for, and flag missing or conflicting information instead of filling gaps.
 - Writer: write from the research in this desk's voice and structure. Add no missing details, and never present a claim by an interested party as established fact.
 - Why this matters: explain the significance of what was reported using only the established facts and the sources. Add no new facts, predictions, unsupported causes, advice, or conclusions beyond the evidence."""
+DESK_RULES = STAGE_RESPONSIBILITIES
 
 # key -> label, readers (shown in the compose window), the article topics (REAL_ESTATE_CATEGORIES) that suggest
 # it, and the desk's own prompt (revision 3)

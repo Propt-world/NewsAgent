@@ -109,16 +109,16 @@ def test_composed_article_gets_categories_like_any_article(pipeline):
     assert "@id" not in (article.seo.json_ld_schema.get("mainEntityOfPage") or {})
 
 
-def test_a_desk_gives_why_this_matters_its_readers(pipeline):
-    rules = cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
-    article, _ = pipeline(author="Propt Newsroom · Rental Desk", desk_rules=rules)
+def test_why_this_matters_gets_the_rules_it_is_given(pipeline):
+    rules = cw.NEWSROOM_RULES + "\n\n" + cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
+    article, _ = pipeline(author="Propt Newsroom · Rental Desk", wtm_rules=rules)
     system = dict(pipeline.fake.messages["WhyThisMattersLLMOutput"])["system"]
-    assert rules in system and 'Write "why this matters" for these readers.' in system
+    assert system.endswith(rules)
     assert article.author == "Propt Newsroom · Rental Desk"
     # Other steps are not given the desk
     assert "SPECIALIST DESK" not in str(pipeline.fake.messages["SeoLLMOutput"])
 
 
-def test_without_a_desk_why_this_matters_is_unchanged(pipeline):
+def test_without_rules_why_this_matters_is_unchanged(pipeline):
     pipeline()
-    assert "SPECIALIST DESK" not in str(pipeline.fake.messages["WhyThisMattersLLMOutput"])
+    assert "NEWSROOM RULES" not in str(pipeline.fake.messages["WhyThisMattersLLMOutput"])

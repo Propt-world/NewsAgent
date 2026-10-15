@@ -21,6 +21,23 @@ SOURCE_RULES = """SOURCE RULES:
 - Use only facts, names and numbers that appear in the sources. Never invent or estimate figures, dates,
   quotes or names. If the sources disagree, say so or leave the point out."""
 
+# The rules every composed article follows, with or without a desk (desk prompts revision 3, extended to all
+# composed articles on 2026-10-16). In the writer's prompt; the worker adds them for the researcher, the editor
+# (EDITOR_RULES) and "why this matters" of composed articles.
+NEWSROOM_RULES = """NEWSROOM RULES (every composed article)
+- Never give investment, legal or financial advice. Never tell readers to buy, sell, rent or wait.
+- Separate established facts from claims, opinions and forecasts made by developers, brokers, companies, analysts and other interested parties. Attribute such claims and present forecasts as expectations, not outcomes. Never invent quotations or present a paraphrase as a direct quotation.
+- Avoid promotional language and superlatives, even when the sources use them. Include such wording only when it is editorially relevant, attribute it, and never adopt it as the newsroom's own assessment.
+- No predictions or opinions of your own. Do not fill gaps with general knowledge, typical figures or estimates. If the sources do not say it, leave it out.
+- Do not calculate new figures (for example price per square foot, yearly rent differences, yields, returns or percentage changes). Report figures exactly as the sources give them, with their period, area and basis.
+- Use a term only when it is relevant to the story and fits its jurisdiction (the emirate, Saudi Arabia or another GCC country) and property type. Explain a term briefly only with the meaning given in the sources (or, when a desk is chosen, in its term list), and add no other facts while explaining it.
+- Write in the third person; never "I" or "we". Never imply firsthand visits, inspections or experience."""
+
+EDITOR_RULES = f"""EDITORIAL RULES
+Also check the draft against these rules. Fix anything that breaks them (for example remove promotional wording, attribute claims to whoever made them, remove figures the sources do not give) and list each fix in "changes".
+
+{NEWSROOM_RULES}"""
+
 # How every composed article is built (all articles, with or without a desk): the inverted pyramid,
 # with the lead's first sentence as the hook (user's news-writing guidance, 2026-10-15).
 ARTICLE_STRUCTURE = """ARTICLE STRUCTURE (inverted pyramid: the most important information first)
@@ -32,7 +49,7 @@ ARTICLE_STRUCTURE = """ARTICLE STRUCTURE (inverted pyramid: the most important i
 - Ending: a next step (a date, phase, launch or decision) or a relevant closing quote, when a source gives one; otherwise the last relevant confirmed fact. Never a summary, moral or wrap-up line such as "Overall", "In conclusion" or "This highlights"."""
 
 WRITING_RULES = """WRITING RULES
-- Objective: third person only; no opinions, emotions or bias of your own; never "I" or "we".
+- Objective: no opinions, emotions or bias of your own (see the newsroom rules).
 - Simple, clear language; avoid jargon. Explain a necessary technical or legal term at its first use, using only what the sources say.
 - 6-10 paragraphs of 1-3 sentences each, plain prose. No markdown, no bullet points, no headings inside the body.
 - Write in your own words; do not copy sentences from the sources (attributed direct quotes excepted).
@@ -73,6 +90,8 @@ Write an ORIGINAL news article in English that combines the sources into one pie
 It is published as "Propt Newsroom".
 
 {SOURCE_RULES}
+
+{NEWSROOM_RULES}
 
 {ARTICLE_STRUCTURE}
 

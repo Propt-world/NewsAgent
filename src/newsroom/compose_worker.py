@@ -32,7 +32,7 @@ from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.desks import byline
-from src.newsroom.prompts import PROMPTS_BY_NAME
+from src.newsroom.prompts import EDITOR_RULES, NEWSROOM_RULES, PROMPTS_BY_NAME
 from src.newsroom.public_links import shown_url
 from src.newsroom.signal_options import GCC_REGIONS, REAL_ESTATE_CATEGORIES, SIGNAL_ANGLES, SIGNAL_CATEGORIES
 
@@ -103,6 +103,11 @@ def get_compose_model(temperature: float) -> ChatOpenAI:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _escaped(rules: str) -> str:
+    """Rules added to a prompt template are never read as template inputs."""
+    return rules.replace("{", "{{").replace("}", "}}")
 
 
 def _clean(text: str) -> str:
@@ -226,9 +231,9 @@ async def post_to_webhook(payload: dict) -> None:
 
 async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dict],
                                tracer=None, author: str = AUTHOR,
-                               desk_rules: Optional[str] = None) -> Tuple[ArticleModel, Optional[dict]]:
-    """The normal article steps from the summary onwards (compose_graph). desk_rules: the chosen desk's
-    rules, also given to the "why this matters" step."""
+                               wtm_rules: Optional[str] = None) -> Tuple[ArticleModel, Optional[dict]]:
+    """The normal article steps from the summary onwards (compose_graph). wtm_rules: added to this
+    article's "why this matters" prompt (the newsroom rules, and the chosen desk's rules)."""
     from src.newsroom.compose_graph import get_compose_graph
 
     state = MainWorkflowState(
@@ -240,7 +245,7 @@ async def run_article_pipeline(run_id: str, draft: ArticleDraft, texts: List[dic
         other_sources=[{"title": t["title"], "url": t["url"], "source": "Newsroom source", "content": t["text"]}
                        for t in texts if t["url"]],
     )
-    final = await get_compose_graph(desk_rules).ainvoke(state, config=_config(tracer))
+    final = await get_compose_graph(wtm_rules).ainvoke(state, config=_config(tracer))
     if final.get("error_message"):
         raise RuntimeError(final["error_message"])
     article: ArticleModel = final["news_article"]
@@ -369,9 +374,14 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     for name in extra:
         # The chosen type's and desk's rules go to the researcher (which facts and angle) and the writer.
         # Escaped so the rules are never read as template inputs.
-        rules = "\n\n" + prompts[name].replace("{", "{{").replace("}", "}}")
+        rules = "\n\n" + _escaped(prompts[name])
         for target in ("newsroom_researcher", "newsroom_writer_article"):
             prompts[target] += rules
+    if output_type == "article":
+        # Every composed article: the researcher and the editor follow the newsroom rules too (the writer's
+        # prompt has them). The editor never gets a desk's voice.
+        prompts["newsroom_researcher"] += "\n\n" + _escaped(NEWSROOM_RULES)
+        prompts["newsroom_editor"] += "\n\n" + _escaped(EDITOR_RULES)
 
     texts = await load_source_texts(sources, run)
     source_block = format_sources(texts)
@@ -406,7 +416,8 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     author = byline(run.get("desk"))
     article, newsroom_names = await paid(run_article_pipeline(
         run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer, author=author,
-        desk_rules=prompts[desk_prompt] if desk_prompt else None))
+        wtm_rules=NEWSROOM_RULES + (f"\n\n{prompts[desk_prompt]}\nWrite \"why this matters\" for these readers."
+                                    if desk_prompt else "")))
     url = composed_url(run["_id"])
     payload = {
         "source_url": url,

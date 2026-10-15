@@ -5,8 +5,8 @@ for other sources are skipped (the chosen sources are used instead), and the
 result is stored by compose_worker through the webhook rather than notify_webhook.
 The existing graph (src/graph/graph.py) is not changed.
 
-With a specialist desk, one extra step adds the desk's rules to the "why this matters"
-prompt, for this composed article only (normal articles never pass through here).
+One extra step adds the newsroom rules (and a chosen desk's rules) to the "why this
+matters" prompt, for this composed article only (normal articles never pass through here).
 """
 from functools import lru_cache
 from typing import Optional
@@ -28,22 +28,22 @@ from src.graph.nodes.validate_summary import validate_summary
 from src.models.MainWorkflowState import MainWorkflowState
 
 
-def _desk_step(desk_rules: str):
-    async def apply_desk(state: MainWorkflowState) -> MainWorkflowState:
+def _rules_step(wtm_rules: str):
+    async def apply_rules(state: MainWorkflowState) -> MainWorkflowState:
         prompts = state.active_prompts
         if prompts is None or not prompts.content_enrichment_system:
             return state
-        system = f"{prompts.content_enrichment_system}\n\n{desk_rules}\nWrite \"why this matters\" for these readers."
+        system = f"{prompts.content_enrichment_system}\n\n{wtm_rules}"
         return state.model_copy(update={"active_prompts": prompts.model_copy(update={"content_enrichment_system": system})})
-    return apply_desk
+    return apply_rules
 
 
 @lru_cache(maxsize=16)
-def get_compose_graph(desk_rules: Optional[str] = None):
+def get_compose_graph(wtm_rules: Optional[str] = None):
     builder = StateGraph(MainWorkflowState)
     builder.add_node("load_agent_configuration", load_agent_configuration)
-    if desk_rules:
-        builder.add_node("apply_desk", _desk_step(desk_rules))
+    if wtm_rules:
+        builder.add_node("apply_rules", _rules_step(wtm_rules))
     builder.add_node("generate_summary", generate_summary)
     builder.add_node("validate_summary", validate_summary)
     builder.add_node("select_best_summary", select_best_summary)
@@ -56,9 +56,9 @@ def get_compose_graph(desk_rules: Optional[str] = None):
     builder.add_node("generate_social_media", generate_social_media)
 
     builder.set_entry_point("load_agent_configuration")
-    if desk_rules:
-        builder.add_edge("load_agent_configuration", "apply_desk")
-        builder.add_edge("apply_desk", "generate_summary")
+    if wtm_rules:
+        builder.add_edge("load_agent_configuration", "apply_rules")
+        builder.add_edge("apply_rules", "generate_summary")
     else:
         builder.add_edge("load_agent_configuration", "generate_summary")
     builder.add_edge("generate_summary", "validate_summary")

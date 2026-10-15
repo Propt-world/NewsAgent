@@ -853,3 +853,59 @@ def test_the_desk_shapes_research_writing_why_this_matters_and_the_byline(scene,
     assert posted["newsroom"]["author"] == posted["data"]["author"] == "Propt Newsroom · Rental Desk"
     assert run["result"]["author"] == "Propt Newsroom · Rental Desk"
     assert "newsroom_desk_rental" in run["prompts"]
+
+
+# --- Source mix: one Propt Newsroom item at most; articles need an original article (2026-10-16) ---------
+
+@pytest.fixture
+def mix(scene, sync_db):
+    """C1 composed article, CS a composed (saved) signal, S2 a second original signal; all share Emaar."""
+    sync_db["processed_articles"].insert_one({
+        "_id": "C1", "url": "newsroom://compose/run-old", "status": "approved", "source_id": "newsroom_compose",
+        "processed_at": NOW, "final_output": {"title": "Composed piece", "content": "Composed text."}})
+    composed_signal, second_signal = ObjectId(), ObjectId()
+    sync_db["signals"].insert_many([
+        {"_id": composed_signal, "summary_en": "Composed signal", "status": "draft", "generated_from": "run-old#2",
+         "generated_at": NOW, "evidence": []},
+        {"_id": second_signal, "summary_en": "Another signal", "status": "draft", "generated_at": NOW, "evidence": []}])
+    for source_type, source_id in [("article", "C1"), ("signal", str(composed_signal)), ("signal", str(second_signal))]:
+        assert scene.post(f"/newsroom/items/{source_type}/{source_id}/links", json={"entity_id": EMAAR}).status_code == 200
+    scene.cs, scene.s2 = str(composed_signal), str(second_signal)
+    return scene
+
+
+@pytest.mark.parametrize("sources, output_type, message", [
+    ([("article", "A1"), ("article", "C1")], "article", None),
+    ([("article", "A1"), ("signal", "S")], "article", None),
+    ([("signal", "S"), ("signal", "S2")], "article", "Signals alone are too short"),
+    ([("article", "C1"), ("signal", "CS")], "article", "Only one Propt Newsroom item"),
+    ([("article", "C1"), ("signal", "S")], "article", "needs at least one original article"),
+    ([("signal", "S"), ("signal", "S2")], "signal", None),
+    ([("article", "C1"), ("signal", "S")], "signal", None),
+    ([("article", "C1"), ("signal", "CS")], "signal", "Only one Propt Newsroom item"),
+])
+def test_source_mix_rules(mix, sources, output_type, message):
+    ids = {"S": mix.signal_id, "S2": mix.s2, "CS": mix.cs}
+    resp = _compose(mix, *[(t, ids.get(i, i)) for t, i in sources], output_type=output_type)
+    if message is None:
+        assert resp.status_code == 202, resp.text
+    else:
+        assert resp.status_code == 422 and message in resp.json()["detail"], resp.text
+        assert mix.queue.pushed == []
+
+
+def test_one_source_can_still_be_checked_for_signals_even_if_composed(mix):
+    assert mix.post("/newsroom/extract-signal", json={"article_id": "C1"}).status_code == 202
+
+
+def test_the_compose_window_can_ask_before_starting(mix):
+    def check(*sources):
+        ids = {"S": mix.signal_id, "S2": mix.s2, "CS": mix.cs}
+        return mix.post("/newsroom/compose/source-check", json={"sources": [
+            {"source_type": t, "source_id": ids.get(i, i)} for t, i in sources]}).json()
+
+    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None}
+    two_signals = check(("signal", "S"), ("signal", "S2"))
+    assert "Signals alone are too short" in two_signals["article"] and two_signals["signal"] is None
+    two_ours = check(("article", "C1"), ("signal", "CS"))
+    assert '"Composed piece"' in two_ours["article"] and "Only one Propt Newsroom item" in two_ours["signal"]

@@ -367,6 +367,11 @@ class DeskSuggestionRequest(BaseModel):
     sources: List[SourceRef] = Field(..., min_length=1, max_length=5)
 
 
+class SourceCheck(BaseModel):
+    article: Optional[str] = Field(None, description="Why these sources cannot become a new article (empty = they can)")
+    signal: Optional[str] = Field(None, description="Why these sources cannot become a new signal (empty = they can)")
+
+
 class DeskSuggestion(BaseModel):
     desk: Optional[Desk] = None
     label: Optional[str] = None

@@ -62,6 +62,7 @@ from src.newsroom.models import (
     NewsroomStatusResponse,
     RelatedResponse,
     SignalSavedRequest,
+    SourceCheck,
     SourceType,
     SuggestionOut,
     SuggestRequest,
@@ -394,6 +395,14 @@ async def compose(payload: ComposeRequest, db=Depends(get_newsroom_db), sources=
 async def compose_desk_suggestion(payload: DeskSuggestionRequest, sources=Depends(get_item_sources)):
     found = await cmp.desk_suggestion(sources, [s.model_dump() for s in payload.sources])
     return found or {}
+
+
+@router.post("/compose/source-check", response_model=SourceCheck,
+             description="For the compose window: whether the chosen sources can become a new article or signal "
+                         "(at most one Propt Newsroom item; a new article needs an original article). No AI call; "
+                         "the same rules are applied again when the job is requested.")
+async def compose_source_check(payload: DeskSuggestionRequest, sources=Depends(get_item_sources)):
+    return await cmp.source_mix_problems(sources, [s.model_dump() for s in payload.sources])
 
 
 @router.post("/extract-signal", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,

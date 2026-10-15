@@ -16,6 +16,11 @@ share no switched-on company or specific place (community, landmark), a type is 
 "update" is not allowed (it joins reports of one story), and a signal cannot be composed
 (one signal is one market movement).
 
+Source mix (user decision 2026-10-16): at most one Propt Newsroom item (a composed article or a
+composed signal) per compose, so AI-written pieces are not rebuilt from AI-written pieces; and a new
+article needs at least one original (not composed) article, because signals alone are too short to
+write an article from. A new signal may come from signals only.
+
 Signal drafts: extract-signal may give up to 3 drafts (one per angle). Each is saved on its
 own; draft n is saved in social_scrapper with generated_from = signal_key(run_id, n).
 These checks and recording the run happen under one short lock, so a double click
@@ -104,6 +109,66 @@ async def unrelated_sources(db, keys: List[tuple]) -> List[tuple]:
             by_item[(m["source_type"], m["source_id"])].add(m["entity_id"])
     return [key for key, own in by_item.items()
             if not own & set().union(*(other for k, other in by_item.items() if k != key))]
+
+
+async def newsroom_made_sources(sources: ndb.ItemSources, keys: List[tuple]) -> set:
+    """The sources written by Propt Newsroom: composed articles and composed (saved draft) signals."""
+    from bson import ObjectId
+
+    made = set()
+    article_ids = [i for t, i in keys if t == "article"]
+    if article_ids:
+        async for doc in sources.articles.find(
+            {"_id": {"$in": article_ids},
+             "$or": [{"source_id": COMPOSED_SOURCE_ID}, {"url": {"$regex": "^newsroom://compose/"}}]}, {"_id": 1}):
+            made.add(("article", doc["_id"]))
+    signal_ids = [ObjectId(i) for t, i in keys if t == "signal" and ObjectId.is_valid(i)]
+    if signal_ids:
+        async for doc in sources.signals.find(
+            {"_id": {"$in": signal_ids}, "generated_from": {"$type": "string"}}, {"_id": 1}):
+            made.add(("signal", str(doc["_id"])))
+    return made
+
+
+def check_source_mix(output_type: str, source_docs: List[dict], made: set) -> None:
+    """At most one Propt Newsroom item; a new article needs an original article (see the module notes)."""
+    def names(docs):
+        return ", ".join(f'"{d["title"] or d["source_id"]}"' for d in docs)
+
+    def key(doc):
+        return doc["source_type"], doc["source_id"]
+
+    newsroom = [d for d in source_docs if key(d) in made]
+    if len(newsroom) > 1:
+        raise Invalid(f"Only one Propt Newsroom item can be used per compose ({names(newsroom)}): building on "
+                      "several pieces we wrote ourselves moves away from the original reporting. Keep one and add "
+                      "original sources.")
+    if output_type == "article" and not any(d["source_type"] == "article" and key(d) not in made for d in source_docs):
+        if all(d["source_type"] == "signal" for d in source_docs):
+            raise Invalid("Signals alone are too short to write an article from. Add at least one original "
+                          "article, or compose a signal instead.")
+        raise Invalid("A new article needs at least one original article (not written by Propt Newsroom) "
+                      "among its sources.")
+
+
+async def source_mix_problems(sources: ndb.ItemSources, items: List[dict]) -> dict:
+    """For the compose window: why these sources cannot become a new article / a new signal (None = they can).
+    The same rule is applied again when the job is requested."""
+    keys = list(dict.fromkeys((i["source_type"], i["source_id"]) for i in items))
+    docs = []
+    for source_type in ("article", "signal"):
+        ids = [i for t, i in keys if t == source_type]
+        infos = await lnk.items_info(sources, source_type, ids) if ids else {}
+        docs += [{"source_type": source_type, "source_id": i, "title": (infos.get(i) or {}).get("title")} for i in ids]
+    made = await newsroom_made_sources(sources, keys)
+    problems = {}
+    for output_type in ("article", "signal"):
+        try:
+            check_source_mix(output_type, docs, made)
+            problems[output_type] = None
+        except Invalid as e:
+            problems[output_type] = str(e)
+    return problems
 
 
 def check_compose_type(output_type: str, compose_type: Optional[str], unrelated_titles: List[str]) -> None:
@@ -259,6 +324,7 @@ async def create_run(db, sources: ndb.ItemSources, redis, *, kind: str, output_t
         source_docs.append({"source_type": source_type, "source_id": source_id, "title": info["title"],
                             "url": info["url"], "status_at_request": info["item_status"]})
     if kind == "compose":
+        check_source_mix(output_type, source_docs, await newsroom_made_sources(sources, keys))
         unrelated = set(await unrelated_sources(db, keys))
         check_compose_type(output_type, compose_type, [d["title"] or d["source_id"] for d in source_docs
                                                        if (d["source_type"], d["source_id"]) in unrelated])

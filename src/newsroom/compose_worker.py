@@ -48,7 +48,7 @@ class ResearchNotes(BaseModel):
     key_facts: List[str] = Field(default_factory=list, description="Key facts, each ending with its source number, e.g. (source 2)")
     numbers: List[str] = Field(default_factory=list, description="Every number, date and amount exactly as written, with its source number")
     agreements_and_conflicts: str = Field("", description="Where the sources agree, add to each other or conflict")
-    angle: str = Field("", description="One angle connecting the sources for real-estate investors")
+    angle: str = Field("", description="The core story and why a reader cares right now, as one angle connecting the sources")
 
 
 class ArticleDraft(BaseModel):

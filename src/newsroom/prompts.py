@@ -21,6 +21,26 @@ SOURCE_RULES = """SOURCE RULES:
 - Use only facts, names and numbers that appear in the sources. Never invent or estimate figures, dates,
   quotes or names. If the sources disagree, say so or leave the point out."""
 
+# How every composed article is built (all articles, with or without a desk): the inverted pyramid,
+# with the lead's first sentence as the hook (user's news-writing guidance, 2026-10-15).
+ARTICLE_STRUCTURE = """ARTICLE STRUCTURE (inverted pyramid: the most important information first)
+- Headline (the title): short, specific and accurate; the main news in a few words, with a name, place or figure where possible. Present tense for past events ("launches", "sells"), "to" for future events ("to open"). Leave out "a", "an" and "the" where it still reads naturally. No questions, puns, teasers or clickbait.
+- Lead (first paragraph, 1-2 sentences): the hook. The first sentence states the single most newsworthy, concrete fact (who did what, where, with the key figure) so the reader knows the story at once and wants to read on. Answer who, what, when and where; add why and how only when the sources state them. Never open with a question, a quote, background, scene-setting or phrases such as "In a move to".
+- Nut graph (second paragraph, 1-2 sentences): the immediate context from the sources, for example what this is part of, or how it compares with an earlier sourced figure or phase. Keep it short and factual; the separate "why this matters" section explains the significance for readers, so do not write that here.
+- Body: the remaining facts in order of importance, most important first (key figures and details, then supporting details, then earlier background). One point per paragraph.
+- Quotes and attribution: attribute information clearly, for example "according to [source]" or "[company] said". Use a direct quote only when it appears word for word in a source and adds information or perspective; attribute it to the person and organisation the source names. At most two direct quotes.
+- Ending: a next step (a date, phase, launch or decision) or a relevant closing quote, when a source gives one; otherwise the last relevant confirmed fact. Never a summary, moral or wrap-up line such as "Overall", "In conclusion" or "This highlights"."""
+
+WRITING_RULES = """WRITING RULES
+- Objective: third person only; no opinions, emotions or bias of your own; never "I" or "we".
+- Simple, clear language; avoid jargon. Explain a necessary technical or legal term at its first use, using only what the sources say.
+- 6-10 paragraphs of 1-3 sentences each, plain prose. No markdown, no bullet points, no headings inside the body.
+- Write in your own words; do not copy sentences from the sources (attributed direct quotes excepted).
+
+BEFORE YOU FINISH
+- Check every name, title, date, number and place against the sources.
+- Reread for flow and logic gaps; cut repetition, filler and unneeded words."""
+
 NEWSROOM_PROMPTS = [
     {
         "name": "newsroom_researcher",
@@ -35,7 +55,8 @@ TASK:
 1. List the key facts (each with the number of the source it comes from).
 2. List every number, date and amount exactly as written, with its source number.
 3. Note where sources agree, add to each other, or conflict.
-4. Suggest one clear angle that connects the sources for a real-estate investor audience.
+4. Find the angle: name the core story and why a reader cares right now, as one clear angle that connects
+   the sources for a real-estate investor and buyer audience.
 
 Companies and places confirmed by an editor for these sources (use these names):
 {{entities}}
@@ -47,17 +68,15 @@ SOURCES:
         "name": "newsroom_writer_article",
         "description": "Newsroom compose: writes an original Propt article from research notes.",
         "input_variables": ["research", "sources"],
-        "content": f"""You are a senior writer at Propt, a GCC real-estate intelligence publisher.
-Write an ORIGINAL article in English that combines the sources into one piece with its own angle.
+        "content": f"""You are a senior news writer at Propt, a GCC real-estate intelligence publisher.
+Write an ORIGINAL news article in English that combines the sources into one piece with its own angle.
 It is published as "Propt Newsroom".
 
 {SOURCE_RULES}
 
-STYLE:
-- A clear factual title (no clickbait), then 4-8 short paragraphs of plain prose.
-- Lead with what happened and why it matters to investors and buyers.
-- Do not copy sentences from the sources; write in your own words.
-- No markdown, no bullet points, no headings inside the body.
+{ARTICLE_STRUCTURE}
+
+{WRITING_RULES}
 
 RESEARCH NOTES:
 {{research}}

@@ -69,6 +69,7 @@ The system is composed of seven Dockerized services:
     * `NEWSAGENT_API_KEY`: A secure key you generate to protect your internal API endpoints.
     * `BROWSERLESS_TOKEN`: Secure token for the browserless service.
     * `WEBHOOK_SECRET`: Shared secret for verifying webhook payloads.
+    * How the Newsroom code is organised (and why it differs from the rest of NewsAgent in places): [`src/newsroom/README.md`](src/newsroom/README.md).
     * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`) and creates its indexes at startup; in the worker, the country step also returns company, project and place names, which become entity suggestions when the result is stored. Set it on the worker and the scheduler together. Unset or `false` leaves both unchanged.
     * `NEWSROOM_DB_NAME`: Database for the Newsroom knowledge graph (default `newsroom`).
     * `NEWSROOM_SIMILARITY_MIN_SCORE`: Minimum score (default `0.8`) for "similar articles". Shown only for approved articles with no links, using their stored embeddings and the `MONGO_VECTOR_INDEX_NAME` Atlas index; no new AI call is made.

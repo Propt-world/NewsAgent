@@ -50,7 +50,8 @@ Small, switch-guarded additions; nothing existing is removed:
 
 - **Prompts:** the code is the source of truth. `init_db.py --mode upsert` writes them to the prompt registry; in production run it after the new code is live.
 - **Logging:** the `newsroom` logger (Python `logging`), not `print`, so CloudWatch can filter by level. Problems that need attention are logged as `NEWSROOM_ALERT <code>: <message>`.
-- **Data ownership:** NewsAgent is the only writer of the Newsroom graph collections (`entities`, `entity_mentions`, `entity_suggestions`, `compose_runs`, ...). Signals belong to social_scrapper; NewsAgent only reads them.
+- **Where the data lives:** the Newsroom's own collections (`entities`, `entity_aliases`, `entity_mentions`, `entity_suggestions`, `entity_audit`, `compose_runs`, ...) are in NewsAgent's database (`MONGO_DB_NAME`), next to the articles; composed articles are ordinary documents in `processed_articles`. Signals stay in social_scrapper's database (`NEWSROOM_SIGNALS_DB_NAME`, collection `signals`); composed signals are ordinary signals there.
+- **Data ownership:** NewsAgent is the only writer of the Newsroom collections. Signals belong to social_scrapper; NewsAgent only reads them.
 - **Scripts:** `src/scripts/newsroom_*.py` do a dry run by default and need `--apply` to write (backfill also has `--undo`).
 - **Comments:** heavier than elsewhere on purpose, because many rules here protect precision (only reviewer-confirmed links), money (compose limits and budget) and published content.
 

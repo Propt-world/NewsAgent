@@ -29,12 +29,12 @@ async def main_async(apply: bool) -> dict:
         app_db = client[settings.MONGO_DB_NAME]
         sources = ndb.ItemSources(
             articles=app_db["processed_articles"],
-            signals=client[settings.NEWSROOM_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
+            signals=client[settings.NEWSROOM_SIGNALS_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
             chunks=app_db[settings.MONGO_DB_COLLECTION],
             archived=app_db["archived_articles"],
             deleted=app_db["deleted_articles"],
         )
-        return await resync(client[settings.NEWSROOM_DB_NAME], sources, apply=apply)
+        return await resync(client[settings.MONGO_DB_NAME], sources, apply=apply)
     finally:
         await client.close()
 
@@ -43,7 +43,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Repair the Newsroom's link details (dry run by default).")
     parser.add_argument("--apply", action="store_true", help="Fix what is out of date (default: only count).")
     apply = parser.parse_args().apply
-    print(f"--- Database: {_database_target()} / {settings.NEWSROOM_DB_NAME} | {'APPLY' if apply else 'DRY RUN'} ---")
+    print(f"--- Database: {_database_target()} / {settings.MONGO_DB_NAME} | {'APPLY' if apply else 'DRY RUN'} ---")
     counts = asyncio.run(main_async(apply))
     for key, value in counts.items():
         print(f"  {key:16} {value}")

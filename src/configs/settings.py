@@ -113,8 +113,9 @@ class Settings(BaseSettings):
     REAL_ESTATE_CHECK_TEMPERATURE: float = float(os.getenv('REAL_ESTATE_CHECK_TEMPERATURE', '0'))
     # How much of the fetched article text the check reads (with the title)
     REAL_ESTATE_CHECK_CHARS: int = int(os.getenv('REAL_ESTATE_CHECK_CHARS', '1500'))
-    # Database holding the Newsroom knowledge graph (same cluster as DATABASE_URL)
-    NEWSROOM_DB_NAME: str = os.getenv('NEWSROOM_DB_NAME', 'newsroom')
+    # The Newsroom's own collections (graph, compose jobs) live in MONGO_DB_NAME with the articles
+    # (user decision 2026-10-19). social_scrapper's signals are read from this database (same cluster).
+    NEWSROOM_SIGNALS_DB_NAME: str = os.getenv('NEWSROOM_SIGNALS_DB_NAME', 'newsroom')
     # social_scrapper's signals collection in that database (read-only for NewsAgent)
     NEWSROOM_SIGNALS_COLLECTION: str = os.getenv('NEWSROOM_SIGNALS_COLLECTION', 'signals')
     # "Similar articles" (approved articles only): minimum cosine score to show a match

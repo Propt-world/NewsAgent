@@ -401,7 +401,7 @@ b = db.processed_articles.find_one({{"url": "https://evil.example/x"}})
 print("RESULT=" + json.dumps({{"codes": out, "good": [a["source_id"], a.get("generated_from"), a.get("author"), a["status"]],
                                "forged": [b["source_id"], b.get("generated_from")]}}))
 """
-    env = dict(os.environ, DATABASE_URL=mongo_url, MONGO_DB_NAME=db_name, NEWSROOM_DB_NAME=db_name,
+    env = dict(os.environ, DATABASE_URL=mongo_url, MONGO_DB_NAME=db_name, NEWSROOM_SIGNALS_DB_NAME=db_name,
                NEWSROOM_ENABLED="true", WEBHOOK_SECRET="", NEWSAGENT_API_KEY="")
     result = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[2], env=env,
                             capture_output=True, text=True, timeout=120)

@@ -1,5 +1,7 @@
 """
-Newsroom knowledge-graph storage in the NEWSROOM_DB_NAME database.
+Newsroom storage: the knowledge graph and compose jobs, in NewsAgent's own database
+(MONGO_DB_NAME, next to the articles). Signals are read from social_scrapper's
+database (NEWSROOM_SIGNALS_DB_NAME).
 
 NewsAgent is the only writer of these collections. Indexes are created here
 (idempotently) because init_db.py is not run on every deploy.
@@ -70,8 +72,9 @@ INDEX_SPECS = [
 
 
 def get_newsroom_db():
-    """FastAPI dependency: the async newsroom database (shares the scheduler's client)."""
-    return get_async_mongo_client()[settings.NEWSROOM_DB_NAME]
+    """FastAPI dependency: the database holding the Newsroom collections, i.e. NewsAgent's own
+    database (shares the scheduler's client)."""
+    return get_async_mongo_client()[settings.MONGO_DB_NAME]
 
 
 @dataclass(frozen=True)
@@ -90,7 +93,7 @@ def get_item_sources() -> ItemSources:
     client = get_async_mongo_client()
     return ItemSources(
         articles=client[settings.MONGO_DB_NAME]["processed_articles"],
-        signals=client[settings.NEWSROOM_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
+        signals=client[settings.NEWSROOM_SIGNALS_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
         chunks=client[settings.MONGO_DB_NAME][settings.MONGO_DB_COLLECTION],
         archived=client[settings.MONGO_DB_NAME]["archived_articles"],
         deleted=client[settings.MONGO_DB_NAME]["deleted_articles"],

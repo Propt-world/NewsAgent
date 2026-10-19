@@ -61,7 +61,7 @@ def world(mongo_url, db_name, sync_db, monkeypatch, tmp_path):
         return state.model_copy(update={"newsroom_names": {"companies": ["DAMAC"], "projects": [], "places": []}})
 
     monkeypatch.setattr(node, "extract_country", fake_extract_country)
-    for key, value in {"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_DB_NAME": db_name,
+    for key, value in {"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
                        "NEWSROOM_SIGNALS_COLLECTION": "signals", "NEWSROOM_ENABLED": "true"}.items():
         monkeypatch.setattr(settings, key, value)
 

@@ -1,5 +1,5 @@
 """
-Loads the Newsroom starting lists (src/newsroom/seed/*.csv) into NEWSROOM_DB_NAME.
+Loads the Newsroom starting lists (src/newsroom/seed/*.csv) into NewsAgent's database (MONGO_DB_NAME).
 
 Default is a dry run: checks the lists, compares them with the database and
 writes nothing. --apply inserts what is missing; existing entities, aliases
@@ -40,11 +40,11 @@ def main(apply: bool, seed_dir: Path) -> int:
             print(f"  ERROR: {error}")
         return 1
 
-    print(f"\n--- Database: {_database_target()} / {settings.NEWSROOM_DB_NAME} | {'APPLY' if apply else 'DRY RUN'} ---")
+    print(f"\n--- Database: {_database_target()} / {settings.MONGO_DB_NAME} | {'APPLY' if apply else 'DRY RUN'} ---")
     client = MongoClient(settings.DATABASE_URL, **_mongo_client_options())
     try:
         client.admin.command("ping")
-        db = client[settings.NEWSROOM_DB_NAME]
+        db = client[settings.MONGO_DB_NAME]
         _print_counts("Compared with the database:", compare_with_db(plan, db))
         if not apply:
             print("\nDry run only. Re-run with --apply to insert the missing records.")

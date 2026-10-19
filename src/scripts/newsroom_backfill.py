@@ -128,7 +128,7 @@ async def run_backfill(args, db, sources) -> dict:
         summary["mode"] = "dry run: nothing was written"
         return summary
     if not confirm(f"Write {actions[bf.AUTO_LINK]} links and the suggestions to {_database_target()} "
-                   f"({settings.NEWSROOM_DB_NAME})?", args.yes):
+                   f"({settings.MONGO_DB_NAME})?", args.yes):
         summary["mode"] = "cancelled: nothing was written"
         return summary
     errors = await ndb.ensure_indexes_async(db)
@@ -153,7 +153,7 @@ async def run_undo(args, db) -> dict:
     if not args.apply:
         summary["mode"] = "dry run: nothing was removed"
         return summary
-    if not confirm(f"Remove {report.links} backfill links from {_database_target()} ({settings.NEWSROOM_DB_NAME})?", args.yes):
+    if not confirm(f"Remove {report.links} backfill links from {_database_target()} ({settings.MONGO_DB_NAME})?", args.yes):
         summary["mode"] = "cancelled: nothing was removed"
         return summary
     done = await bf.undo(db, apply=True)
@@ -164,10 +164,10 @@ async def run_undo(args, db) -> dict:
 async def main_async(args) -> dict:
     client = AsyncMongoClient(settings.DATABASE_URL, **_mongo_client_options())
     try:
-        db = client[settings.NEWSROOM_DB_NAME]
+        db = client[settings.MONGO_DB_NAME]
         sources = ndb.ItemSources(
             articles=client[settings.MONGO_DB_NAME]["processed_articles"],
-            signals=client[settings.NEWSROOM_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
+            signals=client[settings.NEWSROOM_SIGNALS_DB_NAME][settings.NEWSROOM_SIGNALS_COLLECTION],
             chunks=client[settings.MONGO_DB_NAME][settings.MONGO_DB_COLLECTION],
         )
         return await (run_undo(args, db) if args.undo else run_backfill(args, db, sources))
@@ -189,7 +189,7 @@ def main() -> int:
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
-    print(f"Database: {_database_target()} | articles: {settings.MONGO_DB_NAME} | newsroom: {settings.NEWSROOM_DB_NAME}")
+    print(f"Database: {_database_target()} | articles and Newsroom: {settings.MONGO_DB_NAME} | signals: {settings.NEWSROOM_SIGNALS_DB_NAME}")
     summary = asyncio.run(main_async(args))
     (args.out / ("undo_summary.json" if args.undo else "backfill_summary.json")).write_text(
         json.dumps(summary, indent=2, ensure_ascii=False, default=str))

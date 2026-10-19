@@ -124,3 +124,15 @@ def test_oversized_input_is_refused_before_any_work(api_key, method, path, kwarg
     """Each id, name and list has a size limit (no database is needed to refuse these)."""
     resp = getattr(_client(True), method)(path, headers={"X-API-Key": api_key}, **kwargs)
     assert resp.status_code == 422, resp.text
+
+
+def test_newsroom_data_lives_with_the_articles_and_signals_are_read_from_social_scrapper(monkeypatch):
+    """User decision 2026-10-19: the Newsroom's own collections are in NewsAgent's database."""
+    from src.newsroom import db as ndb
+
+    monkeypatch.setattr(settings, "MONGO_DB_NAME", "newsagent_x")
+    monkeypatch.setattr(settings, "NEWSROOM_SIGNALS_DB_NAME", "newsroom_x")
+    assert ndb.get_newsroom_db().name == "newsagent_x"
+    sources = ndb.get_item_sources()
+    assert sources.articles.database.name == "newsagent_x"
+    assert (sources.signals.database.name, sources.signals.name) == ("newsroom_x", settings.NEWSROOM_SIGNALS_COLLECTION)

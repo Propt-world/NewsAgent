@@ -146,7 +146,7 @@ with TestClient(app) as c:
 print("RESULT=" + json.dumps(out))
 """
     env = {k: v for k, v in os.environ.items()}
-    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_DB_NAME": db_name,
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
                 "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
     result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
                             capture_output=True, text=True, timeout=120)
@@ -224,7 +224,7 @@ with TestClient(app) as c:
 print("RESULT=" + json.dumps(out))
 """
     env = {k: v for k, v in os.environ.items()}
-    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_DB_NAME": db_name,
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
                 "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
     result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
                             capture_output=True, text=True, timeout=120)
@@ -261,7 +261,7 @@ print("RESULT=" + json.dumps({{"first": [i["_id"] for i in first["items"]], "mor
                               "total": more["total"]}}))
 """
     env = {k: v for k, v in os.environ.items()}
-    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_DB_NAME": db_name,
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
                 "NEWSROOM_ENABLED": "false", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
     result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-3000:]

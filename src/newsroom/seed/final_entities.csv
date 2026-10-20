@@ -1,0 +1,183 @@
+﻿canonical_name,type,status,"aliases (exact, auto-link)",ambiguous_aliases (never auto-link),parent,country,context_slug,mentions_in_data,ambiguous_mentions,note
+Stake,investment,active,Stake,,,UAE,stake,75,0,several context entities share this key: Stake Saudi / Stake
+DAMAC Properties,developer,active,DAMAC | Damac | DAMAC Properties | Damac Properties,DAMAC Group,,UAE,damac-properties,65,1,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Aldar Properties,developer,active,Aldar | Aldar Properties | Aldar Group,,,UAE,aldar-properties,65,0,
+Emaar Properties,developer,active,Emaar | Emaar Properties,,,UAE,emaar-properties,64,0,"'Emaar Development' (subsidiary), 'Emaar Hospitality Group' and 'Emaar Economic City' (a different Saudi company) are separate entities and never auto-link here."
+ADQ,investment,active,ADQ,,,UAE,,49,0,
+Azizi Developments,developer,active,Azizi | Azizi Developments,Azizi Group | Azizi Properties,,UAE,azizi-developments,44,3,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Dubai South,developer,active,Dubai South,,,UAE,,43,0,
+Dubai Holding,investment,active,Dubai Holding,,,UAE,dubai-holding,40,0,"Parent of Meraas, Dubai Properties and Dubai Holding Real Estate. 'Dubai Properties' and 'Dubai Holding Real Estate' are split out as separate entities."
+Arada,developer,active,Arada | Arada Group,,,UAE,,35,0,
+Nakheel,developer,active,Nakheel,,,UAE,nakheel,34,0,
+Binghatti,developer,active,Binghatti | Binghatti Developers | Binghatti Holding,,,UAE,binghatti,32,0,
+Meydan,developer,active,Meydan,,,UAE,,27,0,Also an area of Dubai (see locations).
+Modon Holding,developer,active,Modon | Modon Holding | Modon Real Estate,Modon Properties,,UAE,,26,1,Type to confirm.
+Bayut,proptech,active,Bayut,,,UAE,,26,0,
+Meraas,developer,active,Meraas,,Dubai Holding,UAE,meraas,24,0,Context also has 'Meraas Holding' - probably a duplicate; please check.
+Sobha Realty,developer,active,Sobha | Sobha Realty,,Sobha Group,UAE,sobha-realty,23,0,
+ROSHN Group,developer,active,ROSHN | Roshn Group | ROSHN Group | ROSHN GROUP,Roshan,,Saudi Arabia,roshn-group,20,2,
+Abu Dhabi Projects and Infrastructure Centre,government,active,ADPIC | Adpic | Abu Dhabi Projects and Infrastructure Centre | Abu Dhabi Projects and Infrastructure Centre (ADPIC),,,UAE,,21,0,
+Danube Properties,developer,active,Danube Properties | Danube,,,UAE,,20,0,
+Majid Al Futtaim,developer,active,Majid Al Futtaim,,,UAE,majid-al-futtaim,15,0,
+Dubai Properties,developer,active,Dubai Properties,,Dubai Holding,UAE,,14,0,
+Diriyah Company,developer,active,Diriyah Company,,,Saudi Arabia,diriyah-company,13,0,
+Ministry of Housing and Urban Planning,government,active,Ministry of Housing and Urban Planning | Housing and Urban Planning Ministry,,,,,13,0,Country not stated in the data (probably Oman) - please confirm; 'Housing and Urban Planning Ministry' merged in as an alias.
+Wasl Properties,developer,active,Wasl Properties,Wasl,Wasl Group,UAE,wasl-properties,1,10,"'Wasl' alone is ambiguous (group or properties). Wasl Group is staged as the parent. Rev 2026-10-06: 'Wasl Group' removed from the ambiguous list (it is its own entity, exact alias of Wasl Group). Rev 2026-10-06: parent set to Wasl Group (user)."
+Omniyat,developer,active,Omniyat | OMNIYAT,,,UAE,omniyat,10,0,
+Dubai Land Department,government,active,DLD | Dubai Land Department | Dubai Land Department (DLD),,,UAE,dubai-land-department,10,0,
+Omran Group,government,active,Omran | OMRAN Group | Omran Group,,,Oman,omran-group-oman,10,0,
+Mubadala,investment,active,Mubadala,,,UAE,,10,0,
+Property Finder,proptech,active,Property Finder,,,UAE,property-finder,10,0,
+Beyond Developments,developer,active,Beyond Developments | BeyondDevelopments,BEYOND | Beyond,,UAE,,6,4,
+Knowledge Economic City,project,active,Knowledge Economic City | Knowledge Economic City (KEC) | KEC,,,Saudi Arabia,,10,0,Master development in Madinah; also appears in the location list.
+Sharjah Investment and Development Authority,government,active,Shurooq | Sharjah Investment and Development Authority,,,UAE,,10,0,Shurooq is the same authority; the two names are merged.
+Ellington Properties,developer,active,Ellington | Ellington Properties,,,UAE,,10,0,
+Select Group,developer,active,Select Group,,,UAE,,9,0,
+Red Sea Global,developer,active,Red Sea Global,,,Saudi Arabia,red-sea-global,9,0,
+Madayn,government,active,Madayn | Public Establishment for Industrial Estates | Public Establishment for Industrial Estates (Madayn),,,Oman,,9,0,
+Retal Urban,developer,active,Retal Urban | Retal Urban Development Company | Retal Urban Development,Retal,,Saudi Arabia,retal-urban,7,2,
+PIF,investment,active,PIF | Public Investment Fund | Public Investment Fund (PIF),,,Saudi Arabia,pif-saudi,9,0,
+NEOM,developer,active,NEOM,,,Saudi Arabia,neom,8,0,
+Tiger Properties,developer,active,Tiger Properties,Tiger Group | Tiger Holding,,UAE,,5,3,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Union Properties,developer,active,Union Properties,,,UAE,,8,0,
+Imtiaz Developments,developer,active,Imtiaz Developments,,,UAE,,7,0,
+Deyaar,developer,active,Deyaar | Deyaar Development,,,UAE,,7,0,
+Mabanee Company,developer,active,Mabanee Company | Mabanee,,,Kuwait,mabanee-kuwait,6,0,
+Msheireb Properties,developer,active,Msheireb Properties,,,Qatar,msheireb-properties,6,0,
+KEZAD,government,active,KEZAD,,,UAE,,6,0,
+Real Estate General Authority,government,active,REGA | Real Estate General Authority | Real Estate General Authority (REGA),,,Saudi Arabia,rega-saudi,6,0,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Dar Al Arkan,developer,active,Dar Al Arkan | Dar Alarkan,,,Saudi Arabia,dar-al-arkan,5,0,
+Dar Global,developer,active,DarGlobal | Dar Global,,,UAE,dar-global,5,0,
+Qiddiya,project,staged,Qiddiya,,Qiddiya Investment Company,Saudi Arabia,,8,0,Destination project; also in locations.
+Al Rajhi Bank,finance,staged,Al Rajhi Bank,Al Rajhi,,Saudi Arabia,al-rajhi-bank,2,5,"'Al Rajhi' alone could be the bank, Al Rajhi Capital or the group - a reviewer decides each time."
+Saudi Cabinet,government,staged,Saudi Cabinet,,,Saudi Arabia,,6,0,
+Sumou Real Estate Company,developer,staged,Sumou Real Estate Company,Sumou | Sumou Holding,,Saudi Arabia,,3,2,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Roads and Transport Authority (RTA),government,staged,RTA | Roads and Transport Authority (RTA),,,,,5,0,
+Provident Real Estate,developer,staged,Provident Real Estate,Provident,,UAE,,2,3,
+Iman Developers,developer,staged,Iman Developers | Iman developers,,,,,4,0,
+Diyar Al Muharraq,developer,staged,Diyar Al Muharraq,,,,diyar-al-muharraq,4,0,
+Royal Commission for Riyadh City,government,staged,Royal Commission for Riyadh City,,,,,4,0,
+Wynn Resorts,brand_partner,staged,Wynn Resorts,,,,,4,0,
+Diriyah Gate,project,staged,Diriyah Gate,,Diriyah Company,Saudi Arabia,,4,0,
+Dubai Holding Real Estate,developer,staged,Dubai Holding Real Estate,,Dubai Holding,UAE,,4,0,Check how this relates to Meraas and Dubai Properties.
+Laya Developers,developer,staged,Laya Developers,,,,,3,0,
+Mercedes-Benz,brand_partner,staged,Mercedes-Benz,,,,,3,0,
+Qiddiya Investment Company,developer,staged,Qiddiya Investment Company,,,Saudi Arabia,,3,0,
+DECA Properties,developer,staged,DECA Properties | DECA,,,,,3,0,
+Better Homes Qatar,brokerage,staged,Better Homes Qatar,,Better Homes,Qatar,,3,0,
+Better Homes,brokerage,staged,betterhomes | Better Homes,,,UAE,betterhomes,3,0,
+Driven Properties,developer,staged,Driven Properties,,,,,3,0,
+Reportage Properties,developer,staged,Reportage Properties,Reportage Group,,UAE,,2,1,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Bahrain Marina Development Company,developer,staged,Bahrain Marina Development Company | Bahrain Marina,,,,,3,0,
+Eskan Bank,investment,staged,Eskan Bank,,,,,3,0,
+Emaar Economic City,developer,staged,"Emaar Economic City | Emaar The Economic City | Emaar, The Economic City",,,Saudi Arabia,,3,0,A different company from Emaar Properties - must never be merged with it.
+Ministry of Justice,government,staged,Ministry of Justice,,,,,3,0,
+Dubai Municipality,government,staged,Dubai Municipality,,,,,3,0,
+Royal Oman Police,government,staged,Royal Oman Police | Royal Oman Police (ROP),,,,,3,0,
+The Ritz-Carlton,brand_partner,staged,The Ritz-Carlton | Ritz-Carlton,,,,,3,0,
+Edamah,investment,staged,Edamah,,,,edamah-bahrain,3,0,
+SmartCrowd,investment,staged,SmartCrowd,,,,smartcrowd,3,0,
+Saudi Downtown Company,developer,staged,Saudi Downtown Company,,,,,3,0,
+Marjan,developer,staged,Marjan LLC | Marjan Development,Marjan,,UAE,,2,1,Relates to Al Marjan Island (see locations); name is ambiguous.
+Object 1,unknown,staged,Object 1,,,,,3,0,Type unknown - please check.
+BNW Developments,developer,staged,BNW Developments,,,,,2,0,
+Mohamed Alabbar,executive,staged,Mohamed Alabbar,,Emaar Properties,UAE,mohamed-alabbar,2,0,
+Ajmal Estate Developers,developer,staged,Ajmal Estate Developers,,,,,2,0,
+JLL,brokerage,staged,JLL,,,,,2,0,Context has 'JLL (Jones Lang LaSalle) MENA' - probably the same company; confirm.
+RAFAL,developer,staged,RAFAL,,,Saudi Arabia,,2,0,Type from general knowledge - confirm.
+Saria,unknown,staged,Saria,,,,,2,0,Type inferred - please confirm.
+Gulf News,News/Media,staged,Gulf News,,,,gulf-news,2,0,
+Housing Oman,unknown,staged,Housing Oman,,,,,2,0,Type inferred - please confirm.
+dubizzle,proptech,staged,dubizzle,,,UAE,,2,0,
+Providential Properties,developer,staged,Providential Properties,,,,,2,0,
+AVANA Residences,developer,staged,AVANA Residences,,,,,2,0,
+AEON & TRISL,developer,staged,AEON & TRISL | Aeon & Trisl Real Estate,,,UAE,,2,0,Type from general knowledge - confirm.
+Mira Developments,developer,staged,Mira Developments,,,,,2,0,
+Bandar Al Khairan Resort,brand_partner,staged,Bandar Al Khairan Resort,,,,,2,0,
+AtkinsRéalis,contractor,staged,AtkinsRéalis,,,,,2,0,Type from general knowledge - confirm.
+Jabal Omar,developer,staged,Jabal Omar | Jabal Omar Development Company,,,Saudi Arabia,,2,0,Type from general knowledge - confirm.
+Bayut KSA,proptech,staged,Bayut KSA,,Bayut,Saudi Arabia,,2,0,
+Samana Developers,developer,staged,SAMANA Developers,,,,,2,0,
+Al Habtoor Group,developer,staged,Al Habtoor Group,,,,al-habtoor-group,2,0,
+Imtilak Global,unknown,staged,Imtilak Global,,,,,2,0,Type inferred - please confirm.
+Trump,brand_partner,staged,Trump,,,,,2,0,"Unclear (person, brand or organisation) - needs a decision."
+Ohana,developer,staged,Ohana | Ohana Development,,,UAE,,2,0,Type from general knowledge - confirm.
+Riyadh Holding,developer,staged,Riyadh Holding | Riyadh Holding Co.,,,,,2,0,
+RERA,government,staged,RERA,,,,,2,0,
+Aman Group,developer,staged,Aman Group,,,,,2,0,
+Emaar Hospitality Group,developer,staged,Emaar Hospitality Group,,Emaar Properties,UAE,,2,0,
+First Avenue for Real Estate Development Company,developer,staged,First Avenue for Real Estate Development Company | First Avenue for Real Estate Development Co.,,,,,2,0,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Nesma & Partners,contractor,staged,Nesma and Partners | Nesma & Partners,,,,nesma-partners,2,0,
+Ladun Investment Company,investment,staged,Ladun Investment Company,,,,,2,0,
+Al Ayuni Investment and Contracting Company,investment,staged,Al Ayuni Investment and Contracting Company,,,,,2,0,
+Al Mouj Muscat,developer,staged,Al Mouj Muscat,,,,al-mouj-muscat,2,0,
+Public Authority for Housing Welfare,government,staged,Public Authority for Housing Welfare,,,,,2,0,
+Department of Municipalities and Transport,government,staged,Department of Municipalities and Transport,,,,,2,0,
+Sphere Entertainment Co.,brand_partner,staged,Sphere Entertainment Co. | Sphere Entertainment,,,,,2,0,
+RAK Properties,developer,staged,RAK Properties,,,,,2,0,
+Sharafi Development,developer,staged,Sharafi Development,,,,,2,0,
+Sharafi Group Investments,investment,staged,Sharafi Group Investments,,,,,2,0,
+Saudi Real Estate Refinance Co.,developer,staged,Saudi Real Estate Refinance Co.,,,,,2,0,
+Dubai Future District Fund,investment,staged,Dubai Future District Fund,,,,,2,0,
+Capital Trustees Board,government,staged,Capital Trustees Board,,,,,2,0,
+Royal Commission for Makkah City and Holy Sites (RCMC),government,staged,Royal Commission for Makkah City and Holy Sites (RCMC) | Royal Commission for Makkah City and Holy Sites,,,,,2,0,
+Abu Dhabi Real Estate Centre,government,staged,Abu Dhabi Real Estate Centre | Abu Dhabi Real Estate Centre (ADREC),,,,,2,0,"variants differ (Group/Properties/Holding...) - may be parent and subsidiary, check"
+Sakan Al-Malqa Real Estate Company (The Fund),investment,staged,Sakan Al-Malqa Real Estate Company (The Fund),,,,,2,0,
+Ariane Real Estate,developer,staged,Ariane Real Estate,,,,ariane-real-estate,2,0,
+KAFD DMC,developer,staged,KAFD DMC,,,,,2,0,District management company for KAFD - confirm type.
+Al Rajhi Capital,finance,staged,Al Rajhi Capital,,,Saudi Arabia,,2,0,
+Cityscape Global,developer,staged,Cityscape Global,,,,,2,0,
+Tahaluf,unknown,staged,Tahaluf,,,,,2,0,Type inferred - please confirm.
+NHC,government,staged,NHC,,,,,2,0,
+Cenomi Centers,unknown,staged,Cenomi Centers,,,,,2,0,Type inferred - please confirm.
+Dubai Government,government,staged,Dubai Government,,,,,2,0,
+Siada,unknown,staged,Siada,,,,,2,0,Type inferred - please confirm.
+IOPn,unknown,staged,IOPn,,,,,2,0,Type inferred - please confirm.
+Innovation City,developer,staged,Innovation City,,,,,2,0,
+AVENEW Development,developer,staged,AVENEW Development,,,,,2,0,
+Al-Ojaimi Contracting,unknown,staged,Al-Ojaimi Contracting,,,,,2,0,Type inferred - please confirm.
+Dhofar Municipality,government,staged,Dhofar Municipality,,,,,2,0,
+Sharjah Real Estate Registration Department,government,staged,Sharjah Real Estate Registration Department,,,,,2,0,
+Algharraa International Real Estate Development,developer,staged,Algharraa International Real Estate Development,,,,,2,0,
+Sultan Haitham City,project,staged,Sultan Haitham City,,,Oman,,2,0,Master development in Muscat; also in locations.
+Al Ghanam Real Estate,developer,staged,Al Ghanam Real Estate,,,,,2,0,
+Infath,government,staged,Infath,,,,,2,0,
+Invespy,unknown,staged,Invespy,,,,,2,0,Type inferred - please confirm.
+Rentify,unknown,staged,Rentify,,,,,2,0,Type inferred - please confirm.
+Jeddah Municipality,government,staged,Jeddah Municipality,,,,,2,0,
+Public Authority for Special Economic Zones and Free Zones (Opaz),government,staged,Public Authority for Special Economic Zones and Free Zones (Opaz),,,,,2,0,
+Talaat Moustafa Group Saudi,developer,staged,Talaat Moustafa Group Saudi,,,,,2,0,
+New Murabba,project,staged,New Murabba,,,Saudi Arabia,,2,0,
+Kuwait Authority for Partnership Projects,government,staged,Kuwait Authority for Partnership Projects,,,,,2,0,
+Emaar Development,developer,staged,Emaar Development,,Emaar Properties,UAE,,2,0,
+Wasl Group,developer,staged,Wasl Group,,,UAE,,2,0,Parent of Wasl Properties.
+Majid Al-Hogail,executive,staged,Minister of Municipalities and Housing Majid Al-Hogail,,Ministry of Municipalities and Housing (MOMAH),Saudi Arabia,,2,0,Possibly the same person as context 'H.E. Majed Al-Hogail' (different spelling) - confirm.
+Wujha Real Estate,developer,staged,Wujha Real Estate,,,Saudi Arabia,,1,0,
+Majid Al Futtaim Properties,developer,staged,Majid Al Futtaim Properties,,Majid Al Futtaim,UAE,majid-al-futtaim-properties,0,0,
+Stake Saudi,investment,staged,Stake Saudi,,Stake,Saudi Arabia,stake-saudi,0,0,
+Sobha Group,developer,staged,Sobha Group,,,UAE,sobha-group,0,0,Parent placeholder from context.parent_entity.
+Aayan Leasing,unknown,staged,Aayan Leasing,,,,aayan-leasing,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Action Group Holdings,unknown,staged,Action Group Holdings,,,,action-group-holdings,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Al Khabeer Capital,unknown,staged,Al Khabeer Capital,,,,al-khabeer-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Al Naboodah Group,unknown,staged,Al Naboodah Group,,,,al-naboodah-group,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Alinma Investment,unknown,staged,Alinma Investment,,,,alinma-investment,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+CSCEC Global,unknown,staged,CSCEC Global,,,,cscec-global,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Dar Group,unknown,staged,Dar Group,,,,dar-group,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Dubai Real Estate Corporation,unknown,staged,Dubai Real Estate Corporation,,,,dubai-real-estate-corporation,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Dubai World,unknown,staged,Dubai World,,,,dubai-world,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Equitativa,unknown,staged,Equitativa,,,,equitativa,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Ezdan Holding,unknown,staged,Ezdan Holding,,,,ezdan-holding,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Hope Ventures,unknown,staged,Hope Ventures,,,,hope-ventures,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Jadwa Investment,unknown,staged,Jadwa Investment,,,,jadwa-investment,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+KIPCO,unknown,staged,KIPCO,,,,kipco,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Meezan Capital,unknown,staged,Meezan Capital,,,,meezan-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Musharaka Capital,unknown,staged,Musharaka Capital,,,,musharaka-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Orascom Development,unknown,staged,Orascom Development,,,,orascom-development,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Power International Holding,unknown,staged,Power International Holding,,,,power-international-holding,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Qatar Foundation,unknown,staged,Qatar Foundation,,,,qatar-foundation,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Riyad Capital,unknown,staged,Riyad Capital,,,,riyad-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Saudi Fransi Capital,unknown,staged,Saudi Fransi Capital,,,,saudi-fransi-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+SEDCO Capital,unknown,staged,SEDCO Capital,,,,sedco-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Springfield Real Estate,unknown,staged,Springfield Real Estate,,,,springfield-real-estate,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+ZED Capital,unknown,staged,ZED Capital,,,,zed-capital,0,0,Placeholder created from a parent_entity reference in context; name derived from the slug - please confirm.
+Ministry of Municipalities and Housing (MOMAH),government,staged,Ministry of Municipalities and Housing (MOMAH) | Ministry of Municipalities and Housing | MOMAH,,,Saudi Arabia,momah-saudi,1,0,Rev 2026-10-06: added because Majid Al-Hogail names it as parent (it is in context as momah-saudi). Count = approved-signal mentions only; article mentions not counted. Older name variant seen once in a rejected signal: Ministry of Municipal and Rural Affairs and Housing (MOMAH) - not added.

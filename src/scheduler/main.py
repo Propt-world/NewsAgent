@@ -25,6 +25,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo.errors import DuplicateKeyError
 import httpx
@@ -42,6 +43,12 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
+from src.newsroom.compose import approval_blocked_reason
+from src.newsroom.db import ensure_newsroom_indexes
+from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
+from src.newsroom.resync import nightly_repair
+from src.newsroom.router import mount_newsroom
+from src.newsroom.status import log_alerts
 from src.models.Responses import (
     GenericResponse,
     SchedulerDatabaseHealthResponse,
@@ -198,6 +205,23 @@ async def cursor_to_list(cursor):
     return [doc async for doc in cursor]
 
 
+async def submit_article_job(http_client: httpx.AsyncClient, link: str, check_real_estate: bool) -> bool:
+    """Sends one article to the worker queue through the main API's /submit-job. True if accepted."""
+    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
+    headers = {}
+    if settings.NEWSAGENT_API_KEY:
+        headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
+    payload = {"source_url": link, "max_retries": 3, "check_real_estate": check_real_estate}
+    try:
+        resp = await http_client.post(f"{api_base}/submit-job", json=payload, headers=headers)
+        resp.raise_for_status()
+        logger.info(f"🚀 Submitted: {link}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to submit {link}: {e}")
+        return False
+
+
 async def check_single_source(source: dict):
     # Acquire semaphore
     async with CONCURRENCY_LIMIT:
@@ -247,25 +271,8 @@ async def check_single_source(source: dict):
                     except Exception:
                         continue
 
-                    # PREPARE API REQUEST
-                    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
-                    api_url = f"{api_base}/submit-job"
-
-                    # [FIX] ADD SECURITY HEADERS
-                    headers = {}
-                    if settings.NEWSAGENT_API_KEY:
-                        headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
-                    # ----------------------------------
-
-                    payload = {"source_url": link, "max_retries": 3}
-
-                    try:
-                        # [FIX] PASS HEADERS HERE
-                        resp = await http_client.post(api_url, json=payload, headers=headers)
-                        resp.raise_for_status()
-                        logger.info(f"🚀 Submitted: {link}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to submit {link}: {e}")
+                    # Articles found by the scheduler get the real-estate check (when it is switched on)
+                    if not await submit_article_job(http_client, link, check_real_estate=True):
                         await collections.processed_articles.update_one(
                             {"_id": new_article["_id"]},
                             {"$set": {"status": "submission_failed"}}
@@ -329,6 +336,16 @@ async def lifespan(app: FastAPI):
         # Do not block startup. /health stays ALB-safe and /health/db or
         # /health/full exposes the live dependency state.
 
+    if settings.newsroom_enabled:
+        # Runs in the background so startup never waits on it; failures are only logged.
+        app.state.newsroom_index_task = asyncio.create_task(ensure_newsroom_indexes())
+        # Every night the Newsroom repairs link details that missed an update (logged; never raises).
+        scheduler.add_job(nightly_repair, CronTrigger(hour=3, minute=0, timezone=settings.NEWSROOM_BUDGET_TIMEZONE),
+                          id="newsroom_nightly_repair", replace_existing=True)
+        # Alerts for CloudWatch: one "NEWSROOM_ALERT <code>: ..." log line per problem (never raises).
+        scheduler.add_job(log_alerts, IntervalTrigger(minutes=settings.NEWSROOM_ALERT_CHECK_MINUTES),
+                          id="newsroom_alerts", replace_existing=True)
+
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()
     logger.info("--- 🗓️ Scheduler Service Started ---")
@@ -350,6 +367,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Newsroom API: mounted only when NEWSROOM_ENABLED is true (unset = scheduler unchanged)
+if mount_newsroom(app, settings.newsroom_enabled):
+    logger.info("Newsroom API mounted at /newsroom")
 
 @app.get(
     "/health",
@@ -458,9 +479,12 @@ async def full_health_check(response: Response):
     },
     dependencies=[Depends(verify_webhook_secret)],
 )
-async def store_result(payload: Dict[str, Any]):
+async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTasks):
     url = payload.get("source_url")
     data = payload.get("data")
+
+    if url and payload.get("status") == NOT_REAL_ESTATE:
+        return await store_not_real_estate(url, payload)
 
     if not url or not data:
         raise HTTPException(status_code=400, detail="Invalid Payload")
@@ -481,19 +505,58 @@ async def store_result(payload: Dict[str, Any]):
 
     if result.matched_count == 0:
         logger.info("[WEBHOOK] URL not in scheduler DB. Creating new record.")
-        await collections.processed_articles.insert_one(
-            {
-                "_id": str(uuid.uuid4()),
-                "source_id": "manual_submission",
-                "url": url,
-                "status": "processed",
-                "discovered_at": datetime.now(timezone.utc),
-                "processed_at": datetime.now(timezone.utc),
-                "final_output": data,
-            }
-        )
+        record = {
+            "_id": str(uuid.uuid4()),
+            "source_id": "manual_submission",
+            "url": url,
+            "status": "processed",
+            "discovered_at": datetime.now(timezone.utc),
+            "processed_at": datetime.now(timezone.utc),
+            "final_output": data,
+        }
+        # Newsroom: a composed article (Propt Newsroom) keeps its own source id and the compose run it came from
+        if settings.newsroom_enabled and newsroom_composed(url, payload.get("newsroom")):
+            record["source_id"] = payload["newsroom"]["source_id"]
+            record["generated_from"] = payload["newsroom"]["generated_from"]
+            record["author"] = payload["newsroom"]["author"]
+        await collections.processed_articles.insert_one(record)
+
+    # Newsroom: suggestions from the names the pipeline found, and refreshed links (after the response; failures only logged)
+    if settings.newsroom_enabled:
+        background_tasks.add_task(article_stored, url, payload.get("newsroom_names"))
 
     return {"status": "ok", "message": "Result stored"}
+
+
+NOT_REAL_ESTATE = "not_real_estate"
+# Only an article still waiting for its result can be marked; a processed or reviewed one is never changed.
+FILTERABLE_STATUSES = ["queued", "submission_failed", NOT_REAL_ESTATE]
+
+
+async def store_not_real_estate(url: str, payload: Dict[str, Any]) -> Dict[str, str]:
+    """The worker's real-estate check skipped this article: mark it so it is never processed again
+    (the scheduler already knows the url) and show it in the backoffice's Filtered out list."""
+    check = payload.get("real_estate_check") if isinstance(payload.get("real_estate_check"), dict) else {}
+    title = payload.get("title")
+    record = {
+        "status": NOT_REAL_ESTATE,
+        "filtered_at": datetime.now(timezone.utc),
+        "real_estate_check": {
+            "is_real_estate": False,
+            "reason": str(check.get("reason") or "")[:500],
+            "model": str(check.get("model") or "")[:100],
+            "checked_at": str(check.get("checked_at") or "")[:40],
+            "title": str(title)[:300] if title else None,
+        },
+    }
+    collections = get_async_scheduler_collections()
+    result = await collections.processed_articles.update_one(
+        {"url": url, "status": {"$in": FILTERABLE_STATUSES}}, {"$set": record})
+    if result.matched_count == 0:
+        logger.warning(f"[WEBHOOK] Not-real-estate result for {url} ignored: no article waiting for a result.")
+        return {"status": "ignored", "message": "No article waiting for a result"}
+    logger.info(f"[WEBHOOK] 🚫 Not real estate: {url}")
+    return {"status": "ok", "message": "Marked not real estate"}
 
 
 # 2. SOURCE MANAGEMENT ENDPOINTS
@@ -752,7 +815,10 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
 async def list_articles(
     page: int = Query(1, ge=1, description="Page number (starts at 1)"),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    discovered_before: Optional[datetime] = Query(
+        None, description="Only articles discovered at or before this time (for 'load more' that new arrivals "
+                          "cannot shift; use with page=1). The total still counts every article of the status."),
 ):
     collections = get_async_scheduler_collections()
     query = {}
@@ -761,6 +827,8 @@ async def list_articles(
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)
+    if discovered_before is not None:
+        query["discovered_at"] = {"$lte": discovered_before}
 
     # 2. Calculate Skip
     skip = (page - 1) * limit
@@ -841,6 +909,13 @@ async def update_article_status(
             detail=f"Invalid status. Must be one of: {allowed_statuses}",
         )
 
+    if new_status == "approved":
+        # Propt Newsroom articles need an image first (checked here so no screen can skip it).
+        blocked = approval_blocked_reason(await collections.processed_articles.find_one(
+            {"_id": article_id}, {"source_id": 1, "final_output.top_image": 1}))
+        if blocked:
+            raise HTTPException(status_code=422, detail=blocked)
+
     # Trigger embedding generation if approved
     if new_status == "approved":
         try:
@@ -907,6 +982,10 @@ async def update_article_status(
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
+
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the status change itself has already succeeded.
+        await article_status_changed(article_id, new_status)
 
     return {"status": "updated", "message": f"Article status updated to {new_status}", "id": article_id, "new_status": new_status}
 
@@ -1127,6 +1206,10 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
 
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the title change itself has already succeeded.
+        await article_edited(article_id)
+
     return {"status": "updated", "id": article_id, "new_title": new_title.strip(), "new_slug": new_slug}
 
 @app.get(
@@ -1249,6 +1332,40 @@ async def search_articles_similarity(
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT
 @app.post(
+    "/articles/{article_id}/process-anyway",
+    response_model=GenericResponse,
+    description="Sends an article the real-estate check filtered out through the normal pipeline, without the check.",
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": GenericResponse, "description": "Article not found"},
+        status.HTTP_409_CONFLICT: {"model": GenericResponse, "description": "Article is not filtered out"},
+        status.HTTP_502_BAD_GATEWAY: {"model": GenericResponse, "description": "Could not queue the article"},
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def process_anyway(article_id: str):
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id}, {"url": 1, "status": 1})
+    if article is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    # Only from "not_real_estate", in one step, so a double click cannot queue it twice.
+    claimed = await collections.processed_articles.update_one(
+        {"_id": article_id, "status": NOT_REAL_ESTATE},
+        {"$set": {"status": "queued", "real_estate_check.overridden_at": datetime.now(timezone.utc)}},
+    )
+    if claimed.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Only articles filtered out as not real estate can be processed this way")
+    async with httpx.AsyncClient() as http_client:
+        queued = await submit_article_job(http_client, article["url"], check_real_estate=False)
+    if not queued:
+        # Back to the Filtered out list, so the reviewer can try again
+        await collections.processed_articles.update_one(
+            {"_id": article_id, "status": "queued"},
+            {"$set": {"status": NOT_REAL_ESTATE}, "$unset": {"real_estate_check.overridden_at": ""}})
+        raise HTTPException(status_code=502, detail="Could not send the article for processing; try again later")
+    return {"status": "queued", "message": "Sent for processing without the real-estate check", "id": article_id}
+
+
+@app.post(
     "/articles/{article_id}/archive",
     response_model=GenericResponse,
     description="Archive a specific article.",
@@ -1292,6 +1409,10 @@ async def archive_article(article_id: str):
 
     # 3. Delete from Active
     await collections.processed_articles.delete_one({"_id": article_id})
+
+    if settings.newsroom_enabled:
+        # Archived articles stay linked in the Newsroom, shown as archived (errors are logged inside).
+        await article_moved(article_id)
 
     return {"status": "archived", "message": "Article archived successfully", "id": article_id}
 
@@ -1339,6 +1460,10 @@ async def soft_delete_article(article_id: str):
 
     # 3. Delete from Active
     await collections.processed_articles.delete_one({"_id": article_id})
+
+    if settings.newsroom_enabled:
+        # Deleted articles disappear from the Newsroom's related items, history and filters.
+        await article_moved(article_id)
 
     return {"status": "soft_deleted", "message": "Article soft deleted successfully", "id": article_id}
 

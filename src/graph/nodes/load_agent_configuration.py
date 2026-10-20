@@ -38,6 +38,9 @@ REQUIRED_PROMPTS = [
     "content_enrichment_user",
     "social_caption_system",
     "social_caption_user",
+    # Optional in AgentPromptsModel: loaded when present, built-in defaults otherwise
+    "real_estate_check_system",
+    "real_estate_check_user",
 ]
 
 

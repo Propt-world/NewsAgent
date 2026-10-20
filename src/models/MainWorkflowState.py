@@ -34,6 +34,17 @@ class MainWorkflowState(BaseModel):
     # --- Fields for Search Query Generation ---
     search_query_data: Optional[SearchQueryModel] = None
 
+    # --- Newsroom (only set when NEWSROOM_ENABLED) ---
+    # Names found by extract_country: {"companies": [...], "projects": [...], "places": [...]}.
+    # Sent with the webhook result, never stored on the article itself.
+    newsroom_names: Optional[Dict[str, List[str]]] = None
+
+    # --- Real-estate check (scheduler jobs only, when REAL_ESTATE_CHECK_ENABLED) ---
+    # Set by the scheduler for articles it found; manual submissions and "process anyway" leave it off.
+    check_real_estate: bool = False
+    # {"is_real_estate": bool, "reason": str, "model": str, "checked_at": iso}; None = not checked
+    real_estate_check: Optional[Dict] = None
+
     # --- Global Error & Config Fields ---
     max_retries: int = 3
     error_message: Optional[str] = None

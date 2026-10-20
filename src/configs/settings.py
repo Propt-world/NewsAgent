@@ -103,6 +103,64 @@ class Settings(BaseSettings):
     WEBHOOK_URL: Optional[str] = os.getenv('WEBHOOK_URL')
     WEBHOOK_SECRET: Optional[str] = os.getenv('WEBHOOK_SECRET')
 
+    # Newsroom Configuration
+    # Off unless explicitly enabled; when off no /newsroom routes are mounted.
+    # Kept as a string so an empty or unexpected value means "off" instead of a startup error.
+    NEWSROOM_ENABLED: str = os.getenv('NEWSROOM_ENABLED', 'false')
+    # Real-estate check before processing articles the scheduler found (true to enable; off by default)
+    REAL_ESTATE_CHECK_ENABLED: str = os.getenv('REAL_ESTATE_CHECK_ENABLED', 'false')
+    # A classifier: steady answers, so a low temperature (separate from MODEL_TEMPERATURE)
+    REAL_ESTATE_CHECK_TEMPERATURE: float = float(os.getenv('REAL_ESTATE_CHECK_TEMPERATURE', '0'))
+    # How much of the fetched article text the check reads (with the title)
+    REAL_ESTATE_CHECK_CHARS: int = int(os.getenv('REAL_ESTATE_CHECK_CHARS', '1500'))
+    # The Newsroom's own collections (graph, compose jobs) live in MONGO_DB_NAME with the articles
+    # (user decision 2026-10-19). social_scrapper's signals are read from this database (same cluster).
+    NEWSROOM_SIGNALS_DB_NAME: str = os.getenv('NEWSROOM_SIGNALS_DB_NAME', 'newsroom')
+    # social_scrapper's signals collection in that database (read-only for NewsAgent)
+    NEWSROOM_SIGNALS_COLLECTION: str = os.getenv('NEWSROOM_SIGNALS_COLLECTION', 'signals')
+    # "Similar articles" (approved articles only): minimum cosine score to show a match
+    NEWSROOM_SIMILARITY_MIN_SCORE: float = float(os.getenv('NEWSROOM_SIMILARITY_MIN_SCORE', '0.8'))
+    # Compose (Propt-authored articles and signals): model and spending limits (B1, B2)
+    NEWSROOM_COMPOSE_MODEL: str = os.getenv('NEWSROOM_COMPOSE_MODEL', 'gpt-4o-mini')
+    # Compose temperatures, separate from MODEL_TEMPERATURE (the normal pipeline steps).
+    # Writer (the article or signal text): livelier wording.
+    NEWSROOM_COMPOSE_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_TEMPERATURE', '0.7'))
+    # Researcher, Editor and the extract-signal decision: facts and checks, same as the pipeline's extraction.
+    NEWSROOM_COMPOSE_CHECK_TEMPERATURE: float = float(os.getenv('NEWSROOM_COMPOSE_CHECK_TEMPERATURE', '0.5'))
+    NEWSROOM_COMPOSE_PER_HOUR: int = int(os.getenv('NEWSROOM_COMPOSE_PER_HOUR', '10'))
+    NEWSROOM_COMPOSE_CONCURRENT: int = int(os.getenv('NEWSROOM_COMPOSE_CONCURRENT', '2'))
+    NEWSROOM_DAILY_BUDGET_USD: float = float(os.getenv('NEWSROOM_DAILY_BUDGET_USD', '10'))
+    NEWSROOM_BUDGET_TIMEZONE: str = os.getenv('NEWSROOM_BUDGET_TIMEZONE', 'Asia/Dubai')
+    # Held back from the daily budget for each queued or running job, so jobs in progress cannot overshoot it.
+    NEWSROOM_COMPOSE_RESERVE_USD: float = float(os.getenv('NEWSROOM_COMPOSE_RESERVE_USD', '0.05'))
+    # Used when the price list does not know the model (it would report $0 and the cap would never stop
+    # anything). Default: gpt-4o's price per 1M tokens, so the cap errs on the safe side.
+    NEWSROOM_FALLBACK_INPUT_USD_PER_1M: float = float(os.getenv('NEWSROOM_FALLBACK_INPUT_USD_PER_1M', '2.50'))
+    NEWSROOM_FALLBACK_OUTPUT_USD_PER_1M: float = float(os.getenv('NEWSROOM_FALLBACK_OUTPUT_USD_PER_1M', '10.00'))
+    # Counted from when the worker starts the job, not from when it was requested.
+    NEWSROOM_COMPOSE_TIMEOUT_MINUTES: int = int(os.getenv('NEWSROOM_COMPOSE_TIMEOUT_MINUTES', '15'))
+    # How long a job may wait in the queue (busy or restarting worker) before it is given up; nothing is charged.
+    NEWSROOM_COMPOSE_MAX_WAIT_HOURS: float = float(os.getenv('NEWSROOM_COMPOSE_MAX_WAIT_HOURS', '6'))
+    # A job cut off by a worker shutdown is put back in the queue, at most this many starts in total.
+    NEWSROOM_COMPOSE_MAX_ATTEMPTS: int = int(os.getenv('NEWSROOM_COMPOSE_MAX_ATTEMPTS', '3'))
+    NEWSROOM_COMPOSE_QUEUE: str = os.getenv('NEWSROOM_COMPOSE_QUEUE', 'newsroom_compose_jobs')
+    # Alerts (banner in the backoffice + "NEWSROOM_ALERT <code>: ..." log lines for CloudWatch).
+    # The scheduler checks every NEWSROOM_ALERT_CHECK_MINUTES; the compose worker reports in every 30 s.
+    NEWSROOM_ALERT_CHECK_MINUTES: int = int(os.getenv('NEWSROOM_ALERT_CHECK_MINUTES', '10'))
+    NEWSROOM_ALERT_WORKER_MINUTES: int = int(os.getenv('NEWSROOM_ALERT_WORKER_MINUTES', '5'))
+    NEWSROOM_ALERT_QUEUE_MINUTES: int = int(os.getenv('NEWSROOM_ALERT_QUEUE_MINUTES', '10'))
+    NEWSROOM_ALERT_BUDGET_SHARE: float = float(os.getenv('NEWSROOM_ALERT_BUDGET_SHARE', '0.8'))
+    # Real-estate check (when on): alert when more than this share of the last 24 h's articles was filtered out
+    NEWSROOM_ALERT_FILTERED_SHARE: float = float(os.getenv('NEWSROOM_ALERT_FILTERED_SHARE', '0.5'))
+
+    @property
+    def newsroom_enabled(self) -> bool:
+        return self.NEWSROOM_ENABLED.strip().lower() in ("1", "true", "yes", "on")
+
+    @property
+    def real_estate_check_enabled(self) -> bool:
+        return self.REAL_ESTATE_CHECK_ENABLED.strip().lower() in ("1", "true", "yes", "on")
+
     # Scheduler Configuration
     # Main API URL for submitting jobs (used by scheduler service)
     MAIN_API_URL: str = os.getenv('MAIN_API_URL', 'http://localhost:8003')
@@ -112,7 +170,8 @@ class Settings(BaseSettings):
     SCHEDULER_URL: str = os.getenv('SCHEDULER_URL', 'http://scheduler:8001')
 
     # Opik Settings
-    def get_opik_client(self, graph=None):
+    def get_opik_client(self, graph=None, **tracer_options):
+        """tracer_options (optional): extra OpikTracer settings such as tags, metadata or thread_id."""
         if not self.OPIK_API_KEY:
             raise ValueError("OPIK_API_KEY is not set")
         if not self.OPIK_WORKSPACE:
@@ -125,9 +184,9 @@ class Settings(BaseSettings):
 
         # If a graph is provided, pass it to the tracer for visualization
         if graph:
-            opik_tracer = OpikTracer(graph=graph, project_name=self.OPIK_PROJECT_NAME)
+            opik_tracer = OpikTracer(graph=graph, project_name=self.OPIK_PROJECT_NAME, **tracer_options)
         else:
-            opik_tracer = OpikTracer(project_name=self.OPIK_PROJECT_NAME)
+            opik_tracer = OpikTracer(project_name=self.OPIK_PROJECT_NAME, **tracer_options)
 
         return opik_tracer
 

@@ -16,7 +16,8 @@ from src.graph.nodes.content_enrichment import enrich_content
 from src.graph.nodes.generate_seo import generate_seo
 from src.graph.nodes.translate_article import translate_article
 from src.graph.nodes.calculate_reading_time import calculate_reading_time
-from src.graph.nodes.notify_webhook import notify_webhook
+from src.graph.nodes.notify_webhook import notify_webhook, report_not_real_estate
+from src.graph.nodes.check_real_estate import check_real_estate, route_after_check
 from src.graph.nodes.generate_social_media import generate_social_media
 
 # --- Import Conditional Edge Function ---
@@ -50,6 +51,8 @@ class MainWorkflow:
         # 1. Add all the nodes
         builder.add_node("load_agent_configuration", load_agent_configuration)
         builder.add_node("fetch_content", raw_extraction)
+        builder.add_node("check_real_estate", check_real_estate)
+        builder.add_node("report_not_real_estate", report_not_real_estate)
         builder.add_node("extract_links", extract_links)
         builder.add_node("generate_summary", generate_summary)
         builder.add_node("validate_summary", validate_summary)
@@ -70,7 +73,14 @@ class MainWorkflow:
 
         # 3. Define the edges (the flow)
         builder.add_edge("load_agent_configuration", "fetch_content")
-        builder.add_edge("fetch_content", "extract_links")
+        # Real-estate check (scheduler jobs, when enabled): off-topic articles stop here, before any costly step
+        builder.add_edge("fetch_content", "check_real_estate")
+        builder.add_conditional_edges(
+            "check_real_estate",
+            route_after_check,
+            {"continue": "extract_links", "skip": "report_not_real_estate"},
+        )
+        builder.add_edge("report_not_real_estate", END)
         builder.add_edge("extract_links", "generate_summary")
         builder.add_edge("generate_summary", "validate_summary")
 

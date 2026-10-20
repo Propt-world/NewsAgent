@@ -10,6 +10,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.db.enums import PromptStatus
 from src.configs.settings import settings
+from src.newsroom.prompts import NEWSROOM_PROMPTS
+from src.graph.nodes.check_real_estate import REAL_ESTATE_CHECK_PROMPTS
 
 PROMPT_VERSION = "v1.0"
 
@@ -282,7 +284,14 @@ RULES:
 3. If no specific country is relevant (e.g., general tech news), return an empty list.
 4. Output must be a list of country names in English.
 5. Do not include regions (like "Middle East") unless a specific country is not applicable.
-6. Normalize country names (e.g., "UAE" -> "United Arab Emirates", "US" -> "United States").""",
+6. Normalize country names (e.g., "UAE" -> "United Arab Emirates", "US" -> "United States").
+
+NAMES (only when the response has the fields companies, projects and places):
+7. companies: organisations the article is about (developers, investors, banks, government bodies, brokers), written exactly as in the article. Do not shorten, expand, translate or correct names.
+8. projects: named real-estate projects or developments, written exactly as in the article.
+9. places: cities, emirates, districts and communities, written exactly as in the article. Countries belong only in countries.
+10. Never include people, websites, social media handles, or generic phrases (for example "Dubai developers").
+11. Return empty lists when nothing is named. Never guess or invent names.""",
         "input_variables": [],
         "description": "System instruction for country extraction."
     },
@@ -533,6 +542,47 @@ def seed_prompts(db):
             print(f"  [>] Upserted Active Prompt: {data['name']}")
 
 
+def seed_newsroom_prompts(db):
+    """Newsroom compose prompts: kept equal to the code, like the other prompts (prompts are only changed in code)."""
+    upsert_prompt_list(db, NEWSROOM_PROMPTS, "Newsroom")
+
+
+def seed_real_estate_check_prompts(db):
+    """Real-estate check prompts: kept equal to the code, like the other prompts."""
+    upsert_prompt_list(db, REAL_ESTATE_CHECK_PROMPTS, "Real-estate check")
+
+
+def upsert_prompt_list(db, prompts, label):
+    print(f"--- Setting up {label} Prompts ---")
+    prompts_col = db["prompts"]
+    active_status = PromptStatus.ACTIVE.value
+    for data in prompts:
+        now = datetime.now(timezone.utc)
+        result = prompts_col.update_one(
+            {"name": data["name"], "status": active_status},
+            {
+                "$set": {
+                    "name": data["name"],
+                    "content": data["content"],
+                    "description": data["description"],
+                    "input_variables": data["input_variables"],
+                    "version": PROMPT_VERSION,
+                    "status": active_status,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "_id": str(uuid.uuid4()),
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+        if result.upserted_id:
+            print(f"  [+] Added {label} Prompt: {data['name']}")
+        else:
+            print(f"  [>] Upserted {label} Prompt: {data['name']}")
+
+
 def seed_email_recipients(db):
     print("--- Setting up Email Recipients ---")
     recipients_col = db["email_recipients"]
@@ -649,6 +699,8 @@ def init_db(mode: str = "upsert", yes: bool = False):
             reset_application_collections(db)
 
         seed_prompts(db)
+        seed_newsroom_prompts(db)
+        seed_real_estate_check_prompts(db)
         seed_email_recipients(db)
         seed_categories(db)
         ensure_operational_indexes(db)

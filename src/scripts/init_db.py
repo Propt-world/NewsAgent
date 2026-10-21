@@ -25,10 +25,10 @@ INITIAL_DATA = [
 The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
 
 TTS FORMATTING RULES:
-1. Plain flowing prose only: no bullet points, markdown, headings, emojis, or special characters.
+1. Plain flowing prose only: no bullet points, markdown, headings, emojis, or special characters (the usual symbols in figures, such as $ and %, are fine).
 2. Short, declarative sentences with a natural spoken rhythm.
-3. Keep numbers, years, and dates as digits (e.g., "2030", "571.8 billion", "12,000", "October 18"); never spell numbers out as words. Write only symbols and short forms as words: "1.2 billion dollars" not "$1.2B"; "45 percent" not "45%"; "5 billion Egyptian pounds" not "EGP 5bn"; "square feet" not "sq ft".
-4. Expand acronyms and abbreviations on first mention (e.g., "return on investment" not "ROI"), unless the short form is the common spoken usage (e.g., "UAE").
+3. Write numbers, years, dates, amounts, and percentages with digits and their usual symbols and short forms, as the article does (e.g., "$5 billion", "AED2.1 trillion", "45%", "2030", "12,000 sq ft", "October 18"). Never spell numbers out as words.
+4. Keep common acronyms and short forms as the article uses them (e.g., "ROI", "UAE").
 5. Avoid parentheses, slashes, and mid-sentence asides.
 
 CONTENT RULES:
@@ -51,7 +51,7 @@ CONTENT RULES:
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
 
-Remember the hard constraints: 210-230 words, plain flowing prose written to be heard as well as read, numbers, years, and dates kept as digits with only symbols and short forms written as words ("45 percent" not "45%"), and no bullets, markdown, emojis, or special characters.
+Remember the hard constraints: 210-230 words, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -74,7 +74,7 @@ You will score the summary on two metrics:
 2.  **Tone Score (0.0-10.0):** How well does the summary's tone match the original article?
 
 You will also run one formatting check:
--   **Format Check (pass/fail):** The summary is 210-230 words, written as plain flowing prose with no bullets, markdown, emojis, or special characters, and numbers, years, and dates are kept as digits while symbols and short forms are written as words for text-to-speech ("45 percent" not "45%", "1.2 billion dollars" not "$1.2B"). Numbers spelled out as words (e.g., "two thousand thirty") fail this check.
+-   **Format Check (pass/fail):** The summary is 210-230 words, written as plain flowing prose with no bullets, markdown, emojis, or special characters (the usual symbols in figures, such as $ and %, are allowed), and numbers, years, and dates are written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"). Numbers spelled out as words (e.g., "two thousand thirty") fail this check.
 
 You will then decide if the summary is valid:
 -   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND the Format Check passes AND zero hallucinations.
@@ -375,7 +375,7 @@ RULES:
 3. Do not summarize; provide a faithful, full translation of the content.
 4. Ensure the Arabic text flows naturally and is grammatically correct.
 5. Translate every provided section, including the "Why this matters" sentence; keep it a single sentence in Arabic.
-6. The Arabic summary is played aloud through the app's text-to-speech feature: write numbers, currencies, and units as fully speakable Arabic words (e.g., "مليار دولار" not "$1B"), avoid Latin abbreviations and symbols, and keep sentences short with a natural spoken rhythm.""",
+6. The Arabic summary is played aloud through the app's text-to-speech feature: keep numbers, years, and percentages as digits with their usual symbols, as in the English text (e.g., "5 مليارات دولار", "45%", "2030"), never spell numbers out as words, and keep sentences short with a natural spoken rhythm.""",
         "input_variables": [],
         "description": "System instruction for Arabic translation."
     },

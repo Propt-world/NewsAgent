@@ -44,7 +44,7 @@ from pymongo.errors import DuplicateKeyError
 from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
-from src.newsroom.desks import AUTHOR, DESKS, suggest_desk  # AUTHOR re-exported: used by the worker
+from src.newsroom.desks import AUTHOR, DESKS, suggest_desk, topic_warning  # AUTHOR re-exported: used by the worker
 from src.newsroom.entities import Conflict, Invalid, NotFound
 from src.newsroom.locations import items_query
 from src.newsroom.public_links import COMPOSED_SOURCE_ID  # re-exported: used by pipeline and the worker
@@ -152,8 +152,9 @@ def check_source_mix(output_type: str, source_docs: List[dict], made: set) -> No
 
 
 async def source_mix_problems(sources: ndb.ItemSources, items: List[dict]) -> dict:
-    """For the compose window: why these sources cannot become a new article / a new signal (None = they can).
-    The same rule is applied again when the job is requested."""
+    """For the compose window: why these sources cannot become a new article / a new signal (None = they can),
+    and a topic warning when they seem to be about different subjects. The source mix rule is applied again
+    when the job is requested; the topic warning is only a warning (the reviewer may go on)."""
     keys = list(dict.fromkeys((i["source_type"], i["source_id"]) for i in items))
     docs = []
     for source_type in ("article", "signal"):
@@ -168,6 +169,9 @@ async def source_mix_problems(sources: ndb.ItemSources, items: List[dict]) -> di
             problems[output_type] = None
         except Invalid as e:
             problems[output_type] = str(e)
+    topics = await _source_topics(sources, keys)
+    problems["topics"] = topic_warning([(d["title"] or d["source_id"], topics.get((d["source_type"], d["source_id"])))
+                                        for d in docs])
     return problems
 
 
@@ -189,20 +193,26 @@ def check_compose_type(output_type: str, compose_type: Optional[str], unrelated_
                       f"place ({names}). Choose roundup, comparison or background.")
 
 
-async def desk_suggestion(sources: ndb.ItemSources, items: List[dict]) -> Optional[dict]:
-    """The desk the sources' topics point to (a hint for the compose window; no AI call), or None."""
+async def _source_topics(sources: ndb.ItemSources, keys: List[tuple]) -> dict:
+    """(source_type, source_id) -> the item's topics (an article's categories, a signal's categories)."""
     from bson import ObjectId
 
-    topics = []
-    article_ids = [i["source_id"] for i in items if i["source_type"] == "article"]
+    topics = {}
+    article_ids = [i for t, i in keys if t == "article"]
     if article_ids:
         async for doc in sources.articles.find({"_id": {"$in": article_ids}}, {"final_output.category": 1}):
-            topics.append((doc.get("final_output") or {}).get("category") or [])
-    signal_ids = [ObjectId(i["source_id"]) for i in items if i["source_type"] == "signal" and ObjectId.is_valid(i["source_id"])]
+            topics[("article", doc["_id"])] = (doc.get("final_output") or {}).get("category") or []
+    signal_ids = [ObjectId(i) for t, i in keys if t == "signal" and ObjectId.is_valid(i)]
     if signal_ids:
         async for doc in sources.signals.find({"_id": {"$in": signal_ids}}, {"categories": 1}):
-            topics.append(doc.get("categories") or [])
-    return suggest_desk(topics)
+            topics[("signal", str(doc["_id"]))] = doc.get("categories") or []
+    return topics
+
+
+async def desk_suggestion(sources: ndb.ItemSources, items: List[dict]) -> Optional[dict]:
+    """The desk the sources' topics point to (a hint for the compose window; no AI call), or None."""
+    keys = list(dict.fromkeys((i["source_type"], i["source_id"]) for i in items))
+    return suggest_desk((await _source_topics(sources, keys)).values())
 
 
 def composed_url(run_id: str) -> str:

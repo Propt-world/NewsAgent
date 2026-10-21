@@ -36,13 +36,20 @@ NEWSROOM_RULES = """NEWSROOM RULES (every composed article)
 EDITOR_RULES = f"""EDITORIAL RULES
 Also check the draft against these rules. Fix anything that breaks them (for example remove promotional wording, attribute claims to whoever made them, remove figures the sources do not give) and list each fix in "changes".
 
-{NEWSROOM_RULES}"""
+{NEWSROOM_RULES}
+
+STRUCTURE CHECKS (fix these too and list each fix in "changes")
+- Headline: describes each figure as the sources do (no relabelling, for example infrastructure spending as "real estate investment") and matches the lead.
+- First sentence: the hook, stating the most newsworthy concrete fact. Rewrite it if it opens with background or is one source's opening sentence reworded.
+- Copying: rewrite any sentence that copies a source, or reuses a run of more than eight of its words, outside an attributed direct quote.
+- Ending: delete a final summary, moral or wrap-up line (for example "Overall", "In conclusion", "This highlights", "Both ... underscore"); end on the last relevant confirmed fact or next step instead.
+- Length: 6-10 paragraphs of 1-3 sentences; split longer paragraphs."""
 
 # How every composed article is built (all articles, with or without a desk): the inverted pyramid,
 # with the lead's first sentence as the hook (user's news-writing guidance, 2026-10-15).
 ARTICLE_STRUCTURE = """ARTICLE STRUCTURE (inverted pyramid: the most important information first)
-- Headline (the title): short, specific and accurate; the main news in a few words, with a name, place or figure where possible. Present tense for past events ("launches", "sells"), "to" for future events ("to open"). Leave out "a", "an" and "the" where it still reads naturally. No questions, puns, teasers or clickbait.
-- Lead (first paragraph, 1-2 sentences): the hook. The first sentence states the single most newsworthy, concrete fact (who did what, where, with the key figure) so the reader knows the story at once and wants to read on. Answer who, what, when and where; add why and how only when the sources state them. Never open with a question, a quote, background, scene-setting or phrases such as "In a move to".
+- Headline (the title): short, specific and accurate; the main news in a few words, with a name, place or figure where possible. Present tense for past events ("launches", "sells"), "to" for future events ("to open"). Leave out "a", "an" and "the" where it still reads naturally. No questions, puns, teasers or clickbait. Describe each figure as the sources describe it: never relabel it (for example infrastructure spending is not "real estate investment", and sales transactions are not investment).
+- Lead (first paragraph, 1-2 sentences): the hook. The first sentence states the single most newsworthy, concrete fact (who did what, where, with the key figure) so the reader knows the story at once and wants to read on. Answer who, what, when and where; add why and how only when the sources state them. Never open with a question, a quote, background, scene-setting or phrases such as "In a move to". With several sources, the lead carries the angle from the research notes and matches the headline: it must not be one source's opening sentence reworded.
 - Nut graph (second paragraph, 1-2 sentences): the immediate context from the sources, for example what this is part of, or how it compares with an earlier sourced figure or phase. Keep it short and factual; the separate "why this matters" section explains the significance for readers, so do not write that here.
 - Body: the remaining facts in order of importance, most important first (key figures and details, then supporting details, then earlier background). One point per paragraph.
 - Quotes and attribution: attribute information clearly, for example "according to [source]" or "[company] said". Use a direct quote only when it appears word for word in a source and adds information or perspective; attribute it to the person and organisation the source names. At most two direct quotes.
@@ -52,10 +59,12 @@ WRITING_RULES = """WRITING RULES
 - Objective: no opinions, emotions or bias of your own (see the newsroom rules).
 - Simple, clear language; avoid jargon. Explain a necessary technical or legal term at its first use, using only what the sources say.
 - 6-10 paragraphs of 1-3 sentences each, plain prose. No markdown, no bullet points, no headings inside the body.
-- Write in your own words; do not copy sentences from the sources (attributed direct quotes excepted).
+- Write in your own words; do not copy sentences from the sources (attributed direct quotes excepted). Never reuse a run of more than eight words from a source outside a direct quote, and do not follow a source's sentence order.
+- With several sources, build one story around the angle: do not retell one source and then the next, joined by words such as "In contrast" or "Meanwhile". (A roundup gives each story its own paragraphs, linked by the shared theme the sources support.)
 
 BEFORE YOU FINISH
 - Check every name, title, date, number and place against the sources.
+- Check the first sentence is the hook and the last paragraph is not a summary or wrap-up.
 - Reread for flow and logic gaps; cut repetition, filler and unneeded words."""
 
 NEWSROOM_PROMPTS = [

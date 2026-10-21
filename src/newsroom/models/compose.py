@@ -39,6 +39,8 @@ class DeskSuggestionRequest(BaseModel):
 class SourceCheck(BaseModel):
     article: Optional[str] = Field(None, description="Why these sources cannot become a new article (empty = they can)")
     signal: Optional[str] = Field(None, description="Why these sources cannot become a new signal (empty = they can)")
+    topics: Optional[str] = Field(None, description="Warning when the sources' topics share no desk (empty = no "
+                                                    "warning); the reviewer may still go on")
 
 
 class DeskSuggestion(BaseModel):

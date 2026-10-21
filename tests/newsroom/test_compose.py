@@ -904,8 +904,23 @@ def test_the_compose_window_can_ask_before_starting(mix):
         return mix.post("/newsroom/compose/source-check", json={"sources": [
             {"source_type": t, "source_id": ids.get(i, i)} for t, i in sources]}).json()
 
-    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None}
+    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None}
     two_signals = check(("signal", "S"), ("signal", "S2"))
     assert "Signals alone are too short" in two_signals["article"] and two_signals["signal"] is None
     two_ours = check(("article", "C1"), ("signal", "CS"))
     assert '"Composed piece"' in two_ours["article"] and "Only one Propt Newsroom item" in two_ours["signal"]
+
+
+def test_the_compose_window_warns_when_the_topics_share_no_desk(mix, sync_db):
+    sync_db["processed_articles"].update_one({"_id": "A1"}, {"$set": {"final_output.category": ["Mega-Projects & Giga-Cities"]}})
+    sync_db["processed_articles"].update_one({"_id": "C1"}, {"$set": {"final_output.category": ["Rental Market Watch"]}})
+    sync_db["signals"].update_one({"_id": ObjectId(mix.signal_id)}, {"$set": {"categories": ["Construction Updates"]}})
+    body = mix.post("/newsroom/compose/source-check", json={"sources": [
+        {"source_type": "article", "source_id": "A1"}, {"source_type": "article", "source_id": "C1"}]}).json()
+    assert body["article"] is None and "different topics" in body["topics"]
+    assert '"Composed piece": Rental' in body["topics"]
+    # Only a warning: the reviewer may still compose these
+    assert _compose(mix, ("article", "A1"), ("article", "C1")).status_code == 202
+    same = mix.post("/newsroom/compose/source-check", json={"sources": [
+        {"source_type": "article", "source_id": "A1"}, {"source_type": "signal", "source_id": mix.signal_id}]}).json()
+    assert same["topics"] is None

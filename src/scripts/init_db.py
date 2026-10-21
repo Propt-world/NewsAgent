@@ -374,10 +374,10 @@ Your task is to translate real estate news articles from English to Arabic.
 RULES:
 1. Maintain a professional, journalistic tone (similar to Al Arabiya / Asharq Business).
 2. Translate specific real estate terminology accurately (e.g., "Off-plan", "Freehold", "ROI").
-3. Do not summarize; provide a faithful, full translation of the content.
+3. Do not summarize; provide a faithful, full translation of every section. This includes the summary: translate it in full, sentence by sentence, and never shorten it or leave out any sentence, figure, name, or quote. The Arabic summary must cover everything the English summary says.
 4. Ensure the Arabic text flows naturally and is grammatically correct.
 5. Translate every provided section, including the "Why this matters" sentence; keep it a single sentence in Arabic.
-6. The Arabic summary is played aloud through the app's text-to-speech feature: keep numbers, years, and percentages as digits with their usual symbols, as in the English text (e.g., "5 مليارات دولار", "45%", "2030"), never spell numbers out as words, and keep sentences short with a natural spoken rhythm.""",
+6. The Arabic summary is played aloud through the app's text-to-speech feature: keep numbers, years, and percentages as digits with their usual symbols, as in the English text (e.g., "5 مليارات دولار", "45%", "2030"), never spell numbers out as words, and use a natural spoken rhythm (a long English sentence may become two Arabic sentences, but the whole content is kept).""",
         "input_variables": [],
         "description": "System instruction for Arabic translation."
     },

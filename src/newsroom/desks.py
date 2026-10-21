@@ -4,7 +4,7 @@ Specialist desks for composed articles (optional; articles only).
 A desk is a subject lens: what the researcher and writer look for and lead with, and whose point of view
 "why this matters" takes. Facts still come only from the sources. With no desk the general writer is used.
 The byline names the desk ("Propt Newsroom · Rental Desk"); the compose window suggests a desk from the
-sources' topics (a hint only, never chosen automatically).
+sources' topics (a hint only, never chosen automatically), and warns when the sources' topics share no desk.
 """
 from collections import Counter
 from typing import Dict, Iterable, List, Optional
@@ -307,25 +307,53 @@ def is_newsroom_byline(author) -> bool:
 TOPIC_DESK = {topic: key for key, d in DESKS.items() for topic in d["topics"]}
 
 
+def source_desks(topics: Iterable[str]) -> List[str]:
+    """The desks one source's topics point to, in desk order."""
+    found = {TOPIC_DESK[t] for t in topics or [] if t in TOPIC_DESK}
+    return [k for k in DESK_KEYS if k in found]
+
+
 def suggest_desk(topics_per_source: Iterable[Iterable[str]]) -> Optional[dict]:
-    """The desk most of the sources' topics point to (counted once per source), or None."""
-    votes, seen_topics = Counter(), {}
+    """The desk the sources' topics clearly point to, or None (user decision 2026-10-21: no suggestion is better
+    than a wrong one). Ranked by the number of sources (each counted once), then by matching topics. With several
+    sources the desk must cover at least two of them, and a tie at the top gives no suggestion."""
+    votes, matches, seen_topics = Counter(), Counter(), {}
+    judged = 0
     for topics in topics_per_source:
         desks = set()
         for topic in topics or []:
             key = TOPIC_DESK.get(topic)
             if key:
                 desks.add(key)
+                matches[key] += 1
                 seen_topics.setdefault(key, []).append(topic)
         votes.update(desks)
+        judged += bool(desks)
     if not votes:
         return None
-    # Most sources first; ties go to the desk listed first
-    key = max(votes, key=lambda k: (votes[k], -DESK_KEYS.index(k)))
+    ranked = sorted(votes, key=lambda k: (votes[k], matches[k]), reverse=True)
+    key = ranked[0]
+    if len(ranked) > 1 and (votes[ranked[1]], matches[ranked[1]]) == (votes[key], matches[key]):
+        return None
+    if judged > 1 and votes[key] < 2:
+        return None
     topics = list(dict.fromkeys(seen_topics[key]))
     sources = votes[key]
     return {"desk": key, "label": DESKS[key]["label"],
             "reason": f"{', '.join(topics)} ({sources} source{'s' if sources != 1 else ''})"}
+
+
+def topic_warning(sources: List[tuple]) -> Optional[str]:
+    """For the compose window: a warning when the sources' topics share no desk, so they are probably about
+    different subjects (user decision 2026-10-21: warn and let the reviewer choose to go on). `sources` is
+    (title, topics) per source. Sources whose topics match no desk cannot be judged and are left out."""
+    judged = [(title, source_desks(topics)) for title, topics in sources]
+    judged = [(title, desks) for title, desks in judged if desks]
+    if len(judged) < 2 or set.intersection(*(set(desks) for _, desks in judged)):
+        return None
+    parts = "; ".join(f'"{title}": {", ".join(DESKS[k]["label"] for k in desks)}' for title, desks in judged)
+    return ("These items are about different topics, so they may not belong in one article "
+            f"({parts}). Choose items on the same topic, or confirm to compose anyway.")
 
 
 def desk_options() -> List[dict]:

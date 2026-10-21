@@ -30,7 +30,16 @@ def test_every_composed_article_follows_the_newsroom_rules():
                  "Avoid promotional language", "Do not calculate new figures", "Never imply firsthand visits"):
         assert rule in NEWSROOM_RULES
     assert NEWSROOM_RULES in PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
-    assert EDITOR_RULES.endswith(NEWSROOM_RULES) and "list each fix" in EDITOR_RULES
+    assert NEWSROOM_RULES in EDITOR_RULES and "list each fix" in EDITOR_RULES
+
+
+def test_the_editor_checks_the_structure_too():
+    """From the first real dev compose (2026-10-21): a reworded source lead, retold sources and a wrap-up ending."""
+    for check in ("STRUCTURE CHECKS", "First sentence: the hook", "Copying:", "more than eight",
+                  "Ending: delete a final summary", "Headline: describes each figure as the sources do"):
+        assert check in EDITOR_RULES, check
+    writer = PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
+    assert "do not retell one source and then the next" in writer and "never relabel it" in writer
 
 
 def test_every_composed_article_follows_the_news_structure():
@@ -48,9 +57,35 @@ def test_suggestion_counts_each_source_once_and_needs_a_matching_topic():
     rental = desks.suggest_desk([["Rental Market Watch", "Vocational Holiday Homes"], ["Rental Market Watch"],
                                  ["Off-Plan & New Launches"]])
     assert (rental["desk"], rental["reason"]) == ("rental", "Rental Market Watch, Vocational Holiday Homes (2 sources)")
-    tie = desks.suggest_desk([["Off-Plan & New Launches"], ["Rental Market Watch"]])
-    assert tie["desk"] == "sales"  # a tie goes to the desk listed first
+    assert desks.suggest_desk([["Off-Plan & New Launches"], ["Rental Market Watch"]]) is None  # a tie: no suggestion
     assert desks.suggest_desk([["Developer News", "People"], []]) is None
+
+
+def test_no_suggestion_when_no_desk_covers_two_sources():
+    # The first real dev compose (2026-10-21): five desks with one source each went to the desk listed first
+    dubai = ["Mega-Projects & Giga-Cities", "Urban Planning & Infrastructure", "Future Forecast", "Developer News"]
+    sharjah = ["High-Yield & ROI", "Off-Plan & New Launches", "Rental Market Watch", "Developer News"]
+    assert desks.suggest_desk([dubai, sharjah]) is None
+    # One source: its strongest desk, by matching topics
+    assert desks.suggest_desk([dubai])["desk"] == "projects"
+    assert desks.suggest_desk([["Off-Plan & New Launches", "Rental Market Watch"]]) is None
+    # Two sources sharing two desks: the one with more matching topics
+    both = desks.suggest_desk([["Off-Plan & New Launches", "Payment Plans & Offers", "Rental Market Watch"],
+                               ["Off-Plan & New Launches", "Rental Market Watch"]])
+    assert (both["desk"], both["reason"]) == ("sales", "Off-Plan & New Launches, Payment Plans & Offers (2 sources)")
+
+
+def test_topic_warning_when_the_sources_share_no_desk():
+    dubai = ["Mega-Projects & Giga-Cities", "Future Forecast", "Developer News"]
+    sharjah = ["High-Yield & ROI", "Off-Plan & New Launches"]
+    warning = desks.topic_warning([("Dubai", dubai), ("Sharjah", sharjah)])
+    assert '"Dubai": Market Data & Trends, Projects & Construction' in warning
+    assert '"Sharjah": Sales & Launches, Investment & Finance' in warning and "compose anyway" in warning
+    # Launch, sale and sold-out stories share the Sales & Launches desk
+    assert desks.topic_warning([("A", ["Off-Plan & New Launches"]), ("B", ["Payment Plans & Offers", "Future Forecast"])]) is None
+    # Items whose topics match no desk cannot be judged
+    assert desks.topic_warning([("A", dubai), ("B", ["Developer News"]), ("C", [])]) is None
+    assert desks.topic_warning([("A", dubai)]) is None
 
 
 def test_byline_names_the_desk():

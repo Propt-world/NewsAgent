@@ -279,7 +279,7 @@ import json
 from fastapi.testclient import TestClient
 from pymongo import MongoClient
 db = MongoClient({mongo_url!r})[{db_name!r}]
-db.processed_articles.insert_one({{"_id": "art-1", "url": "https://example.com/1", "status": "processed",
+db.processed_articles.insert_one({{"_id": "art-1", "source_id": "src-1", "url": "https://example.com/1", "status": "processed",
     "final_output": {{"title": "Emaar launches", "title_ar": "إعمار تطلق", "content": "text", "summary": "s",
                       "summary_ar": "م", "why_this_matters": {{"heading": "Why this matters", "content": "old", "content_ar": "قديم"}}}}}})
 from src.scheduler.main import app
@@ -304,6 +304,8 @@ with TestClient(app) as c:
     stored = db.processed_articles.find_one({{"_id": "art-1"}})
     out["status"] = [s.status_code, stored["status_changed_by"], bool(stored.get("status_changed_at"))]
     out["history"] = [(h["action"], h["by"], h["before"], h["after"]) for h in c.get("/articles/art-1/history").json()["items"]]
+    read = c.get("/articles/art-1").json()  # screens read the version from here to send it back
+    out["read"] = [read["version"], read["edited_by"], read["status_changed_by"]]
 print("RESULT=" + json.dumps(out, ensure_ascii=False))
 """
     env = {k: v for k, v in os.environ.items()}
@@ -322,6 +324,7 @@ print("RESULT=" + json.dumps(out, ensure_ascii=False))
     assert out["empty_title"] == 400  # as before
     assert out["conflict"][:2] == [200, 409] and "changed by ann@propt.global" in out["conflict"][2]
     assert out["status"] == [200, "bob@propt.global", True]
+    assert out["read"] == [3, "ann@propt.global", "bob@propt.global"]
     actions = [(a, by) for a, by, _, _ in out["history"]]
     assert actions == [("status", "bob@propt.global"), ("title", "ann@propt.global"), ("title", "ann@propt.global"),
                        ("text", "unknown")]

@@ -53,7 +53,7 @@ def conflict_message(doc: Optional[dict]) -> str:
     who = (doc or {}).get("edited_by") or "someone"
     when = (doc or {}).get("edited_at")
     at = f" at {when.strftime('%d %b %Y %H:%M')} UTC" if isinstance(when, datetime) else ""
-    return f"This article was changed by {who}{at} after you opened it. Close and open it again to see the latest version."
+    return f"This article was changed by {who}{at} after you opened it. Load the latest version, then make your change again."
 
 
 async def check_version(articles, article_id: str, expected_version: Optional[int]) -> None:

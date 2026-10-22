@@ -291,9 +291,19 @@ with TestClient(app) as c:
     out["no_arabic"] = c.patch("/articles/art-1/text", json={{"summary": "changed"}}).status_code
     out["missing"] = c.post("/articles/nope/translate", json={{"title": "x"}}).status_code
     out["nothing"] = c.post("/articles/art-1/translate", json={{}}).status_code
-    t = c.patch("/articles/art-1/title", json={{"title": "Emaar sells out!"}})
+    t = c.patch("/articles/art-1/title", json={{"title": "Emaar sells out!"}}, headers={{"X-Newsroom-User": "ann@propt.global"}})
     out["title"] = [t.status_code, t.json(), db.processed_articles.find_one({{"_id": "art-1"}})["final_output"]["seo"]]
     out["empty_title"] = c.patch("/articles/art-1/title", json={{"title": " "}}).status_code
+    # Two reviewers: both opened version 2 (after the two edits above); the second save is refused
+    v = db.processed_articles.find_one({{"_id": "art-1"}})["version"]
+    first = c.patch("/articles/art-1/title", json={{"title": "First wins", "expected_version": v}}, headers={{"X-Newsroom-User": "ann@propt.global"}})
+    second = c.patch("/articles/art-1/text", json={{"why_this_matters": "late", "why_this_matters_ar": "متأخر", "expected_version": v}},
+                     headers={{"X-Newsroom-User": "bob@propt.global"}})
+    out["conflict"] = [first.status_code, second.status_code, second.json()["detail"]]
+    s = c.patch("/articles/art-1/status", json={{"status": "rejected"}}, headers={{"X-Newsroom-User": "bob@propt.global"}})
+    stored = db.processed_articles.find_one({{"_id": "art-1"}})
+    out["status"] = [s.status_code, stored["status_changed_by"], bool(stored.get("status_changed_at"))]
+    out["history"] = [(h["action"], h["by"], h["before"], h["after"]) for h in c.get("/articles/art-1/history").json()["items"]]
 print("RESULT=" + json.dumps(out, ensure_ascii=False))
 """
     env = {k: v for k, v in os.environ.items()}
@@ -310,3 +320,10 @@ print("RESULT=" + json.dumps(out, ensure_ascii=False))
     assert out["title"] == [200, {"status": "updated", "id": "art-1", "new_title": "Emaar sells out!",
                                   "new_slug": "emaar-sells-out"}, {"slug": "emaar-sells-out"}]
     assert out["empty_title"] == 400  # as before
+    assert out["conflict"][:2] == [200, 409] and "changed by ann@propt.global" in out["conflict"][2]
+    assert out["status"] == [200, "bob@propt.global", True]
+    actions = [(a, by) for a, by, _, _ in out["history"]]
+    assert actions == [("status", "bob@propt.global"), ("title", "ann@propt.global"), ("title", "ann@propt.global"),
+                       ("text", "unknown")]
+    assert out["history"][0][2:] == [{"status": "processed"}, {"status": "rejected"}]
+    assert out["history"][3][2] == {"why_this_matters": "old", "why_this_matters_ar": "قديم"}

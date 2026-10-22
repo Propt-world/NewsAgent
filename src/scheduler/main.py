@@ -60,7 +60,7 @@ from src.utils.image_compressor import compress_image
 from src.utils.mongo_store import get_mongo_store
 from src.utils.chunker import Chunker
 from src.utils.loader import normalize_document
-from src.utils import article_edit
+from src.utils import article_edit, article_history
 import tempfile
 import shutil
 
@@ -899,7 +899,7 @@ async def get_article(article_id: str):
     dependencies=[Depends(verify_api_key)],
 )
 async def update_article_status(
-    article_id: str, status_update: Dict[str, str] = Body(...)
+    article_id: str, status_update: Dict[str, str] = Body(...), by: str = Depends(article_history.editor)
 ):
     collections = get_async_scheduler_collections()
     new_status = status_update.get("status")
@@ -978,12 +978,16 @@ async def update_article_status(
             # However, if we fail here, status isn't updated. 
             # I will allow status update to proceed but log error strongly.
 
+    before = await collections.processed_articles.find_one({"_id": article_id}, {"status": 1})
+    # status_changed_at / _by: the dashboard counts approvals and rejections from them
     result = await collections.processed_articles.update_one(
-        {"_id": article_id}, {"$set": {"status": new_status}}
+        {"_id": article_id},
+        {"$set": {"status": new_status, "status_changed_at": article_history.now(), "status_changed_by": by}}
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
+    await article_history.record(article_id, by, "status", {"status": (before or {}).get("status")}, {"status": new_status})
 
     if settings.newsroom_enabled:
         # Errors are logged inside; the status change itself has already succeeded.
@@ -1018,7 +1022,8 @@ async def update_article_status(
 )
 async def update_article_image(
     article_id: str, 
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    by: str = Depends(article_history.editor),
 ):
     """
     Updates the 'top_image' and the SEO 'mainEntityOfPage' URL.
@@ -1141,6 +1146,10 @@ async def update_article_image(
                 {"_id": article_id}, 
                 update_op
             )
+            if result.matched_count:
+                await article_history.record(
+                    article_id, by, "image", {"image": (article.get("final_output") or {}).get("top_image")},
+                    {"image": new_image_url})
 
             return {
                 "status": "updated",
@@ -1178,22 +1187,34 @@ async def update_article_image(
     "/articles/{article_id}/title",
     dependencies=[Depends(verify_api_key)]
 )
-async def update_article_title(article_id: str, title_update: Dict[str, str] = Body(...)):
+async def update_article_title(article_id: str, title_update: Dict[str, Any] = Body(...),
+                               by: str = Depends(article_history.editor)):
     """
     Updates the title of a processed article.
-    Expects a JSON payload: {"title": "New Updated Title"}
+    Expects a JSON payload: {"title": "New Updated Title"}, optionally with "expected_version" (the article's
+    version when the screen opened it: refused with 409 if it was edited since).
     """
     try:
         fields = article_edit.title_fields(title_update.get("title"))
     except article_edit.EditError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    expected = title_update.get("expected_version")
+    expected = int(expected) if expected is not None else None
 
     # The title is stored inside the 'final_output' object
     collections = get_async_scheduler_collections()
-    result = await collections.processed_articles.update_one({"_id": article_id}, {"$set": fields})
+    before = await collections.processed_articles.find_one({"_id": article_id}, {"final_output.title": 1})
+    if before is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    stamp = article_history.edit_stamp(by)
+    result = await collections.processed_articles.update_one(
+        article_history.version_query(article_id, expected), {"$set": {**fields, **stamp["$set"]}, "$inc": stamp["$inc"]})
 
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Article not found")
+        latest = await collections.processed_articles.find_one({"_id": article_id}, {"edited_by": 1, "edited_at": 1})
+        raise HTTPException(status_code=409, detail=article_history.conflict_message(latest))
+    await article_history.record(article_id, by, "title", {"title": (before.get("final_output") or {}).get("title")},
+                                 {"title": fields["final_output.title"]})
 
     if settings.newsroom_enabled:
         # Errors are logged inside; the title change itself has already succeeded.
@@ -1213,6 +1234,8 @@ class ArticleTextUpdate(ArticleTextParts):
     title_ar: Optional[str] = Field(None, max_length=500)
     summary_ar: Optional[str] = Field(None, max_length=5000)
     why_this_matters_ar: Optional[str] = Field(None, max_length=5000)
+    expected_version: Optional[int] = Field(None, ge=0, description="The article's version when the screen opened "
+                                            "it: the save is refused (409) if it was edited since")
 
 
 async def _article_for_edit(article_id: str) -> dict:
@@ -1248,20 +1271,42 @@ async def translate_article_text(article_id: str, parts: ArticleTextParts):
                 "changed needs its Arabic too). A changed title or summary also writes the SEO metadata and the "
                 "social captions again with the pipeline's own steps.",
 )
-async def update_article_text(article_id: str, edit: ArticleTextUpdate):
+async def update_article_text(article_id: str, edit: ArticleTextUpdate, by: str = Depends(article_history.editor)):
     doc = await _article_for_edit(article_id)
+    articles = get_async_scheduler_collections().processed_articles
     try:
-        fields, regenerated = await article_edit.save(doc, edit.model_dump())
+        # Before any AI step: an article edited since the screen opened it is not overwritten
+        await article_history.check_version(articles, article_id, edit.expected_version)
+        fields, regenerated = await article_edit.save(doc, edit.model_dump(exclude={"expected_version"}))
+    except article_history.EditConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except article_edit.EditError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except article_edit.ConfigurationError:
         # The full error is in the log ("Critical Configuration Error"); the reviewer gets a short message
         raise HTTPException(status_code=500, detail=article_edit.CONFIGURATION_MESSAGE)
-    await get_async_scheduler_collections().processed_articles.update_one({"_id": article_id}, {"$set": fields})
+    stamp = article_history.edit_stamp(by)
+    result = await articles.update_one(article_history.version_query(article_id, edit.expected_version),
+                                       {"$set": {**fields, **stamp["$set"]}, "$inc": stamp["$inc"]})
+    if result.matched_count == 0:  # edited by someone else while the AI steps ran
+        latest = await articles.find_one({"_id": article_id}, {"edited_by": 1, "edited_at": 1})
+        raise HTTPException(status_code=409, detail=article_history.conflict_message(latest))
+    before, after = article_edit.history_values(doc, fields)
+    await article_history.record(article_id, by, "text", before, {**after, "regenerated": regenerated})
     if settings.newsroom_enabled:
         # Errors are logged inside; the edit itself has already been saved.
         await article_edited(article_id)
     return {"status": "updated", "id": article_id, "updated": sorted(fields), "regenerated": regenerated}
+
+@app.get(
+    "/articles/{article_id}/history",
+    dependencies=[Depends(verify_api_key)],
+    description="Who changed the article and when (title, text, image, status), with the values before and after; "
+                "newest first.",
+)
+async def article_change_history(article_id: str):
+    return {"items": await article_history.list_history(article_id)}
+
 
 @app.get(
     "/articles/search/text",

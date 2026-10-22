@@ -659,6 +659,10 @@ def ensure_operational_indexes(db):
     articles_col.create_index([("url", ASCENDING)], unique=True)
     articles_col.create_index([("discovered_at", -1)])
     articles_col.create_index([("status", ASCENDING)])
+    # Dashboard counts: approvals and rejections in a time window
+    articles_col.create_index([("status", ASCENDING), ("status_changed_at", -1)])
+    # Who changed an article and when (src/utils/article_history.py)
+    db["article_history"].create_index([("article_id", ASCENDING), ("at", -1)])
     print("  [+] Processed articles collection ready")
 
     print("--- Setting up Archive & Trash ---")

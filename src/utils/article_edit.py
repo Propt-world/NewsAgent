@@ -170,3 +170,18 @@ async def save(doc: dict, edit: Dict[str, Optional[str]]) -> Tuple[Dict[str, obj
             # SEO could not be written again: the address still follows the new title, as a title edit does
             fields["final_output.seo.slug"] = title_slug(new["title"])
     return fields, regenerated
+
+
+def history_values(doc: dict, fields: Dict[str, object]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """The edited texts before and after, for the article's change history (only the parts that were saved)."""
+    before_all = current_texts(doc.get("final_output") or {})
+    after: Dict[str, str] = {}
+    for path, value in fields.items():
+        key = path.removeprefix("final_output.")
+        if key in ("title", "title_ar", "summary", "summary_ar"):
+            after[key] = value
+        elif key == "why_this_matters":
+            after["why_this_matters"] = value.get("content") or ""
+            after["why_this_matters_ar"] = value.get("content_ar") or ""
+    changed = {k: v for k, v in after.items() if v != before_all.get(k)}
+    return {k: before_all.get(k, "") for k in changed}, changed

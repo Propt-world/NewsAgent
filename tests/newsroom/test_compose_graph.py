@@ -110,7 +110,7 @@ def test_composed_article_gets_categories_like_any_article(pipeline):
 
 
 def test_why_this_matters_gets_the_rules_it_is_given(pipeline):
-    rules = cw.NEWSROOM_RULES + "\n\n" + cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
+    rules = cw.PROMPTS_BY_NAME["newsroom_rules"]["content"] + "\n\n" + cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
     article, _ = pipeline(author="Propt Newsroom · Rental Desk", wtm_rules=rules)
     system = dict(pipeline.fake.messages["WhyThisMattersLLMOutput"])["system"]
     assert system.endswith(rules)

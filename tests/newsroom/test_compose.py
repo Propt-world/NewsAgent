@@ -589,13 +589,13 @@ def test_no_money_is_spent_without_a_webhook(scene, job, monkeypatch):
     assert model.prompts == []  # no AI call was made
 
 
-def test_a_registry_prompt_without_its_placeholders_is_not_used(monkeypatch):
+def _registry(monkeypatch, docs=None, error=None):
     class Docs:
-        def __init__(self, docs):
-            self.docs = docs
+        def __init__(self, items):
+            self.items = items
 
         def __aiter__(self):
-            self.it = iter(self.docs)
+            self.it = iter(self.items)
             return self
 
         async def __anext__(self):
@@ -606,15 +606,58 @@ def test_a_registry_prompt_without_its_placeholders_is_not_used(monkeypatch):
 
     class Collection:
         def find(self, *a, **k):
-            return Docs([{"name": "newsroom_writer_article", "content": "Write something nice."},
-                         {"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+            if error:
+                raise error
+            return Docs(docs or [])
 
     import src.graph.nodes.load_agent_configuration as lac
     monkeypatch.setattr(lac, "get_async_config_database", lambda: {"prompts": Collection()})
-    prompts = asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor"]))
-    assert prompts["newsroom_writer_article"] == cw.PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
-    assert prompts["newsroom_editor"].endswith("EDITED")  # a complete registry prompt is used
 
+
+def test_compose_prompts_come_only_from_the_registry(monkeypatch):
+    # User decision 2026-10-22: no built-in fallback; a missing or broken prompt fails the job
+    _registry(monkeypatch, [{"name": "newsroom_writer_article", "content": "Write something nice."},
+                            {"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+    with pytest.raises(cw.PromptsUnavailable) as err:
+        asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor", "newsroom_rules"]))
+    message = str(err.value)
+    assert "newsroom_writer_article lacks {research}, {sources}" in message and "newsroom_rules is missing" in message
+    assert "init_db.py --mode upsert" in message
+
+    _registry(monkeypatch, [{"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+    assert asyncio.run(cw.load_prompts(["newsroom_editor"])) == {"newsroom_editor": "Check {draft} against {sources}. EDITED"}
+
+    _registry(monkeypatch, error=RuntimeError("database down"))
+    with pytest.raises(cw.PromptsUnavailable, match="could not be read: database down"):
+        asyncio.run(cw.load_prompts(["newsroom_editor"]))
+
+
+def test_a_job_without_its_prompts_fails_before_any_ai_call(scene, job, monkeypatch):
+    async def missing(names):
+        raise cw.PromptsUnavailable("Prompts not usable: newsroom_rules is missing. Run init_db.py --mode upsert.")
+    run_body = _compose(scene, ("article", "A1"), ("article", "A2")).json()
+    monkeypatch.setattr(cw, "load_prompts", missing)  # after the job fixture's own replacement
+    run, model = job(run_body)
+    assert run["status"] == "failed" and "newsroom_rules is missing" in run["error"]
+    assert model.prompts == []  # no AI call was made
+
+
+def test_composed_signals_are_one_short_sentence_like_grok_s():
+    for field in ("summary_en", "summary_ar"):
+        assert "one-sentence summary" in cw.SignalDraft.model_fields[field].description
+        assert "(10-15 words)" in cw.SignalDraft.model_fields[field].description
+    for name in ("newsroom_writer_signal", "newsroom_extract_signal"):
+        content = cw.PROMPTS_BY_NAME[name]["content"]
+        assert "ONE concise sentence of 10-15 words" in content and "1-3 sentences" not in content
+        assert "1-3 specific sentences" not in content
+    assert "ONE sentence of 10-15 words" in cw.PROMPTS_BY_NAME["newsroom_editor"]["content"]
+
+
+def test_the_rule_blocks_are_registry_prompts_too():
+    from src.newsroom.prompts import EDITOR_RULES, NEWSROOM_RULES
+    assert cw.PROMPTS_BY_NAME["newsroom_rules"]["content"] == NEWSROOM_RULES
+    assert cw.PROMPTS_BY_NAME["newsroom_editor_rules"]["content"] == EDITOR_RULES
+    assert cw.PROMPTS_BY_NAME["newsroom_rules"]["input_variables"] == []
 
 
 # --- Composed signals use Grok's lists; recovering a half-finished save (Slice 3) ---------
@@ -849,7 +892,8 @@ def test_the_desk_shapes_research_writing_why_this_matters_and_the_byline(scene,
     assert "STAGE RESPONSIBILITIES" not in editor
     # "why this matters": the newsroom rules, then the desk's rules for its readers
     desk = cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
-    assert graphs == [f'{cw.NEWSROOM_RULES}\n\n{desk}\nWrite "why this matters" for these readers.']
+    rules = cw.PROMPTS_BY_NAME["newsroom_rules"]["content"]
+    assert graphs == [f'{rules}\n\n{desk}\nWrite "why this matters" for these readers.']
     assert posted["newsroom"]["author"] == posted["data"]["author"] == "Propt Newsroom · Rental Desk"
     assert run["result"]["author"] == "Propt Newsroom · Rental Desk"
     assert "newsroom_desk_rental" in run["prompts"]

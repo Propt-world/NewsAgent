@@ -93,6 +93,8 @@ class ComposeRunOut(BaseModel):
     saved_drafts: Dict[str, dict] = Field(default_factory=dict, description='Saved drafts by number ("1"-"3")')
     source_rejected: bool = False
     source_rejected_key: Optional[str] = None
+    pruned_at: Optional[UtcDatetime] = Field(None, description="When the job's details were removed (only its date, "
+                                                                 "type, status, model, tokens and cost are kept)")
 
 
 class ComposeRunList(BaseModel):

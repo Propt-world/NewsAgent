@@ -972,3 +972,31 @@ def test_the_compose_window_warns_when_the_topics_share_no_desk(mix, sync_db):
     same = mix.post("/newsroom/compose/source-check", json={"sources": [
         {"source_type": "article", "source_id": "A1"}, {"source_type": "signal", "source_id": mix.signal_id}]}).json()
     assert same["topics"] is None
+
+
+# --- 30-day clean-up (user decision 2026-10-23: keep the cost history only) ---------------
+
+def test_old_finished_jobs_keep_only_their_cost_history(scene, sync_db, run_async):
+    old = NOW - timedelta(days=31)
+    full = dict(sources=[{"source_type": "article", "source_id": "A1", "title": "Emaar"}], source_keys=["article:A1"],
+                entity_ids=[EMAAR], prompts={"newsroom_writer_article": "abc"}, model="gpt-4o-mini",
+                tokens={"prompt": 100, "completion": 50, "total": 150}, cost_usd=0.006, compose_type="roundup",
+                desk="sales", finished_at=old + timedelta(minutes=1),
+                result={"drafts": [{"summary_en": "Emaar ..."}]}, saved_drafts={})
+    trimmed = _run(sync_db, _id="old-done", created_at=old, **full)
+    running = _run(sync_db, _id="old-running", created_at=old, **{**full, "status": "running"})
+    recent = _run(sync_db, _id="recent", created_at=NOW - timedelta(days=29), **full)
+
+    assert run_async(cmp.prune_old_runs) == 1
+    doc = sync_db["compose_runs"].find_one({"_id": trimmed})
+    assert (doc["cost_usd"], doc["tokens"]["total"], doc["model"], doc["status"], doc["kind"]) == (0.006, 150, "gpt-4o-mini", "succeeded", "compose")
+    assert (doc["sources"], doc["prompts"], doc["result"], doc["entity_ids"]) == ([], {}, None, [])
+    assert all(f not in doc for f in ("compose_type", "desk", "requested_by", "deadline_at")) and doc["pruned_at"]
+    for untouched in (running, recent):
+        assert sync_db["compose_runs"].find_one({"_id": untouched})["sources"] != []
+    assert run_async(cmp.prune_old_runs) == 0  # done once
+
+    # Compose History still lists it (with its cost) and opens it
+    listed = {r["id"]: r for r in scene.get("/newsroom/compose", params={"limit": 50}).json()["items"]}
+    assert listed[trimmed]["cost_usd"] == 0.006 and listed[trimmed]["pruned_at"] and listed[trimmed]["sources"] == []
+    assert scene.get(f"/newsroom/compose/{trimmed}").status_code == 200

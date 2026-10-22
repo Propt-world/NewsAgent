@@ -237,6 +237,27 @@ async def spent_today(db, now: Optional[datetime] = None) -> float:
     return float(rows[0]["cost"]) if rows else 0.0
 
 
+# What a compose job keeps after NEWSROOM_COMPOSE_KEEP_DAYS (user decision 2026-10-23): the cost history only
+# (kind, output_type, status, created_at, finished_at, model, tokens, cost_usd). Saved articles and signals are
+# never touched; they live in their own collections.
+PRUNED_EMPTY = {"sources": [], "source_keys": [], "entity_ids": [], "excluded_entity_ids": [], "included_entity_ids": [],
+                "prompts": {}, "result": None, "error": None, "saved": None, "saved_drafts": {}, "source_rejected": False}
+PRUNED_REMOVE = ("compose_type", "desk", "requested_by", "deadline_at", "started_at", "attempts", "temperature",
+                 "running_cost_usd", "source_rejected_key")
+
+
+async def prune_old_runs(db, now: Optional[datetime] = None) -> int:
+    """Finished compose jobs created more than NEWSROOM_COMPOSE_KEEP_DAYS ago keep only their date, type, status,
+    model, tokens and cost (sources, prompts, drafts, errors and who asked are removed). Jobs still queued or
+    running are left alone. Returns how many were trimmed."""
+    now = now or _now()
+    cutoff = now - timedelta(days=settings.NEWSROOM_COMPOSE_KEEP_DAYS)
+    result = await db[ndb.COMPOSE_RUNS].update_many(
+        {"created_at": {"$lt": cutoff}, "status": {"$nin": ACTIVE_STATUSES}, "pruned_at": None},
+        {"$set": {**PRUNED_EMPTY, "pruned_at": now}, "$unset": {f: "" for f in PRUNED_REMOVE}})
+    return result.modified_count
+
+
 CREATE_LOCK = "compose_create"
 LOCK_SECONDS = 10
 

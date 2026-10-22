@@ -14,6 +14,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 
@@ -129,3 +130,10 @@ async def nightly_repair() -> None:
         logger.info(f"[NEWSROOM] Nightly link repair: {counts}")
     except Exception:
         logger.exception("[NEWSROOM] Nightly link repair failed")
+    try:
+        from src.newsroom.compose import prune_old_runs
+        trimmed = await prune_old_runs(ndb.get_newsroom_db())
+        logger.info(f"[NEWSROOM] Nightly compose clean-up: {trimmed} job(s) older than "
+                    f"{settings.NEWSROOM_COMPOSE_KEEP_DAYS} days kept as cost records only")
+    except Exception:
+        logger.exception("[NEWSROOM] Nightly compose clean-up failed")

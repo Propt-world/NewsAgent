@@ -270,3 +270,43 @@ print("RESULT=" + json.dumps({{"first": [i["_id"] for i in first["items"]], "mor
     # The boundary item comes back once (the screen drops repeats); the new arrival never shifts the list.
     assert out["more"] == ["a3", "a2"]
     assert out["total"] == 6
+
+
+def test_article_text_edit_endpoints(mongo_url, db_name, sync_db):
+    """The real scheduler app: saving an edited why this matters (no AI step needed) and the refusals."""
+    script = f"""
+import json
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+db.processed_articles.insert_one({{"_id": "art-1", "url": "https://example.com/1", "status": "processed",
+    "final_output": {{"title": "Emaar launches", "title_ar": "إعمار تطلق", "content": "text", "summary": "s",
+                      "summary_ar": "م", "why_this_matters": {{"heading": "Why this matters", "content": "old", "content_ar": "قديم"}}}}}})
+from src.scheduler.main import app
+out = {{}}
+with TestClient(app) as c:
+    ok = c.patch("/articles/art-1/text", json={{"why_this_matters": "new", "why_this_matters_ar": "جديد"}})
+    out["ok"] = [ok.status_code, ok.json()]
+    out["stored"] = db.processed_articles.find_one({{"_id": "art-1"}})["final_output"]["why_this_matters"]
+    out["no_arabic"] = c.patch("/articles/art-1/text", json={{"summary": "changed"}}).status_code
+    out["missing"] = c.post("/articles/nope/translate", json={{"title": "x"}}).status_code
+    out["nothing"] = c.post("/articles/art-1/translate", json={{}}).status_code
+    t = c.patch("/articles/art-1/title", json={{"title": "Emaar sells out!"}})
+    out["title"] = [t.status_code, t.json(), db.processed_articles.find_one({{"_id": "art-1"}})["final_output"]["seo"]]
+    out["empty_title"] = c.patch("/articles/art-1/title", json={{"title": " "}}).status_code
+print("RESULT=" + json.dumps(out, ensure_ascii=False))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["ok"] == [200, {"status": "updated", "id": "art-1", "updated": ["final_output.why_this_matters"],
+                               "regenerated": []}]
+    assert (out["stored"]["content"], out["stored"]["content_ar"], out["stored"]["heading"]) == ("new", "جديد", "Why this matters")
+    assert (out["no_arabic"], out["missing"], out["nothing"]) == (422, 404, 422)
+    assert out["title"] == [200, {"status": "updated", "id": "art-1", "new_title": "Emaar sells out!",
+                                  "new_slug": "emaar-sells-out"}, {"slug": "emaar-sells-out"}]
+    assert out["empty_title"] == 400  # as before

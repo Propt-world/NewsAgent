@@ -29,6 +29,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo.errors import DuplicateKeyError
 import httpx
+from pydantic import BaseModel, Field
 import redis.asyncio as aioredis
 
 from src.configs.settings import settings
@@ -59,6 +60,7 @@ from src.utils.image_compressor import compress_image
 from src.utils.mongo_store import get_mongo_store
 from src.utils.chunker import Chunker
 from src.utils.loader import normalize_document
+from src.utils import article_edit
 import tempfile
 import shutil
 
@@ -1181,27 +1183,14 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
     Updates the title of a processed article.
     Expects a JSON payload: {"title": "New Updated Title"}
     """
-    new_title = title_update.get("title")
-
-    if not new_title or not new_title.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Title cannot be empty."
-        )
-
-    # Sanitize Title for Slug
-    clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', new_title.lower())
-    new_slug = re.sub(r'[-\s]+', '-', clean_title).strip('-')
+    try:
+        fields = article_edit.title_fields(title_update.get("title"))
+    except article_edit.EditError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # The title is stored inside the 'final_output' object
     collections = get_async_scheduler_collections()
-    result = await collections.processed_articles.update_one(
-        {"_id": article_id},
-        {"$set": {
-            "final_output.title": new_title.strip(),
-            "final_output.seo.slug": new_slug
-        }}
-    )
+    result = await collections.processed_articles.update_one({"_id": article_id}, {"$set": fields})
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -1210,7 +1199,67 @@ async def update_article_title(article_id: str, title_update: Dict[str, str] = B
         # Errors are logged inside; the title change itself has already succeeded.
         await article_edited(article_id)
 
-    return {"status": "updated", "id": article_id, "new_title": new_title.strip(), "new_slug": new_slug}
+    return {"status": "updated", "id": article_id, "new_title": fields["final_output.title"],
+            "new_slug": fields["final_output.seo.slug"]}
+
+
+class ArticleTextParts(BaseModel):
+    title: Optional[str] = Field(None, max_length=500)
+    summary: Optional[str] = Field(None, max_length=5000)
+    why_this_matters: Optional[str] = Field(None, max_length=5000)
+
+
+class ArticleTextUpdate(ArticleTextParts):
+    title_ar: Optional[str] = Field(None, max_length=500)
+    summary_ar: Optional[str] = Field(None, max_length=5000)
+    why_this_matters_ar: Optional[str] = Field(None, max_length=5000)
+
+
+async def _article_for_edit(article_id: str) -> dict:
+    doc = await get_async_scheduler_collections().processed_articles.find_one({"_id": article_id})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    if not doc.get("final_output"):
+        raise HTTPException(status_code=422, detail="This article has no processed text to edit")
+    return doc
+
+
+@app.post(
+    "/articles/{article_id}/translate",
+    dependencies=[Depends(verify_api_key)],
+    description="Arabic for an edited English title, summary or why this matters, with the article pipeline's "
+                "translation prompts (one AI call; nothing is saved).",
+)
+async def translate_article_text(article_id: str, parts: ArticleTextParts):
+    doc = await _article_for_edit(article_id)
+    try:
+        return await article_edit.translate(doc, parts.model_dump())
+    except article_edit.EditError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except article_edit.ConfigurationError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch(
+    "/articles/{article_id}/text",
+    dependencies=[Depends(verify_api_key)],
+    description="Saves an edited title, summary and/or why this matters with their Arabic (an English part that "
+                "changed needs its Arabic too). A changed title or summary also writes the SEO metadata and the "
+                "social captions again with the pipeline's own steps.",
+)
+async def update_article_text(article_id: str, edit: ArticleTextUpdate):
+    doc = await _article_for_edit(article_id)
+    try:
+        fields, regenerated = await article_edit.save(doc, edit.model_dump())
+    except article_edit.EditError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except article_edit.ConfigurationError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    await get_async_scheduler_collections().processed_articles.update_one({"_id": article_id}, {"$set": fields})
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the edit itself has already been saved.
+        await article_edited(article_id)
+    return {"status": "updated", "id": article_id, "updated": sorted(fields), "regenerated": regenerated}
 
 @app.get(
     "/articles/search/text",

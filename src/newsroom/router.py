@@ -412,11 +412,12 @@ async def compose_desk_suggestion(payload: DeskSuggestionRequest, sources=Depend
 
 @router.post("/compose/source-check", response_model=SourceCheck,
              description="For the compose window: whether the chosen sources can become a new article or signal "
-                         "(at most one Propt Newsroom item; a new article needs an original article), and a warning "
-                         "when their topics share no desk. No AI call; the source rules are applied again when the "
+                         "(at most one Propt Newsroom item; a new article needs an original article), a warning "
+                         "when their topics share no desk, and earlier composes of exactly these sources. No AI call; the source rules are applied again when the "
                          "job is requested.")
-async def compose_source_check(payload: DeskSuggestionRequest, sources=Depends(get_item_sources)):
-    return await cmp.source_mix_problems(sources, [s.model_dump() for s in payload.sources])
+async def compose_source_check(payload: DeskSuggestionRequest, sources=Depends(get_item_sources),
+                               db=Depends(get_newsroom_db)):
+    return await cmp.source_mix_problems(sources, [s.model_dump() for s in payload.sources], db)
 
 
 @router.post("/extract-signal", response_model=ComposeRunOut, status_code=status.HTTP_202_ACCEPTED,

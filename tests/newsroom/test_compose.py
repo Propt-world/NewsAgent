@@ -952,7 +952,7 @@ def test_the_compose_window_can_ask_before_starting(mix):
         return mix.post("/newsroom/compose/source-check", json={"sources": [
             {"source_type": t, "source_id": ids.get(i, i)} for t, i in sources]}).json()
 
-    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None}
+    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None, "previous": []}
     two_signals = check(("signal", "S"), ("signal", "S2"))
     assert "Signals alone are too short" in two_signals["article"] and two_signals["signal"] is None
     two_ours = check(("article", "C1"), ("signal", "CS"))
@@ -1000,3 +1000,22 @@ def test_old_finished_jobs_keep_only_their_cost_history(scene, sync_db, run_asyn
     listed = {r["id"]: r for r in scene.get("/newsroom/compose", params={"limit": 50}).json()["items"]}
     assert listed[trimmed]["cost_usd"] == 0.006 and listed[trimmed]["pruned_at"] and listed[trimmed]["sources"] == []
     assert scene.get(f"/newsroom/compose/{trimmed}").status_code == 200
+
+
+
+def test_the_compose_window_warns_about_earlier_composes_of_the_same_sources(mix, sync_db):
+    # Never a block: the desk or type may differ (user decision 2026-10-23)
+    _run(sync_db, _id="before", source_keys=["article:A1", "article:C1"], status="succeeded", compose_type="roundup",
+         desk="sales", created_at=NOW - timedelta(days=2), result={"article_id": "C9", "title": "Emaar and DAMAC"})
+    _run(sync_db, _id="failed", source_keys=["article:A1", "article:C1"], status="failed")
+    _run(sync_db, _id="bigger", source_keys=["article:A1", "article:C1", "article:A2"], status="succeeded")
+
+    def check(*sources):
+        return mix.post("/newsroom/compose/source-check", json={"sources": [
+            {"source_type": t, "source_id": i} for t, i in sources]}).json()["previous"]
+
+    earlier = check(("article", "C1"), ("article", "A1"))  # order does not matter
+    assert [(p["id"], p["compose_type"], p["desk"], p["article_id"], p["title"]) for p in earlier] == [
+        ("before", "roundup", "sales", "C9", "Emaar and DAMAC")]
+    assert check(("article", "A1"), ("article", "A2")) == []
+    assert _compose(mix, ("article", "A1"), ("article", "C1")).status_code == 202  # still allowed

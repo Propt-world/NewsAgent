@@ -36,11 +36,24 @@ class DeskSuggestionRequest(BaseModel):
     sources: List[SourceRef] = Field(..., min_length=1, max_length=5)
 
 
+class EarlierCompose(BaseModel):
+    id: str
+    created_at: UtcDatetime
+    output_type: Literal["article", "signal"]
+    compose_type: Optional[str] = None
+    desk: Optional[str] = None
+    requested_by: Optional[str] = None
+    article_id: Optional[str] = None
+    title: Optional[str] = None
+
+
 class SourceCheck(BaseModel):
     article: Optional[str] = Field(None, description="Why these sources cannot become a new article (empty = they can)")
     signal: Optional[str] = Field(None, description="Why these sources cannot become a new signal (empty = they can)")
     topics: Optional[str] = Field(None, description="Warning when the sources' topics share no desk (empty = no "
                                                     "warning); the reviewer may still go on")
+    previous: List[EarlierCompose] = Field(default_factory=list, description="Finished composes of exactly these "
+                                           "sources (last 30 days), newest first: a warning only")
 
 
 class DeskSuggestion(BaseModel):

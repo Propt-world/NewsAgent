@@ -151,7 +151,7 @@ def check_source_mix(output_type: str, source_docs: List[dict], made: set) -> No
                       "among its sources.")
 
 
-async def source_mix_problems(sources: ndb.ItemSources, items: List[dict]) -> dict:
+async def source_mix_problems(sources: ndb.ItemSources, items: List[dict], db) -> dict:
     """For the compose window: why these sources cannot become a new article / a new signal (None = they can),
     and a topic warning when they seem to be about different subjects. The source mix rule is applied again
     when the job is requested; the topic warning is only a warning (the reviewer may go on)."""
@@ -172,7 +172,24 @@ async def source_mix_problems(sources: ndb.ItemSources, items: List[dict]) -> di
     topics = await _source_topics(sources, keys)
     problems["topics"] = topic_warning([(d["title"] or d["source_id"], topics.get((d["source_type"], d["source_id"])))
                                         for d in docs])
+    problems["previous"] = await earlier_composes(db, keys)
     return problems
+
+
+async def earlier_composes(db, keys: List[tuple]) -> List[dict]:
+    """Finished compose jobs that used exactly these sources (a warning for the compose window: composing them
+    again may give a near-copy; never a block, user decision 2026-10-23). Jobs older than
+    NEWSROOM_COMPOSE_KEEP_DAYS no longer keep their sources, so they are not found."""
+    source_keys = sorted(f"{t}:{i}" for t, i in keys)
+    docs = await db[ndb.COMPOSE_RUNS].find(
+        {"source_keys": {"$all": source_keys, "$size": len(source_keys)}, "status": "succeeded", "kind": "compose"},
+        {"created_at": 1, "output_type": 1, "compose_type": 1, "desk": 1, "requested_by": 1, "result.article_id": 1,
+         "result.title": 1, "saved_drafts": 1},
+    ).sort("created_at", -1).limit(5).to_list(length=5)
+    return [{"id": d["_id"], "created_at": d["created_at"], "output_type": d["output_type"],
+             "compose_type": d.get("compose_type"), "desk": d.get("desk"), "requested_by": d.get("requested_by"),
+             "article_id": (d.get("result") or {}).get("article_id"), "title": (d.get("result") or {}).get("title")}
+            for d in docs]
 
 
 def check_compose_type(output_type: str, compose_type: Optional[str], unrelated_titles: List[str]) -> None:

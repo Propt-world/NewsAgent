@@ -3,6 +3,7 @@ from pprint import pprint
 from src.models.MainWorkflowState import MainWorkflowState
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
+from src.utils.prompt_lengths import fill_lengths
 #from src.prompts.SummaryPrompts import SYSTEM_PROMPT, INITIAL_USER_PROMPT, RETRY_USER_PROMPT
 
 async def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
@@ -47,7 +48,7 @@ async def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
         if state.validation_result and state.validation_result.feedback != "Validation not yet run.":
             pprint("[NODE: SUMMARY GENERATOR] This is a retry. Incorporating feedback.")
             feedback = state.validation_result.feedback
-            template = prompts.summary_retry_user
+            template = fill_lengths(prompts.summary_retry_user, state)
             prompt = PromptTemplate.from_template(template)
             formatted_prompt = prompt.format(
                 feedback=feedback,
@@ -55,13 +56,13 @@ async def generate_summary(state: MainWorkflowState) -> MainWorkflowState:
             )
         else:
             pprint("[NODE: SUMMARY GENERATOR] This is the first attempt.")
-            template = prompts.summary_initial_user
+            template = fill_lengths(prompts.summary_initial_user, state)
             prompt = PromptTemplate.from_template(template)
             formatted_prompt = prompt.format(article_text=article_text)
 
         # 5. Create the full message list and invoke the model
         messages = [
-            ("system", prompts.summary_system),
+            ("system", fill_lengths(prompts.summary_system, state)),
             ("user", formatted_prompt)
         ]
 

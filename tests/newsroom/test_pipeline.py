@@ -270,3 +270,97 @@ print("RESULT=" + json.dumps({{"first": [i["_id"] for i in first["items"]], "mor
     # The boundary item comes back once (the screen drops repeats); the new arrival never shifts the list.
     assert out["more"] == ["a3", "a2"]
     assert out["total"] == 6
+
+
+def test_article_text_edit_endpoints(mongo_url, db_name, sync_db):
+    """The real scheduler app: saving an edited why this matters (no AI step needed) and the refusals."""
+    script = f"""
+import json
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+db.processed_articles.insert_one({{"_id": "art-1", "source_id": "src-1", "url": "https://example.com/1", "status": "processed",
+    "final_output": {{"title": "Emaar launches", "title_ar": "إعمار تطلق", "content": "text", "summary": "s",
+                      "summary_ar": "م", "why_this_matters": {{"heading": "Why this matters", "content": "old", "content_ar": "قديم"}}}}}})
+from src.scheduler.main import app
+out = {{}}
+with TestClient(app) as c:
+    ok = c.patch("/articles/art-1/text", json={{"why_this_matters": "new", "why_this_matters_ar": "جديد"}})
+    out["ok"] = [ok.status_code, ok.json()]
+    out["stored"] = db.processed_articles.find_one({{"_id": "art-1"}})["final_output"]["why_this_matters"]
+    out["no_arabic"] = c.patch("/articles/art-1/text", json={{"summary": "changed"}}).status_code
+    out["missing"] = c.post("/articles/nope/translate", json={{"title": "x"}}).status_code
+    out["nothing"] = c.post("/articles/art-1/translate", json={{}}).status_code
+    t = c.patch("/articles/art-1/title", json={{"title": "Emaar sells out!"}}, headers={{"X-Newsroom-User": "ann@propt.global"}})
+    out["title"] = [t.status_code, t.json(), db.processed_articles.find_one({{"_id": "art-1"}})["final_output"]["seo"]]
+    out["empty_title"] = c.patch("/articles/art-1/title", json={{"title": " "}}).status_code
+    # Two reviewers: both opened version 2 (after the two edits above); the second save is refused
+    v = db.processed_articles.find_one({{"_id": "art-1"}})["version"]
+    first = c.patch("/articles/art-1/title", json={{"title": "First wins", "expected_version": v}}, headers={{"X-Newsroom-User": "ann@propt.global"}})
+    second = c.patch("/articles/art-1/text", json={{"why_this_matters": "late", "why_this_matters_ar": "متأخر", "expected_version": v}},
+                     headers={{"X-Newsroom-User": "bob@propt.global"}})
+    out["conflict"] = [first.status_code, second.status_code, second.json()["detail"]]
+    s = c.patch("/articles/art-1/status", json={{"status": "rejected"}}, headers={{"X-Newsroom-User": "bob@propt.global"}})
+    stored = db.processed_articles.find_one({{"_id": "art-1"}})
+    out["status"] = [s.status_code, stored["status_changed_by"], bool(stored.get("status_changed_at"))]
+    out["history"] = [(h["action"], h["by"], h["before"], h["after"]) for h in c.get("/articles/art-1/history").json()["items"]]
+    read = c.get("/articles/art-1").json()  # screens read the version from here to send it back
+    out["read"] = [read["version"], read["edited_by"], read["status_changed_by"]]
+print("RESULT=" + json.dumps(out, ensure_ascii=False))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["ok"] == [200, {"status": "updated", "id": "art-1", "updated": ["final_output.why_this_matters"],
+                               "regenerated": []}]
+    assert (out["stored"]["content"], out["stored"]["content_ar"], out["stored"]["heading"]) == ("new", "جديد", "Why this matters")
+    assert (out["no_arabic"], out["missing"], out["nothing"]) == (422, 404, 422)
+    assert out["title"] == [200, {"status": "updated", "id": "art-1", "new_title": "Emaar sells out!",
+                                  "new_slug": "emaar-sells-out"}, {"slug": "emaar-sells-out"}]
+    assert out["empty_title"] == 400  # as before
+    assert out["conflict"][:2] == [200, 409] and "changed by ann@propt.global" in out["conflict"][2]
+    assert out["status"] == [200, "bob@propt.global", True]
+    assert out["read"] == [3, "ann@propt.global", "bob@propt.global"]
+    actions = [(a, by) for a, by, _, _ in out["history"]]
+    assert actions == [("status", "bob@propt.global"), ("title", "ann@propt.global"), ("title", "ann@propt.global"),
+                       ("text", "unknown")]
+    assert out["history"][0][2:] == [{"status": "processed"}, {"status": "rejected"}]
+    assert out["history"][3][2] == {"why_this_matters": "old", "why_this_matters_ar": "قديم"}
+
+
+
+def test_dashboard_article_counts(mongo_url, db_name, sync_db):
+    """The real scheduler app: pending and approved in all, approved / rejected in the window."""
+    script = f"""
+import json
+from datetime import datetime, timedelta, timezone
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+now = datetime.now(timezone.utc)
+rows = [("p1", "processed", None), ("p2", "processed", None), ("a1", "approved", now - timedelta(hours=2)),
+        ("a2", "approved", now - timedelta(hours=30)), ("a3", "approved", None), ("r1", "rejected", now - timedelta(hours=1))]
+for i, status, changed in rows:
+    db.processed_articles.insert_one({{"_id": i, "source_id": "s", "url": f"https://example.com/{{i}}", "status": status,
+                                       **({{"status_changed_at": changed}} if changed else {{}})}})
+from src.scheduler.main import app
+with TestClient(app) as c:
+    since = (now - timedelta(hours=24)).isoformat()
+    ok = c.get("/stats/articles", params={{"since": since, "until": now.isoformat()}})
+    naive = c.get("/stats/articles", params={{"since": "2026-10-22T10:00:00", "until": "2026-10-23T10:00:00"}})
+print("RESULT=" + json.dumps({{"ok": [ok.status_code, {{k: v for k, v in ok.json().items() if k not in ("since", "until")}}],
+                               "naive": naive.status_code}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["ok"] == [200, {"pending": 2, "total_approved": 3, "approved": 1, "rejected": 1}]
+    assert out["naive"] == 422  # a time without a time zone is refused (PKT vs UTC mix-ups)

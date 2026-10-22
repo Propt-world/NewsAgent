@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     MODEL_NAME: str = os.getenv('MODEL_NAME', "gpt-4o-mini")
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE', "0.5"))
 
+    # Summary and "why this matters" lengths: filled into the registry prompts' {summary_min_words}-style
+    # placeholders, and the summary's is also counted in code by the critic step. Change them here, not in code.
+    SUMMARY_MIN_WORDS: int = int(os.getenv("SUMMARY_MIN_WORDS", "110"))
+    SUMMARY_MAX_WORDS: int = int(os.getenv("SUMMARY_MAX_WORDS", "130"))
+    WTM_MIN_WORDS: int = int(os.getenv("WTM_MIN_WORDS", "110"))
+    WTM_MAX_WORDS: int = int(os.getenv("WTM_MAX_WORDS", "130"))
+
     # Search / Context Configuration
     SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "searxng")
     SEARXNG_BASE_URL: str = os.getenv("SEARXNG_BASE_URL", "http://localhost:8080")
@@ -143,6 +150,8 @@ class Settings(BaseSettings):
     NEWSROOM_COMPOSE_MAX_WAIT_HOURS: float = float(os.getenv('NEWSROOM_COMPOSE_MAX_WAIT_HOURS', '6'))
     # A job cut off by a worker shutdown is put back in the queue, at most this many starts in total.
     NEWSROOM_COMPOSE_MAX_ATTEMPTS: int = int(os.getenv('NEWSROOM_COMPOSE_MAX_ATTEMPTS', '3'))
+    # Finished compose jobs older than this keep only their date, type, status, model, tokens and cost (nightly)
+    NEWSROOM_COMPOSE_KEEP_DAYS: int = int(os.getenv('NEWSROOM_COMPOSE_KEEP_DAYS', '30'))
     NEWSROOM_COMPOSE_QUEUE: str = os.getenv('NEWSROOM_COMPOSE_QUEUE', 'newsroom_compose_jobs')
     # Alerts (banner in the backoffice + "NEWSROOM_ALERT <code>: ..." log lines for CloudWatch).
     # The scheduler checks every NEWSROOM_ALERT_CHECK_MINUTES; the compose worker reports in every 30 s.

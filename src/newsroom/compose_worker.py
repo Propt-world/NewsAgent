@@ -32,7 +32,7 @@ from src.newsroom import db as ndb
 from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.desks import byline
-from src.newsroom.prompts import EDITOR_RULES, NEWSROOM_RULES, PROMPTS_BY_NAME
+from src.newsroom.prompts import PROMPTS_BY_NAME
 from src.newsroom.public_links import shown_url
 from src.newsroom.signal_options import GCC_REGIONS, REAL_ESTATE_CATEGORIES, SIGNAL_ANGLES, SIGNAL_CATEGORIES
 
@@ -66,8 +66,9 @@ RealEstateCategory = Literal[tuple(REAL_ESTATE_CATEGORIES)]
 
 
 class SignalDraft(BaseModel):
-    summary_en: str
-    summary_ar: str
+    # Same length as Grok Scout's signals (social_scrapper grok_scout.py)
+    summary_en: str = Field(..., description="Concise one-sentence summary in English (10-15 words). Must include entity and action.")
+    summary_ar: str = Field(..., description="Concise one-sentence summary in Arabic (10-15 words).")
     signal_category: SignalCategory
     signal_angle: SignalAngle
     regions: List[GccRegion] = Field(default_factory=list)
@@ -115,8 +116,14 @@ def _clean(text: str) -> str:
     return (text or "").replace("</source>", "</ source>").replace("<source", "< source")
 
 
+class PromptsUnavailable(RuntimeError):
+    """A compose prompt cannot be read from the registry: the job fails before any AI call."""
+
+
 async def load_prompts(names: List[str]) -> dict:
-    """Active prompts from the registry; the built-in default when one is missing."""
+    """Active prompts from the registry (the database) only. If the registry cannot be read, or a prompt is missing
+    or lacks one of its inputs (e.g. {sources}), the job fails: no built-in text is used instead (user decision
+    2026-10-22), so what runs is always what init_db.py wrote."""
     from src.graph.nodes.load_agent_configuration import get_async_config_database
 
     found = {}
@@ -124,21 +131,26 @@ async def load_prompts(names: List[str]) -> dict:
         async for doc in get_async_config_database()["prompts"].find({"name": {"$in": names}, "status": "active"}):
             found[doc["name"]] = doc["content"]
     except Exception as e:
-        logger.warning(f"[NEWSROOM] Prompt registry unavailable, using defaults: {e}")
-    prompts = {}
+        message = f"Critical Configuration Error: the prompt registry could not be read: {e}"
+        logger.error(f"[NEWSROOM] {message}")
+        raise PromptsUnavailable(message) from e
+    problems = []
     for name in names:
         content = found.get(name)
         if not content:
-            logger.warning(f"[NEWSROOM] Prompt {name} not in the registry; using the built-in default")
-        else:
-            # A registry prompt without e.g. {sources} would make the writer work from nothing.
-            needed = set(PROMPTS_BY_NAME[name]["input_variables"])
-            missing = needed - set(PromptTemplate.from_template(content).input_variables)
-            if missing:
-                logger.warning(f"[NEWSROOM] Prompt {name} in the registry lacks {sorted(missing)}; using the built-in default")
-                content = None
-        prompts[name] = content or PROMPTS_BY_NAME[name]["content"]
-    return prompts
+            problems.append(f"{name} is missing")
+            continue
+        # A prompt without e.g. {sources} would make the writer work from nothing.
+        needed = set(PROMPTS_BY_NAME[name]["input_variables"])
+        missing = needed - set(PromptTemplate.from_template(content).input_variables)
+        if missing:
+            problems.append(f"{name} lacks {', '.join('{' + m + '}' for m in sorted(missing))}")
+    if problems:
+        # Same wording as the article pipeline's prompt loading, so one log search finds both
+        message = f"Critical Configuration Error: prompts not usable: {'; '.join(problems)}. Run init_db.py --mode upsert."
+        logger.error(f"[NEWSROOM] {message}")
+        raise PromptsUnavailable(message)
+    return {name: found[name] for name in names}
 
 
 async def load_source_texts(sources: ndb.ItemSources, run: dict) -> List[dict]:
@@ -365,7 +377,8 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     elif output_type == "signal":
         names = ["newsroom_researcher", "newsroom_writer_signal", "newsroom_editor"]
     else:
-        names = ["newsroom_researcher", "newsroom_writer_article", "newsroom_editor"]
+        names = ["newsroom_researcher", "newsroom_writer_article", "newsroom_editor", "newsroom_rules",
+                 "newsroom_editor_rules"]
     type_prompt = f"newsroom_type_{run['compose_type']}" if run.get("compose_type") else None
     desk_prompt = f"newsroom_desk_{run['desk']}" if run.get("desk") else None
     extra = [p for p in (type_prompt, desk_prompt) if p]
@@ -380,8 +393,8 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     if output_type == "article":
         # Every composed article: the researcher and the editor follow the newsroom rules too (the writer's
         # prompt has them). The editor never gets a desk's voice.
-        prompts["newsroom_researcher"] += "\n\n" + _escaped(NEWSROOM_RULES)
-        prompts["newsroom_editor"] += "\n\n" + _escaped(EDITOR_RULES)
+        prompts["newsroom_researcher"] += "\n\n" + _escaped(prompts["newsroom_rules"])
+        prompts["newsroom_editor"] += "\n\n" + _escaped(prompts["newsroom_editor_rules"])
 
     texts = await load_source_texts(sources, run)
     source_block = format_sources(texts)
@@ -416,7 +429,7 @@ async def _compose(db, sources, run, update: dict, tracer=None, checkpoint=None)
     author = byline(run.get("desk"))
     article, newsroom_names = await paid(run_article_pipeline(
         run["_id"], ArticleDraft(**edited.model_dump()), texts, tracer, author=author,
-        wtm_rules=NEWSROOM_RULES + (f"\n\n{prompts[desk_prompt]}\nWrite \"why this matters\" for these readers."
+        wtm_rules=prompts["newsroom_rules"] + (f"\n\n{prompts[desk_prompt]}\nWrite \"why this matters\" for these readers."
                                     if desk_prompt else "")))
     url = composed_url(run["_id"])
     payload = {

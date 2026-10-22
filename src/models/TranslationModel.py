@@ -12,6 +12,6 @@ class TranslationModel(BaseModel):
     )
     why_this_matters_ar: Optional[str] = Field(
         None,
-        description="The Why this matters sentence translated to Arabic."
+        description="The complete Why this matters paragraph translated to Arabic."
     )
     content_ar: str = Field(..., description="The full article content translated to Arabic.")

@@ -301,3 +301,77 @@ def test_new_names_show_where_they_were_found(seeded, run_async):
     run_async(lnk.on_item_status, "article", ARTICLE, "approved")
     group = seeded.get("/newsroom/new-names").json()[0]
     assert group["items"][0]["title"] == "Emaar launches a tower"
+
+
+# --- Names added to the list later (dev, 2026-10-21: Zoya Developments) -----------------------
+
+OTHER = "art-2"
+OTHER_ITEM = f"/newsroom/items/article/{OTHER}"
+
+
+@pytest.fixture
+def two_items(seeded, sync_db):
+    sync_db["processed_articles"].insert_one({
+        "_id": OTHER, "url": "https://example.com/zoya-2", "status": "processed",
+        "processed_at": datetime(2026, 9, 2, tzinfo=timezone.utc),
+        "final_output": {"title": "Zoya launches Elinor", "summary": "Zoya...", "published_date": None}})
+    _suggest(seeded, organisations=["Zoya Developments", "Brand New Developer"])
+    _suggest(seeded, organisations=["Zoya Developments"], source_id=OTHER)
+    return seeded
+
+
+def _create(api, name, status="active"):
+    resp = api.post("/newsroom/entities", json={"kind": ORG, "type": "developer", "status": status, "canonical_name": name})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_a_name_added_from_one_item_becomes_a_suggestion_on_the_others(two_items):
+    first = _open(two_items)["Zoya Developments"]
+    assert first["entity_id"] is None
+    zoya = _create(two_items, "Zoya Developments")
+    two_items.post(f"{ITEM}/links", json={"entity_id": zoya["id"], "suggestion_id": first["id"]})
+
+    other = _open(two_items, OTHER_ITEM)["Zoya Developments"]
+    assert (other["entity_id"], other["entity_status"]) == (zoya["id"], "active")
+    assert other["reason"] == "exact match on alias 'Zoya Developments' (added to the list after this item was processed)"
+    assert _links(two_items, OTHER_ITEM) == {}  # offered, never linked by itself
+    assert _open(two_items)["Brand New Developer"]["entity_id"] is None  # other names untouched
+
+
+def test_an_alias_or_a_switched_off_entity_matches_too(two_items):
+    zoya = _create(two_items, "Zoya", status="staged")
+    assert _open(two_items, OTHER_ITEM)["Zoya Developments"]["entity_id"] is None
+    resp = two_items.post(f"/newsroom/entities/{zoya['id']}/aliases", json={"alias": "Zoya Developments"})
+    assert resp.status_code == 201, resp.text
+    other = _open(two_items, OTHER_ITEM)["Zoya Developments"]
+    assert (other["entity_id"], other["entity_status"]) == (zoya["id"], "staged")
+    assert "(entity is switched off)" in other["reason"]
+
+
+def test_an_entity_added_outside_the_api_is_matched_when_the_item_is_opened(two_items, sync_db):
+    # e.g. by the seed script
+    sync_db["entities"].insert_one({"_id": "org-zoya", "kind": ORG, "type": "developer", "status": "active",
+                                    "canonical_name": "Zoya Developments"})
+    sync_db["entity_aliases"].insert_one({"_id": "alias-zoya", "kind": ORG, "entity_id": "org-zoya",
+                                          "alias": "Zoya Developments", "alias_norm": "zoya developments",
+                                          "ambiguous": False})
+    assert _open(two_items, OTHER_ITEM)["Zoya Developments"]["entity_id"] == "org-zoya"
+
+
+def test_an_ambiguous_name_still_suggests_nothing(two_items):
+    resp = two_items.post("/newsroom/entities", json={
+        "kind": ORG, "type": "developer", "status": "active", "canonical_name": "Zoya Developments",
+        "ambiguous_aliases": ["Zoya Developments"]})
+    assert resp.status_code == 201, resp.text
+    assert _open(two_items, OTHER_ITEM)["Zoya Developments"]["entity_id"] is None
+
+
+def test_a_removed_link_stays_removed(two_items, sync_db):
+    zoya = _create(two_items, "Zoya Developments")
+    sync_db["entity_suggestions"].update_many({"source_id": OTHER}, {"$set": {"entity_id": None, "status": "open"}})
+    assert two_items.post(f"{OTHER_ITEM}/links", json={"entity_id": zoya["id"]}).status_code == 200
+    assert two_items.delete(f"{OTHER_ITEM}/links/{zoya['id']}").status_code == 200
+    sync_db["entity_suggestions"].update_many({"source_id": OTHER}, {"$set": {"entity_id": None, "status": "open"}})
+    assert "Zoya Developments" not in _open(two_items, OTHER_ITEM)  # closed again, not offered
+    assert _links(two_items, OTHER_ITEM) == {}

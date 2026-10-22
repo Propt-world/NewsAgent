@@ -20,7 +20,7 @@ INITIAL_DATA = [
     # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
-        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 210-230 words.
+        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in {summary_min_words}-{summary_max_words} words (never fewer than {summary_min_words}), written as {summary_sentences} sentences of about 20-22 words each.
 
 The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
 
@@ -34,7 +34,9 @@ TTS FORMATTING RULES:
 CONTENT RULES:
 1. Lead with the core news event in the first sentence.
 2. You must not change the tone, add any information (hallucinate), or alter the semantic meaning of the original text.
-3. Copy every number, amount, percentage, date, and year exactly as the article gives it, attached to the same thing and period. Never change, round, or guess a figure or a year.""",
+3. Copy every number, amount, percentage, date, and year exactly as the article gives it, attached to the same thing and period. Never change, round, or guess a figure or a year.
+4. Prioritise concrete facts: every key figure, name, place, and date the article gives. Keep descriptive or marketing language to a minimum.
+5. If the article is too short to fill {summary_min_words} words, write as much as its facts allow; never pad, repeat, or add information to reach the length.""",
         "input_variables": [],
         "description": "System instruction for the summarizer."
     },
@@ -52,7 +54,7 @@ CONTENT RULES:
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
 
-Remember the hard constraints: 210-230 words, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
+Remember the hard constraints: {summary_min_words}-{summary_max_words} words (never fewer than {summary_min_words}) in {summary_sentences} sentences of about 20-22 words each, the key facts (figures, names, places, dates) before description, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -76,13 +78,13 @@ You will score the summary on two metrics:
 
 You will also run two checks:
 -   **Figures Check (pass/fail):** Go through every number, amount, percentage, date, and year in the summary and find it in the article. Each must appear in the article with the same value and refer to the same thing and period. Any changed, rounded, invented, or misattributed figure fails this check, including a wrong year (e.g., "2023" when the article says "2026").
--   **Format Check (pass/fail):** Count the words: the summary is 210-230 words. It is written as plain flowing prose with no bullets, markdown, emojis, or special characters (the usual symbols in figures, such as $ and %, are allowed), and numbers, years, and dates are written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"). Numbers spelled out as words (e.g., "two thousand thirty") and "percent" written instead of "%" fail this check. Set format_check_passed to the result of this check.
+-   **Format Check (pass/fail):** The summary is {summary_min_words}-{summary_max_words} words (the word count is also checked separately). It is written as plain flowing prose with no bullets, markdown, emojis, or special characters (the usual symbols in figures, such as $ and %, are allowed), and numbers, years, and dates are written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"). Numbers spelled out as words (e.g., "two thousand thirty") and "percent" written instead of "%" fail this check. Set format_check_passed to the result of this check.
 
 You will then decide if the summary is valid:
 -   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND the Figures Check passes AND the Format Check passes AND zero hallucinations.
 -   Otherwise, set to 'false'.
 
-Finally, provide feedback. If 'is_valid' is 'false', provide actionable feedback: name each wrong figure with the article's correct value, and give the word count if it is outside 210-230.""",
+Finally, provide feedback. If 'is_valid' is 'false', provide actionable feedback: name each wrong figure with the article's correct value, and say which key facts of the article (figures, names, places, dates) are missing.""",
         "input_variables": [],
         "description": "System instruction for the critic/validator."
     },
@@ -317,7 +319,7 @@ NAMES (only when the response has the fields companies, projects and places):
     {
         "name": "content_enrichment_system",
         "content": """You are an impartial real estate market editor.
-Your task is to write a single-sentence contextual insight of MAXIMUM 60 words for a section titled "Why this matters".
+Your task is to write a contextual insight of {wtm_min_words}-{wtm_max_words} words (never fewer than {wtm_min_words}), as one paragraph of {wtm_sentences} sentences of about 20-22 words each, for a section titled "Why this matters".
 
 RULES:
 1. Be thoughtful, neutral, and evidence-aware.
@@ -326,13 +328,13 @@ RULES:
 4. Do not invent statistics, forecasts, company claims, or market movements.
 5. Distinguish broad context from confirmed article facts.
 6. Do not include the section heading in the response.
-7. CRITICAL: Write exactly ONE sentence. Do not write multiple sentences.""",
+7. Write {wtm_min_words}-{wtm_max_words} words in {wtm_sentences} sentences of about 20-22 words each, as plain prose: one paragraph, no bullets or headings. Do not repeat the summary; explain the significance.""",
         "input_variables": [],
         "description": "System instruction for the Why this matters content enrichment section."
     },
     {
         "name": "content_enrichment_user",
-        "content": """Create the "Why this matters" sentence for this article.
+        "content": """Create the "Why this matters" paragraph for this article.
 
 ---TITLE---
 {title}
@@ -355,8 +357,8 @@ RULES:
 ---END CONTEXTUAL SOURCES---
 
 REQUIREMENTS:
-1. Write EXACTLY ONE sentence of MAXIMUM 60 words. Do not write multiple sentences under any circumstances.
-2. Keep the combined length of the provided summary and this sentence within 300 words in total.
+1. Write {wtm_min_words}-{wtm_max_words} words (never fewer than {wtm_min_words}) as one paragraph of {wtm_sentences} sentences of about 20-22 words each.
+2. Do not repeat the summary: add the context and significance it does not give.
 3. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
 4. Include a contextual reference from the provided sources when it is relevant.
 5. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
@@ -376,7 +378,7 @@ RULES:
 2. Translate specific real estate terminology accurately (e.g., "Off-plan", "Freehold", "ROI").
 3. Do not summarize; provide a faithful, full translation of every section. This includes the summary: translate it in full, sentence by sentence, and never shorten it or leave out any sentence, figure, name, or quote. The Arabic summary must cover everything the English summary says.
 4. Ensure the Arabic text flows naturally and is grammatically correct.
-5. Translate every provided section, including the "Why this matters" sentence; keep it a single sentence in Arabic.
+5. Translate every provided section, including the "Why this matters" paragraph, in full.
 6. The Arabic summary is played aloud through the app's text-to-speech feature: keep numbers, years, and percentages as digits with their usual symbols, as in the English text (e.g., "5 مليارات دولار", "45%", "2030"), never spell numbers out as words, and use a natural spoken rhythm (a long English sentence may become two Arabic sentences, but the whole content is kept).""",
         "input_variables": [],
         "description": "System instruction for Arabic translation."
@@ -657,6 +659,10 @@ def ensure_operational_indexes(db):
     articles_col.create_index([("url", ASCENDING)], unique=True)
     articles_col.create_index([("discovered_at", -1)])
     articles_col.create_index([("status", ASCENDING)])
+    # Dashboard counts: approvals and rejections in a time window
+    articles_col.create_index([("status", ASCENDING), ("status_changed_at", -1)])
+    # Who changed an article and when (src/utils/article_history.py)
+    db["article_history"].create_index([("article_id", ASCENDING), ("at", -1)])
     print("  [+] Processed articles collection ready")
 
     print("--- Setting up Archive & Trash ---")

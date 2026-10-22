@@ -589,13 +589,13 @@ def test_no_money_is_spent_without_a_webhook(scene, job, monkeypatch):
     assert model.prompts == []  # no AI call was made
 
 
-def test_a_registry_prompt_without_its_placeholders_is_not_used(monkeypatch):
+def _registry(monkeypatch, docs=None, error=None):
     class Docs:
-        def __init__(self, docs):
-            self.docs = docs
+        def __init__(self, items):
+            self.items = items
 
         def __aiter__(self):
-            self.it = iter(self.docs)
+            self.it = iter(self.items)
             return self
 
         async def __anext__(self):
@@ -606,15 +606,62 @@ def test_a_registry_prompt_without_its_placeholders_is_not_used(monkeypatch):
 
     class Collection:
         def find(self, *a, **k):
-            return Docs([{"name": "newsroom_writer_article", "content": "Write something nice."},
-                         {"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+            if error:
+                raise error
+            return Docs(docs or [])
 
     import src.graph.nodes.load_agent_configuration as lac
     monkeypatch.setattr(lac, "get_async_config_database", lambda: {"prompts": Collection()})
-    prompts = asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor"]))
-    assert prompts["newsroom_writer_article"] == cw.PROMPTS_BY_NAME["newsroom_writer_article"]["content"]
-    assert prompts["newsroom_editor"].endswith("EDITED")  # a complete registry prompt is used
 
+
+def test_compose_prompts_come_only_from_the_registry(monkeypatch, caplog):
+    # User decision 2026-10-22: no built-in fallback; a missing or broken prompt fails the job
+    _registry(monkeypatch, [{"name": "newsroom_writer_article", "content": "Write something nice."},
+                            {"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+    with pytest.raises(cw.PromptsUnavailable) as err:
+        asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor", "newsroom_rules"]))
+    message = str(err.value)
+    assert "newsroom_writer_article lacks {research}, {sources}" in message and "newsroom_rules is missing" in message
+    assert "init_db.py --mode upsert" in message and message.startswith("Critical Configuration Error: prompts not usable")
+    # Logged with the same words as the article pipeline's prompt loading ("Critical Configuration Error")
+    assert any(r.levelname == "ERROR" and "[NEWSROOM] Critical Configuration Error: prompts not usable" in r.getMessage()
+               for r in caplog.records)
+
+    _registry(monkeypatch, [{"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
+    assert asyncio.run(cw.load_prompts(["newsroom_editor"])) == {"newsroom_editor": "Check {draft} against {sources}. EDITED"}
+
+    _registry(monkeypatch, error=RuntimeError("database down"))
+    with pytest.raises(cw.PromptsUnavailable, match="Critical Configuration Error: the prompt registry could not be read: database down"):
+        asyncio.run(cw.load_prompts(["newsroom_editor"]))
+
+
+def test_a_job_without_its_prompts_fails_before_any_ai_call(scene, job, monkeypatch):
+    async def missing(names):
+        raise cw.PromptsUnavailable("Critical Configuration Error: prompts not usable: newsroom_rules is missing. "
+                                    "Run init_db.py --mode upsert.")
+    run_body = _compose(scene, ("article", "A1"), ("article", "A2")).json()
+    monkeypatch.setattr(cw, "load_prompts", missing)  # after the job fixture's own replacement
+    run, model = job(run_body)
+    assert run["status"] == "failed" and "newsroom_rules is missing" in run["error"]
+    assert model.prompts == []  # no AI call was made
+
+
+def test_composed_signals_are_one_short_sentence_like_grok_s():
+    for field in ("summary_en", "summary_ar"):
+        assert "one-sentence summary" in cw.SignalDraft.model_fields[field].description
+        assert "(10-15 words)" in cw.SignalDraft.model_fields[field].description
+    for name in ("newsroom_writer_signal", "newsroom_extract_signal"):
+        content = cw.PROMPTS_BY_NAME[name]["content"]
+        assert "ONE concise sentence of 10-15 words" in content and "1-3 sentences" not in content
+        assert "1-3 specific sentences" not in content
+    assert "ONE sentence of 10-15 words" in cw.PROMPTS_BY_NAME["newsroom_editor"]["content"]
+
+
+def test_the_rule_blocks_are_registry_prompts_too():
+    from src.newsroom.prompts import EDITOR_RULES, NEWSROOM_RULES
+    assert cw.PROMPTS_BY_NAME["newsroom_rules"]["content"] == NEWSROOM_RULES
+    assert cw.PROMPTS_BY_NAME["newsroom_editor_rules"]["content"] == EDITOR_RULES
+    assert cw.PROMPTS_BY_NAME["newsroom_rules"]["input_variables"] == []
 
 
 # --- Composed signals use Grok's lists; recovering a half-finished save (Slice 3) ---------
@@ -849,7 +896,8 @@ def test_the_desk_shapes_research_writing_why_this_matters_and_the_byline(scene,
     assert "STAGE RESPONSIBILITIES" not in editor
     # "why this matters": the newsroom rules, then the desk's rules for its readers
     desk = cw.PROMPTS_BY_NAME["newsroom_desk_rental"]["content"]
-    assert graphs == [f'{cw.NEWSROOM_RULES}\n\n{desk}\nWrite "why this matters" for these readers.']
+    rules = cw.PROMPTS_BY_NAME["newsroom_rules"]["content"]
+    assert graphs == [f'{rules}\n\n{desk}\nWrite "why this matters" for these readers.']
     assert posted["newsroom"]["author"] == posted["data"]["author"] == "Propt Newsroom · Rental Desk"
     assert run["result"]["author"] == "Propt Newsroom · Rental Desk"
     assert "newsroom_desk_rental" in run["prompts"]
@@ -904,7 +952,7 @@ def test_the_compose_window_can_ask_before_starting(mix):
         return mix.post("/newsroom/compose/source-check", json={"sources": [
             {"source_type": t, "source_id": ids.get(i, i)} for t, i in sources]}).json()
 
-    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None}
+    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None, "previous": []}
     two_signals = check(("signal", "S"), ("signal", "S2"))
     assert "Signals alone are too short" in two_signals["article"] and two_signals["signal"] is None
     two_ours = check(("article", "C1"), ("signal", "CS"))
@@ -924,3 +972,50 @@ def test_the_compose_window_warns_when_the_topics_share_no_desk(mix, sync_db):
     same = mix.post("/newsroom/compose/source-check", json={"sources": [
         {"source_type": "article", "source_id": "A1"}, {"source_type": "signal", "source_id": mix.signal_id}]}).json()
     assert same["topics"] is None
+
+
+# --- 30-day clean-up (user decision 2026-10-23: keep the cost history only) ---------------
+
+def test_old_finished_jobs_keep_only_their_cost_history(scene, sync_db, run_async):
+    old = NOW - timedelta(days=31)
+    full = dict(sources=[{"source_type": "article", "source_id": "A1", "title": "Emaar"}], source_keys=["article:A1"],
+                entity_ids=[EMAAR], prompts={"newsroom_writer_article": "abc"}, model="gpt-4o-mini",
+                tokens={"prompt": 100, "completion": 50, "total": 150}, cost_usd=0.006, compose_type="roundup",
+                desk="sales", finished_at=old + timedelta(minutes=1),
+                result={"drafts": [{"summary_en": "Emaar ..."}]}, saved_drafts={})
+    trimmed = _run(sync_db, _id="old-done", created_at=old, **full)
+    running = _run(sync_db, _id="old-running", created_at=old, **{**full, "status": "running"})
+    recent = _run(sync_db, _id="recent", created_at=NOW - timedelta(days=29), **full)
+
+    assert run_async(cmp.prune_old_runs) == 1
+    doc = sync_db["compose_runs"].find_one({"_id": trimmed})
+    assert (doc["cost_usd"], doc["tokens"]["total"], doc["model"], doc["status"], doc["kind"]) == (0.006, 150, "gpt-4o-mini", "succeeded", "compose")
+    assert (doc["sources"], doc["prompts"], doc["result"], doc["entity_ids"]) == ([], {}, None, [])
+    assert all(f not in doc for f in ("compose_type", "desk", "requested_by", "deadline_at")) and doc["pruned_at"]
+    for untouched in (running, recent):
+        assert sync_db["compose_runs"].find_one({"_id": untouched})["sources"] != []
+    assert run_async(cmp.prune_old_runs) == 0  # done once
+
+    # Compose History still lists it (with its cost) and opens it
+    listed = {r["id"]: r for r in scene.get("/newsroom/compose", params={"limit": 50}).json()["items"]}
+    assert listed[trimmed]["cost_usd"] == 0.006 and listed[trimmed]["pruned_at"] and listed[trimmed]["sources"] == []
+    assert scene.get(f"/newsroom/compose/{trimmed}").status_code == 200
+
+
+
+def test_the_compose_window_warns_about_earlier_composes_of_the_same_sources(mix, sync_db):
+    # Never a block: the desk or type may differ (user decision 2026-10-23)
+    _run(sync_db, _id="before", source_keys=["article:A1", "article:C1"], status="succeeded", compose_type="roundup",
+         desk="sales", created_at=NOW - timedelta(days=2), result={"article_id": "C9", "title": "Emaar and DAMAC"})
+    _run(sync_db, _id="failed", source_keys=["article:A1", "article:C1"], status="failed")
+    _run(sync_db, _id="bigger", source_keys=["article:A1", "article:C1", "article:A2"], status="succeeded")
+
+    def check(*sources):
+        return mix.post("/newsroom/compose/source-check", json={"sources": [
+            {"source_type": t, "source_id": i} for t, i in sources]}).json()["previous"]
+
+    earlier = check(("article", "C1"), ("article", "A1"))  # order does not matter
+    assert [(p["id"], p["compose_type"], p["desk"], p["article_id"], p["title"]) for p in earlier] == [
+        ("before", "roundup", "sales", "C9", "Emaar and DAMAC")]
+    assert check(("article", "A1"), ("article", "A2")) == []
+    assert _compose(mix, ("article", "A1"), ("article", "C1")).status_code == 202  # still allowed

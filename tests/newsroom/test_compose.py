@@ -614,7 +614,7 @@ def _registry(monkeypatch, docs=None, error=None):
     monkeypatch.setattr(lac, "get_async_config_database", lambda: {"prompts": Collection()})
 
 
-def test_compose_prompts_come_only_from_the_registry(monkeypatch):
+def test_compose_prompts_come_only_from_the_registry(monkeypatch, caplog):
     # User decision 2026-10-22: no built-in fallback; a missing or broken prompt fails the job
     _registry(monkeypatch, [{"name": "newsroom_writer_article", "content": "Write something nice."},
                             {"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
@@ -622,19 +622,23 @@ def test_compose_prompts_come_only_from_the_registry(monkeypatch):
         asyncio.run(cw.load_prompts(["newsroom_writer_article", "newsroom_editor", "newsroom_rules"]))
     message = str(err.value)
     assert "newsroom_writer_article lacks {research}, {sources}" in message and "newsroom_rules is missing" in message
-    assert "init_db.py --mode upsert" in message
+    assert "init_db.py --mode upsert" in message and message.startswith("Critical Configuration Error: prompts not usable")
+    # Logged with the same words as the article pipeline's prompt loading ("Critical Configuration Error")
+    assert any(r.levelname == "ERROR" and "[NEWSROOM] Critical Configuration Error: prompts not usable" in r.getMessage()
+               for r in caplog.records)
 
     _registry(monkeypatch, [{"name": "newsroom_editor", "content": "Check {draft} against {sources}. EDITED"}])
     assert asyncio.run(cw.load_prompts(["newsroom_editor"])) == {"newsroom_editor": "Check {draft} against {sources}. EDITED"}
 
     _registry(monkeypatch, error=RuntimeError("database down"))
-    with pytest.raises(cw.PromptsUnavailable, match="could not be read: database down"):
+    with pytest.raises(cw.PromptsUnavailable, match="Critical Configuration Error: the prompt registry could not be read: database down"):
         asyncio.run(cw.load_prompts(["newsroom_editor"]))
 
 
 def test_a_job_without_its_prompts_fails_before_any_ai_call(scene, job, monkeypatch):
     async def missing(names):
-        raise cw.PromptsUnavailable("Prompts not usable: newsroom_rules is missing. Run init_db.py --mode upsert.")
+        raise cw.PromptsUnavailable("Critical Configuration Error: prompts not usable: newsroom_rules is missing. "
+                                    "Run init_db.py --mode upsert.")
     run_body = _compose(scene, ("article", "A1"), ("article", "A2")).json()
     monkeypatch.setattr(cw, "load_prompts", missing)  # after the job fixture's own replacement
     run, model = job(run_body)

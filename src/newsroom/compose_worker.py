@@ -131,7 +131,9 @@ async def load_prompts(names: List[str]) -> dict:
         async for doc in get_async_config_database()["prompts"].find({"name": {"$in": names}, "status": "active"}):
             found[doc["name"]] = doc["content"]
     except Exception as e:
-        raise PromptsUnavailable(f"The prompt registry could not be read: {e}") from e
+        message = f"Critical Configuration Error: the prompt registry could not be read: {e}"
+        logger.error(f"[NEWSROOM] {message}")
+        raise PromptsUnavailable(message) from e
     problems = []
     for name in names:
         content = found.get(name)
@@ -144,7 +146,10 @@ async def load_prompts(names: List[str]) -> dict:
         if missing:
             problems.append(f"{name} lacks {', '.join('{' + m + '}' for m in sorted(missing))}")
     if problems:
-        raise PromptsUnavailable(f"Prompts not usable: {'; '.join(problems)}. Run init_db.py --mode upsert.")
+        # Same wording as the article pipeline's prompt loading, so one log search finds both
+        message = f"Critical Configuration Error: prompts not usable: {'; '.join(problems)}. Run init_db.py --mode upsert."
+        logger.error(f"[NEWSROOM] {message}")
+        raise PromptsUnavailable(message)
     return {name: found[name] for name in names}
 
 

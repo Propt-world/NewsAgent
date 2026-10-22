@@ -1309,6 +1309,29 @@ async def article_change_history(article_id: str):
 
 
 @app.get(
+    "/stats/articles",
+    dependencies=[Depends(verify_api_key)],
+    description="Dashboard counts: articles pending review and approved in all, and approved / rejected between "
+                "since and until (when their status last changed; recorded from 23 Oct 2026).",
+)
+async def article_stats(since: datetime = Query(...), until: datetime = Query(...)):
+    if since.tzinfo is None or until.tzinfo is None:
+        raise HTTPException(status_code=422, detail="since and until need a time zone (e.g. 2026-10-23T05:00:00Z)")
+    if until <= since:
+        raise HTTPException(status_code=422, detail="until must be after since")
+    articles = get_async_scheduler_collections().processed_articles
+    window = {"$gte": since, "$lt": until}
+    return {
+        "since": since,
+        "until": until,
+        "pending": await articles.count_documents({"status": "processed"}),
+        "total_approved": await articles.count_documents({"status": "approved"}),
+        "approved": await articles.count_documents({"status": "approved", "status_changed_at": window}),
+        "rejected": await articles.count_documents({"status": "rejected", "status_changed_at": window}),
+    }
+
+
+@app.get(
     "/articles/search/text",
     response_model=PaginatedArticleResponse,
     description="Dedicated API for standard text search across articles, including full content.",

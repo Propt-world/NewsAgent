@@ -330,3 +330,37 @@ print("RESULT=" + json.dumps(out, ensure_ascii=False))
                        ("text", "unknown")]
     assert out["history"][0][2:] == [{"status": "processed"}, {"status": "rejected"}]
     assert out["history"][3][2] == {"why_this_matters": "old", "why_this_matters_ar": "قديم"}
+
+
+
+def test_dashboard_article_counts(mongo_url, db_name, sync_db):
+    """The real scheduler app: pending and approved in all, approved / rejected in the window."""
+    script = f"""
+import json
+from datetime import datetime, timedelta, timezone
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+now = datetime.now(timezone.utc)
+rows = [("p1", "processed", None), ("p2", "processed", None), ("a1", "approved", now - timedelta(hours=2)),
+        ("a2", "approved", now - timedelta(hours=30)), ("a3", "approved", None), ("r1", "rejected", now - timedelta(hours=1))]
+for i, status, changed in rows:
+    db.processed_articles.insert_one({{"_id": i, "source_id": "s", "url": f"https://example.com/{{i}}", "status": status,
+                                       **({{"status_changed_at": changed}} if changed else {{}})}})
+from src.scheduler.main import app
+with TestClient(app) as c:
+    since = (now - timedelta(hours=24)).isoformat()
+    ok = c.get("/stats/articles", params={{"since": since, "until": now.isoformat()}})
+    naive = c.get("/stats/articles", params={{"since": "2026-10-22T10:00:00", "until": "2026-10-23T10:00:00"}})
+print("RESULT=" + json.dumps({{"ok": [ok.status_code, {{k: v for k, v in ok.json().items() if k not in ("since", "until")}}],
+                               "naive": naive.status_code}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["ok"] == [200, {"pending": 2, "total_approved": 3, "approved": 1, "rejected": 1}]
+    assert out["naive"] == 422  # a time without a time zone is refused (PKT vs UTC mix-ups)

@@ -155,6 +155,12 @@ async def save(doc: dict, edit: Dict[str, Optional[str]]) -> Tuple[Dict[str, obj
         if written.seo is not None:  # None: the step failed (logged inside) and the old SEO stays
             seo = written.seo.model_dump(mode="json")
             seo["slug"] = title_slug(new["title"]) if "title" in changed else old_seo.get("slug") or seo.get("slug")
+            # The page address and image set later (an image upload points them at Propt's own page) are kept;
+            # only the text parts (headline, description, dates) are new
+            old_ld = old_seo.get("json_ld_schema") or {}
+            for key in ("mainEntityOfPage", "image", "datePublished"):
+                if old_ld.get(key):
+                    seo["json_ld_schema"][key] = old_ld[key]
             fields["final_output.seo"] = seo
             regenerated.append("seo")
         if written.social_media is not None:

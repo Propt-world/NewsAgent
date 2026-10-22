@@ -24,7 +24,8 @@ DOC = {
                              "references": []},
         "seo": {"article_title": "Old", "h1": "Old", "meta_title": "Old", "meta_description": "Old", "slug": "old-slug",
                 "primary_keyword": "emaar", "primary_keywords": ["emaar"], "og_title": "Old", "og_description": "Old",
-                "json_ld_schema": {}},
+                "json_ld_schema": {"mainEntityOfPage": {"@type": "WebPage", "@id": "https://propt.global/news/art-1"},
+                                   "image": "https://bucket/img.webp", "datePublished": "2026-10-01"}},
         "social_media": {"headline": "Old", "caption_body": "Old", "hashtags": [], "call_to_action": "Old",
                          "platform_captions": []},
     },
@@ -116,6 +117,10 @@ def test_a_new_summary_rewrites_seo_and_captions_but_keeps_the_address(fake):
     seo = fields["final_output.seo"]
     assert seo["meta_title"] == "New" and "Emaar sold out." in seo["meta_description"]
     assert seo["slug"] == "old-slug"  # the title did not change: the web address stays
+    # The page address and image an image upload set are kept; the headline is new
+    ld = seo["json_ld_schema"]
+    assert ld["mainEntityOfPage"]["@id"] == "https://propt.global/news/art-1" and ld["image"] == "https://bucket/img.webp"
+    assert ld["datePublished"] == "2026-10-01" and ld["headline"] == "New"
     assert fields["final_output.social_media"]["headline"] == "New hook"
     assert [c[0] for c in fake.calls] == ["SeoLLMOutput", "SocialCaptionModel"]
     assert "final_output.title" not in fields

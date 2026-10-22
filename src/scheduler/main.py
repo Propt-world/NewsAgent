@@ -1236,8 +1236,9 @@ async def translate_article_text(article_id: str, parts: ArticleTextParts):
         return await article_edit.translate(doc, parts.model_dump())
     except article_edit.EditError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except article_edit.ConfigurationError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except article_edit.ConfigurationError:
+        # The full error is in the log ("Critical Configuration Error"); the reviewer gets a short message
+        raise HTTPException(status_code=500, detail=article_edit.CONFIGURATION_MESSAGE)
 
 
 @app.patch(
@@ -1253,8 +1254,9 @@ async def update_article_text(article_id: str, edit: ArticleTextUpdate):
         fields, regenerated = await article_edit.save(doc, edit.model_dump())
     except article_edit.EditError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except article_edit.ConfigurationError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except article_edit.ConfigurationError:
+        # The full error is in the log ("Critical Configuration Error"); the reviewer gets a short message
+        raise HTTPException(status_code=500, detail=article_edit.CONFIGURATION_MESSAGE)
     await get_async_scheduler_collections().processed_articles.update_one({"_id": article_id}, {"$set": fields})
     if settings.newsroom_enabled:
         # Errors are logged inside; the edit itself has already been saved.

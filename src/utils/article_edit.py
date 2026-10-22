@@ -41,6 +41,10 @@ class ConfigurationError(RuntimeError):
     """The pipeline's prompts could not be loaded (already logged as a Critical Configuration Error)."""
 
 
+CONFIGURATION_MESSAGE = ("Critical Configuration Error: the AI prompts could not be loaded, so nothing was changed. "
+                         "Ask an admin to run init_db.py --mode upsert.")
+
+
 def title_slug(title: str) -> str:
     """The web address made from a title."""
     clean = re.sub(r"[^a-zA-Z0-9\s-]", "", title.lower())

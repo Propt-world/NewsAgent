@@ -5,6 +5,7 @@ from src.models.ValidationResultModel import ValidationResultModel
 from src.models.SummaryAttemptModel import SummaryAttemptModel
 from src.configs.settings import settings
 from langchain_core.prompts import PromptTemplate
+from src.utils.prompt_lengths import fill_lengths
 #from src.prompts.ValidationPrompts import SYSTEM_PROMPT, USER_PROMPT
 
 
@@ -67,7 +68,7 @@ async def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
         structured_llm = model.with_structured_output(ValidationResultModel)
 
         # 4. Format the prompt
-        prompt = PromptTemplate.from_template(prompts.validation_user)
+        prompt = PromptTemplate.from_template(fill_lengths(prompts.validation_user, state))
         formatted_prompt = prompt.format(
             article_text=state.cleaned_article_text,
             summary_text=state.news_article.summary
@@ -75,7 +76,7 @@ async def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
 
         # 5. Invoke the model
         messages = [
-            ("system", prompts.validation_system),
+            ("system", fill_lengths(prompts.validation_system, state)),
             ("user", formatted_prompt)
         ]
         pprint("[NODE: VALIDATE SUMMARY] Invoking critic LLM...")

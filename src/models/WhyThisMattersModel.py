@@ -14,7 +14,7 @@ class WhyThisMattersModel(BaseModel):
     heading: str = "Why this matters"
     content: str = Field(
         ...,
-        description="A neutral contextual paragraph (110-130 words) explaining why the article matters."
+        description="A neutral contextual paragraph explaining why the article matters."
     )
     content_ar: Optional[str] = Field(
         None,
@@ -26,5 +26,5 @@ class WhyThisMattersModel(BaseModel):
 class WhyThisMattersLLMOutput(BaseModel):
     content: str = Field(
         ...,
-        description="A neutral paragraph of 110-130 words (5-6 sentences of about 20-22 words each) for the 'Why this matters' section."
+        description="A neutral paragraph for the 'Why this matters' section, as long as the instructions ask."
     )

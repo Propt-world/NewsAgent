@@ -48,7 +48,9 @@ class MainWorkflowState(BaseModel):
 
     # --- Global Error & Config Fields ---
     max_retries: int = 3
-    # Summary length the critic step counts in code (the AI cannot count words reliably)
+    # Lengths from settings (.env): filled into the prompts; the summary's is also counted in code by the critic step
     summary_min_words: int = Field(default_factory=lambda: settings.SUMMARY_MIN_WORDS)
     summary_max_words: int = Field(default_factory=lambda: settings.SUMMARY_MAX_WORDS)
+    wtm_min_words: int = Field(default_factory=lambda: settings.WTM_MIN_WORDS)
+    wtm_max_words: int = Field(default_factory=lambda: settings.WTM_MAX_WORDS)
     error_message: Optional[str] = None

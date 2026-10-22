@@ -20,7 +20,7 @@ INITIAL_DATA = [
     # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
-        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 250-280 words (never fewer than 250), written as 12-13 sentences of about 20-22 words each.
+        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in {summary_min_words}-{summary_max_words} words (never fewer than {summary_min_words}), written as {summary_sentences} sentences of about 20-22 words each.
 
 The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
 
@@ -36,7 +36,7 @@ CONTENT RULES:
 2. You must not change the tone, add any information (hallucinate), or alter the semantic meaning of the original text.
 3. Copy every number, amount, percentage, date, and year exactly as the article gives it, attached to the same thing and period. Never change, round, or guess a figure or a year.
 4. Prioritise concrete facts: every key figure, name, place, and date the article gives. Keep descriptive or marketing language to a minimum.
-5. If the article is too short to fill 250 words, write as much as its facts allow; never pad, repeat, or add information to reach the length.""",
+5. If the article is too short to fill {summary_min_words} words, write as much as its facts allow; never pad, repeat, or add information to reach the length.""",
         "input_variables": [],
         "description": "System instruction for the summarizer."
     },
@@ -54,7 +54,7 @@ CONTENT RULES:
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
 
-Remember the hard constraints: 250-280 words (never fewer than 250) in 12-13 sentences of about 20-22 words each, the key facts (figures, names, places, dates) before description, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
+Remember the hard constraints: {summary_min_words}-{summary_max_words} words (never fewer than {summary_min_words}) in {summary_sentences} sentences of about 20-22 words each, the key facts (figures, names, places, dates) before description, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -78,7 +78,7 @@ You will score the summary on two metrics:
 
 You will also run two checks:
 -   **Figures Check (pass/fail):** Go through every number, amount, percentage, date, and year in the summary and find it in the article. Each must appear in the article with the same value and refer to the same thing and period. Any changed, rounded, invented, or misattributed figure fails this check, including a wrong year (e.g., "2023" when the article says "2026").
--   **Format Check (pass/fail):** The summary is 250-280 words (the word count is also checked separately). It is written as plain flowing prose with no bullets, markdown, emojis, or special characters (the usual symbols in figures, such as $ and %, are allowed), and numbers, years, and dates are written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"). Numbers spelled out as words (e.g., "two thousand thirty") and "percent" written instead of "%" fail this check. Set format_check_passed to the result of this check.
+-   **Format Check (pass/fail):** The summary is {summary_min_words}-{summary_max_words} words (the word count is also checked separately). It is written as plain flowing prose with no bullets, markdown, emojis, or special characters (the usual symbols in figures, such as $ and %, are allowed), and numbers, years, and dates are written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"). Numbers spelled out as words (e.g., "two thousand thirty") and "percent" written instead of "%" fail this check. Set format_check_passed to the result of this check.
 
 You will then decide if the summary is valid:
 -   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND the Figures Check passes AND the Format Check passes AND zero hallucinations.
@@ -319,7 +319,7 @@ NAMES (only when the response has the fields companies, projects and places):
     {
         "name": "content_enrichment_system",
         "content": """You are an impartial real estate market editor.
-Your task is to write a contextual insight of 110-130 words (never fewer than 110), as one paragraph of 5-6 sentences of about 20-22 words each, for a section titled "Why this matters".
+Your task is to write a contextual insight of {wtm_min_words}-{wtm_max_words} words (never fewer than {wtm_min_words}), as one paragraph of {wtm_sentences} sentences of about 20-22 words each, for a section titled "Why this matters".
 
 RULES:
 1. Be thoughtful, neutral, and evidence-aware.
@@ -328,7 +328,7 @@ RULES:
 4. Do not invent statistics, forecasts, company claims, or market movements.
 5. Distinguish broad context from confirmed article facts.
 6. Do not include the section heading in the response.
-7. Write 110-130 words in 5-6 sentences of about 20-22 words each, as plain prose: one paragraph, no bullets or headings. Do not repeat the summary; explain the significance.""",
+7. Write {wtm_min_words}-{wtm_max_words} words in {wtm_sentences} sentences of about 20-22 words each, as plain prose: one paragraph, no bullets or headings. Do not repeat the summary; explain the significance.""",
         "input_variables": [],
         "description": "System instruction for the Why this matters content enrichment section."
     },
@@ -357,7 +357,7 @@ RULES:
 ---END CONTEXTUAL SOURCES---
 
 REQUIREMENTS:
-1. Write 110-130 words (never fewer than 110) as one paragraph of 5-6 sentences of about 20-22 words each.
+1. Write {wtm_min_words}-{wtm_max_words} words (never fewer than {wtm_min_words}) as one paragraph of {wtm_sentences} sentences of about 20-22 words each.
 2. Do not repeat the summary: add the context and significance it does not give.
 3. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
 4. Include a contextual reference from the provided sources when it is relevant.

@@ -20,7 +20,7 @@ INITIAL_DATA = [
     # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
-        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 250-280 words (never fewer than 250), written as 13-14 sentences of about 20 words each.
+        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in 250-280 words (never fewer than 250), written as 12-13 sentences of about 20-22 words each.
 
 The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
 
@@ -54,7 +54,7 @@ CONTENT RULES:
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
 
-Remember the hard constraints: 250-280 words (never fewer than 250) in 13-14 sentences, the key facts (figures, names, places, dates) before description, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
+Remember the hard constraints: 250-280 words (never fewer than 250) in 12-13 sentences of about 20-22 words each, the key facts (figures, names, places, dates) before description, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -319,7 +319,7 @@ NAMES (only when the response has the fields companies, projects and places):
     {
         "name": "content_enrichment_system",
         "content": """You are an impartial real estate market editor.
-Your task is to write a contextual insight of 110-130 words (never fewer than 110), as one paragraph of 5-6 sentences, for a section titled "Why this matters".
+Your task is to write a contextual insight of 110-130 words (never fewer than 110), as one paragraph of 5-6 sentences of about 20-22 words each, for a section titled "Why this matters".
 
 RULES:
 1. Be thoughtful, neutral, and evidence-aware.
@@ -328,7 +328,7 @@ RULES:
 4. Do not invent statistics, forecasts, company claims, or market movements.
 5. Distinguish broad context from confirmed article facts.
 6. Do not include the section heading in the response.
-7. Write 110-130 words in 5-6 sentences of plain prose: one paragraph, no bullets or headings. Do not repeat the summary; explain the significance.""",
+7. Write 110-130 words in 5-6 sentences of about 20-22 words each, as plain prose: one paragraph, no bullets or headings. Do not repeat the summary; explain the significance.""",
         "input_variables": [],
         "description": "System instruction for the Why this matters content enrichment section."
     },
@@ -357,7 +357,7 @@ RULES:
 ---END CONTEXTUAL SOURCES---
 
 REQUIREMENTS:
-1. Write 110-130 words (never fewer than 110) as one paragraph of 5-6 sentences.
+1. Write 110-130 words (never fewer than 110) as one paragraph of 5-6 sentences of about 20-22 words each.
 2. Do not repeat the summary: add the context and significance it does not give.
 3. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
 4. Include a contextual reference from the provided sources when it is relevant.

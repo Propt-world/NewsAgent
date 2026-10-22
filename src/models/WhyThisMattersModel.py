@@ -26,5 +26,5 @@ class WhyThisMattersModel(BaseModel):
 class WhyThisMattersLLMOutput(BaseModel):
     content: str = Field(
         ...,
-        description="A neutral paragraph of 110-130 words (5-6 sentences) for the 'Why this matters' section."
+        description="A neutral paragraph of 110-130 words (5-6 sentences of about 20-22 words each) for the 'Why this matters' section."
     )

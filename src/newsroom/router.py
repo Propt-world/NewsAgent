@@ -86,6 +86,13 @@ def get_actor(x_newsroom_user: Optional[str] = Header(None)) -> str:
     return actor or "unknown"
 
 
+async def _rematched(db, entity: dict, actor: str) -> dict:
+    """After an entity is added or changed: open "not in the list" suggestions with one of its names (on any item)
+    become suggestions for it. Never links anything."""
+    await lnk.rematch_names_of(db, entity["id"], actor)
+    return entity
+
+
 async def _call(coro):
     try:
         return await coro
@@ -163,7 +170,10 @@ async def entities_template(kind: Literal["organisation", "location"], db=Depend
              description="Add new entities from CSV. Names already in the list are skipped and never changed. "
                          "dry_run (the default) only checks; rows with a problem are never added.")
 async def import_entities(payload: CsvImportRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
-    return await _call(entity_csv.import_csv(db, payload.kind, payload.csv_text, actor, payload.dry_run))
+    result = await _call(entity_csv.import_csv(db, payload.kind, payload.csv_text, actor, payload.dry_run))
+    if not payload.dry_run and result.get("added"):
+        await lnk.rematch_unknown_names(db, actor=actor)  # names now in the list become suggestions for them
+    return result
 
 
 @router.get("/entities/{entity_id}", response_model=EntityOut)
@@ -179,20 +189,23 @@ async def get_entity_audit(entity_id: PathId, limit: int = Query(50, ge=1, le=20
 @router.post("/entities", response_model=EntityOut, status_code=status.HTTP_201_CREATED,
              description="Add an entity. The canonical name becomes an exact alias unless listed as ambiguous.")
 async def create_entity(payload: EntityCreate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
-    return await _call(svc.create_entity(db, payload, actor))
+    return await _rematched(db, await _call(svc.create_entity(db, payload, actor)), actor)
 
 
 @router.patch("/entities/{entity_id}", response_model=EntityOut,
               description="Edit name, type, status (on/off), parent, country or notes. Entities are switched off, never deleted.")
 async def update_entity(entity_id: PathId, payload: EntityUpdate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
-    return await _call(svc.update_entity(db, entity_id, payload, actor))
+    return await _rematched(db, await _call(svc.update_entity(db, entity_id, payload, actor)), actor)
 
 
 @router.post("/entities/{entity_id}/merge", response_model=MergeResult,
              description="Merge this duplicate into into_id: its aliases, links, suggestions and children move there. "
                          "Use dry_run to see the counts first. The duplicate stays as status 'merged'.")
 async def merge_entity(entity_id: PathId, payload: MergeRequest, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
-    return await _call(svc.merge_entities(db, entity_id, payload.into_id, actor, payload.dry_run))
+    result = await _call(svc.merge_entities(db, entity_id, payload.into_id, actor, payload.dry_run))
+    if not payload.dry_run:
+        await lnk.rematch_names_of(db, payload.into_id, actor)
+    return result
 
 
 @router.post("/entities/{entity_id}/delete", response_model=DeleteResult,
@@ -206,7 +219,7 @@ async def delete_entity(entity_id: PathId, payload: DeleteRequest, db=Depends(ge
 
 @router.post("/entities/{entity_id}/aliases", response_model=EntityOut, status_code=status.HTTP_201_CREATED)
 async def add_alias(entity_id: PathId, payload: AliasCreate, db=Depends(get_newsroom_db), actor: str = Depends(get_actor)):
-    return await _call(svc.add_alias(db, entity_id, payload, actor))
+    return await _rematched(db, await _call(svc.add_alias(db, entity_id, payload, actor)), actor)
 
 
 @router.delete("/entities/{entity_id}/aliases/{alias_id}", response_model=EntityOut)

@@ -9,6 +9,8 @@ Suggestion-first entity linking.
 - unlink(): marks the link removed and dismisses its suggestions, so it is
   never suggested again for that item (a reviewer may still re-link by hand).
 - Unknown names from approved items go to the "new names" queue.
+- rematch_unknown_names(): when a company or place is added (or gets a new name) later, the "not in the list"
+  suggestions with that name become normal suggestions for it (still not linked).
 """
 import uuid
 from datetime import datetime, timezone
@@ -202,9 +204,88 @@ async def _resolve_in(db, kind: str, name: str, norm: str, ignored) -> tuple:
     return rs.resolve(name, ignored, aliases, found), exact
 
 
+async def rematch_unknown_names(db, match: Optional[dict] = None, actor: str = "system") -> int:
+    """
+    Open "not in the list" suggestions whose name is now in the list (a company or place was added, renamed,
+    given a name, merged or imported after the item was processed) become normal suggestions for it, with
+    suggest()'s matching rules. Nothing is linked: a reviewer still confirms each one. A suggestion is closed
+    instead when its item is already linked to that entity (or the link was removed, which stays removed) or
+    already has an open suggestion for it. `match` narrows the suggestions (e.g. by name_norm or item).
+    Returns how many suggestions changed.
+    """
+    suggestions = await db[ndb.ENTITY_SUGGESTIONS].find(
+        {**(match or {}), "status": "open", "entity_id": None}).to_list(length=None)
+    if not suggestions:
+        return 0
+    norms = list({s["name_norm"] for s in suggestions})
+    by_name: Dict[tuple, list] = {}
+    async for alias in db[ndb.ENTITY_ALIASES].find({"alias_norm": {"$in": norms}}):
+        by_name.setdefault((alias["kind"], alias["alias_norm"]), []).append(alias)
+    if not by_name:
+        return 0
+    entity_ids = list({a["entity_id"] for aliases in by_name.values() for a in aliases})
+    entities = {e["_id"]: e async for e in db[ndb.ENTITIES].find({"_id": {"$in": entity_ids}})}
+    ignored = {d["string_key"] for d in await db[ndb.ENTITY_IGNORE].find({}, {"string_key": 1}).to_list(length=None)}
+
+    def resolve_in(kind: str, s: dict):
+        aliases = by_name.get((kind, s["name_norm"]), [])
+        exact = rs.exact_alias(aliases)
+        return rs.resolve(s["name"], ignored, aliases, entities.get(exact["entity_id"]) if exact else None), exact
+
+    changed, now = 0, _now()
+    for s in suggestions:
+        field = s["field"]
+        resolution, exact = resolve_in(field, s)
+        if resolution.outcome == rs.UNKNOWN:
+            other, other_exact = resolve_in(rs.other_kind(field), s)
+            if other.outcome in rs.OTHER_LIST_OUTCOMES:
+                field, resolution, exact = rs.other_kind(field), other, other_exact
+        if resolution.outcome not in (rs.ACTIVE, rs.STAGED):
+            continue  # still unknown, or a name that suggest() would skip: left as it is
+        entity = resolution.entity
+        item = {"source_type": s["source_type"], "source_id": s["source_id"]}
+        mention = await db[ndb.ENTITY_MENTIONS].find_one({**item, "entity_id": entity["_id"]}, {"status": 1})
+        twin = await db[ndb.ENTITY_SUGGESTIONS].find_one(
+            {**item, "entity_id": entity["_id"], "status": "open", "_id": {"$ne": s["_id"]}}, {"_id": 1})
+        if mention is not None or twin is not None:
+            closed = "linked" if mention is not None and mention["status"] == "linked" else "dismissed"
+            await db[ndb.ENTITY_SUGGESTIONS].update_one({"_id": s["_id"]}, {"$set": {
+                "status": closed, "entity_id": entity["_id"], "in_new_names_queue": False,
+                "decided_at": now, "decided_by": actor}})
+            changed += 1
+            continue
+        reason = f"exact match on alias '{exact['alias']}'"
+        if entity["status"] == "staged":
+            reason += " (entity is switched off)"
+        if field != s["field"]:
+            reason += f" (given as a {'company' if s['field'] == 'organisation' else 'place'} name)"
+        reason += " (added to the list after this item was processed)"
+        try:
+            # in_new_names_queue is kept, so the New Names page's "add and link every item" still finds it
+            await db[ndb.ENTITY_SUGGESTIONS].update_one({"_id": s["_id"]}, {"$set": {
+                "field": field, "entity_id": entity["_id"], "entity_status": entity["status"],
+                "matched_alias": exact["alias"], "reason": reason}})
+        except DuplicateKeyError:
+            # The item already has a suggestion for this name in the other list
+            await db[ndb.ENTITY_SUGGESTIONS].update_one({"_id": s["_id"]}, {"$set": {
+                "status": "dismissed", "in_new_names_queue": False, "decided_at": now, "decided_by": actor}})
+        changed += 1
+    return changed
+
+
+async def rematch_names_of(db, entity_id: str, actor: str = "system") -> int:
+    """rematch_unknown_names for the names (aliases) of one entity, after it was added or changed."""
+    norms = await db[ndb.ENTITY_ALIASES].distinct("alias_norm", {"entity_id": entity_id})
+    if not norms:
+        return 0
+    return await rematch_unknown_names(db, {"name_norm": {"$in": norms}}, actor)
+
+
 async def item_entities(db, source_type: str, source_id: str) -> dict:
-    """Linked entities and open suggestions for one item."""
+    """Linked entities and open suggestions for one item. Its "not in the list" names are checked against the
+    list again first, so a company or place added since the item was processed is offered normally."""
     _check_source_type(source_type)
+    await rematch_unknown_names(db, {"source_type": source_type, "source_id": source_id})
     mentions = await db[ndb.ENTITY_MENTIONS].find(
         {"source_type": source_type, "source_id": source_id, "status": "linked"}).to_list(length=None)
     entity_ids = [m["entity_id"] for m in mentions]
@@ -553,9 +634,11 @@ async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources
 
 async def link_new_name(db, sources: ndb.ItemSources, field: str, name_norm: str, entity_id: str, actor: str,
                         activate: bool = False) -> int:
-    """Links every queued item carrying this unknown name to the chosen entity. Returns the number linked."""
+    """Links every queued item carrying this unknown name to the chosen entity. Returns the number linked.
+    Includes queued names already matched to that entity (adding it re-matches them, see rematch_unknown_names)."""
     queued = await db[ndb.ENTITY_SUGGESTIONS].find(
-        {"status": "open", "entity_id": None, "in_new_names_queue": True, "field": field, "name_norm": name_norm}
+        {"status": "open", "entity_id": {"$in": [None, entity_id]}, "in_new_names_queue": True, "field": field,
+         "name_norm": name_norm}
     ).to_list(length=None)
     if not queued:
         raise NotFound("No queued items carry that name")

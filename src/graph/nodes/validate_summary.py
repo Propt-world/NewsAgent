@@ -8,6 +8,31 @@ from langchain_core.prompts import PromptTemplate
 #from src.prompts.ValidationPrompts import SYSTEM_PROMPT, USER_PROMPT
 
 
+def count_words(text: str) -> int:
+    return len((text or "").split())
+
+
+def check_word_count(result: ValidationResultModel, state: MainWorkflowState) -> ValidationResultModel:
+    """
+    Fails a summary outside state.summary_min_words-summary_max_words, with the count in the feedback so the retry
+    knows how much to add or cut. The minimum is not enforced when the article itself is shorter than it
+    (the summary must never be padded with repeated or invented text).
+    """
+    words = count_words(state.news_article.summary)
+    low, high = state.summary_min_words, state.summary_max_words
+    if count_words(state.cleaned_article_text) < low:
+        low = 0
+    if low <= words <= high:
+        return result
+    change = f"add about {low - words} words of the article's facts" if words < low else f"cut about {words - high} words"
+    note = f"Word count: the summary has {words} words; it must be {state.summary_min_words}-{high} words ({change})."
+    return result.model_copy(update={
+        "is_valid": False,
+        "format_check_passed": False,
+        "feedback": f"{note} {result.feedback}".strip(),
+    })
+
+
 async def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
     Validates the generated summary against the original text.
@@ -58,6 +83,9 @@ async def validate_summary(state: MainWorkflowState) -> MainWorkflowState:
             messages
         )
         pprint(validation_response.model_dump())
+
+        # 5b. Word count, counted here: the critic LLM cannot count words reliably
+        validation_response = check_word_count(validation_response, state)
 
         # 6. Record this attempt
         current_summary = state.news_article.summary

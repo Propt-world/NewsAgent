@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     MODEL_NAME: str = os.getenv('MODEL_NAME', "gpt-4o-mini")
     MODEL_TEMPERATURE: float = float(os.getenv('MODEL_TEMPERATURE', "0.5"))
 
+    # Summary length, counted in code by the critic step (keep equal to the summary prompts in init_db.py)
+    SUMMARY_MIN_WORDS: int = int(os.getenv("SUMMARY_MIN_WORDS", "250"))
+    SUMMARY_MAX_WORDS: int = int(os.getenv("SUMMARY_MAX_WORDS", "280"))
+
     # Search / Context Configuration
     SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "searxng")
     SEARXNG_BASE_URL: str = os.getenv("SEARXNG_BASE_URL", "http://localhost:8080")

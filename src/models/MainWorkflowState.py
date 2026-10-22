@@ -1,5 +1,6 @@
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
+from src.configs.settings import settings
 from src.models.ArticleModel import ArticleModel
 from src.models.AgentPromptsModel import AgentPromptsModel
 from src.models.ValidationResultModel import ValidationResultModel
@@ -47,4 +48,7 @@ class MainWorkflowState(BaseModel):
 
     # --- Global Error & Config Fields ---
     max_retries: int = 3
+    # Summary length the critic step counts in code (the AI cannot count words reliably)
+    summary_min_words: int = Field(default_factory=lambda: settings.SUMMARY_MIN_WORDS)
+    summary_max_words: int = Field(default_factory=lambda: settings.SUMMARY_MAX_WORDS)
     error_message: Optional[str] = None

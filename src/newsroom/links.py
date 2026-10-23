@@ -12,6 +12,7 @@ Suggestion-first entity linking.
 - rematch_unknown_names(): when a company or place is added (or gets a new name) later, the "not in the list"
   suggestions with that name become normal suggestions for it (still not linked).
 """
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -600,12 +601,21 @@ async def items_summary(db, source_type: str, source_ids: List[str]) -> Dict[str
     return summary
 
 
-async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources] = None,
-                         items_per_group: int = 5) -> List[dict]:
-    """Unknown names from approved items, grouped by name, most frequent first.
-    Each group lists its first few items (with titles) and the full count."""
+async def list_new_names(db, limit: int = 50, skip: int = 0, sources: Optional[ndb.ItemSources] = None,
+                         field: Optional[str] = None, search: Optional[str] = None,
+                         items_per_group: int = 5) -> dict:
+    """Unknown names from approved items, grouped by name, most frequent first, one page at a time.
+    Each group lists its first few items (with titles) and the full count; total is the number of names
+    matching the filters. field: "organisation" or "location"; search: part of the name, any case."""
+    match = {"status": "open", "entity_id": None, "in_new_names_queue": True}
+    if field:
+        match["field"] = field
+    norm = normalize_alias(search or "")
+    if norm:
+        # Compared with the stored comparison form, so "emaar" finds "EMAAR Properties" and "Emaar-Properties"
+        match["name_norm"] = {"$regex": re.escape(norm)}
     pipeline = [
-        {"$match": {"status": "open", "entity_id": None, "in_new_names_queue": True}},
+        {"$match": match},
         {"$sort": {"created_at": 1}},
         {"$group": {
             "_id": {"field": "$field", "name_norm": "$name_norm"},
@@ -613,12 +623,20 @@ async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources
             "count": {"$sum": 1},
             "items": {"$push": {"source_type": "$source_type", "source_id": "$source_id", "suggestion_id": "$_id"}},
         }},
-        {"$sort": {"count": -1, "_id.name_norm": 1}},
-        {"$limit": limit},
-        # A name found on hundreds of items sends back only its first few examples.
-        {"$project": {"name": 1, "count": 1, "items": {"$slice": ["$items", items_per_group]}}},
+        {"$sort": {"count": -1, "_id.name_norm": 1, "_id.field": 1}},
+        {"$facet": {
+            "page": [
+                {"$skip": skip},
+                {"$limit": limit},
+                # A name found on hundreds of items sends back only its first few examples.
+                {"$project": {"name": 1, "count": 1, "items": {"$slice": ["$items", items_per_group]}}},
+            ],
+            "total": [{"$count": "n"}],
+        }},
     ]
-    groups = await (await db[ndb.ENTITY_SUGGESTIONS].aggregate(pipeline)).to_list(length=limit)
+    result = (await (await db[ndb.ENTITY_SUGGESTIONS].aggregate(pipeline)).to_list(length=1))[0]
+    groups = result["page"]
+    total = result["total"][0]["n"] if result["total"] else 0
     if sources is not None:
         # Titles so a reviewer can see where the name was found: one batch per item type.
         for source_type in SOURCE_TYPES:
@@ -628,8 +646,9 @@ async def list_new_names(db, limit: int = 100, sources: Optional[ndb.ItemSources
                 for item in g["items"]:
                     if item["source_type"] == source_type:
                         item["title"] = (infos.get(item["source_id"]) or {}).get("title")
-    return [{"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
-             "count": g["count"], "items": g["items"]} for g in groups]
+    items = [{"field": g["_id"]["field"], "name_norm": g["_id"]["name_norm"], "name": g["name"],
+              "count": g["count"], "items": g["items"]} for g in groups]
+    return {"items": items, "total": total, "limit": limit, "skip": skip}
 
 
 async def link_new_name(db, sources: ndb.ItemSources, field: str, name_norm: str, entity_id: str, actor: str,

@@ -56,7 +56,7 @@ from src.newsroom.models import (
     MergeRequest,
     MergeResult,
     NewNameDismissRequest,
-    NewNameGroup,
+    NewNamePage,
     NewNameLinkRequest,
     NewsroomHealthResponse,
     NewsroomStatusResponse,
@@ -64,6 +64,7 @@ from src.newsroom.models import (
     SignalSavedRequest,
     SourceCheck,
     SourceType,
+    SuggestionField,
     SuggestionOut,
     SuggestRequest,
     SuggestResponse,
@@ -350,12 +351,15 @@ async def dismiss_suggestion(suggestion_id: PathId, db=Depends(get_newsroom_db),
     return await _call(lnk.dismiss(db, suggestion_id, actor))
 
 
-@router.get("/new-names", response_model=List[NewNameGroup],
-            description="Names not in the list, from approved items, grouped and most frequent first "
-                        "(titles for the first few items of each name).")
-async def list_new_names(limit: int = Query(100, ge=1, le=500), db=Depends(get_newsroom_db),
-                         sources=Depends(get_item_sources)):
-    return await _call(lnk.list_new_names(db, limit, sources))
+@router.get("/new-names/page", response_model=NewNamePage,
+            description="Names not in the list, from approved items, grouped and most frequent first, one page "
+                        "at a time (titles for the first few items of each name). Optional: only companies and "
+                        "people or only places (field), and part of the name (q).")
+async def list_new_names(limit: int = Query(50, ge=1, le=200), skip: int = Query(0, ge=0, le=100_000),
+                         field: Optional[SuggestionField] = None,
+                         q: Optional[str] = Query(None, max_length=100, description="Part of the name, any case"),
+                         db=Depends(get_newsroom_db), sources=Depends(get_item_sources)):
+    return await _call(lnk.list_new_names(db, limit, skip, sources, field=field, search=q))
 
 
 @router.post("/items/summary", response_model=ItemsSummaryResponse,

@@ -77,6 +77,13 @@ class NewNameGroup(BaseModel):
     items: List[NewNameItem]
 
 
+class NewNamePage(BaseModel):
+    items: List[NewNameGroup]
+    total: int = Field(description="Names waiting in all, for paging")
+    limit: int
+    skip: int
+
+
 class NewNameLinkRequest(BaseModel):
     field: SuggestionField
     name_norm: NameText

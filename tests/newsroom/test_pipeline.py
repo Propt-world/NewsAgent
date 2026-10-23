@@ -364,3 +364,34 @@ print("RESULT=" + json.dumps({{"ok": [ok.status_code, {{k: v for k, v in ok.json
     out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
     assert out["ok"] == [200, {"pending": 2, "total_approved": 3, "approved": 1, "rejected": 1}]
     assert out["naive"] == 422  # a time without a time zone is refused (PKT vs UTC mix-ups)
+
+
+
+def test_filtered_out_list_can_show_the_last_days_only(mongo_url, db_name, sync_db):
+    """The real scheduler app: filtered_since hides older filtered-out articles; their records stay."""
+    script = f"""
+import json
+from datetime import datetime, timedelta, timezone
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+now = datetime.now(timezone.utc)
+for i, days in (("new", 2), ("old", 40)):
+    db.processed_articles.insert_one({{"_id": i, "source_id": "s", "url": f"https://example.com/{{i}}",
+        "status": "not_real_estate", "filtered_at": now - timedelta(days=days), "discovered_at": now - timedelta(days=days)}})
+from src.scheduler.main import app
+with TestClient(app) as c:
+    recent = c.get("/articles", params={{"status": "not_real_estate", "filtered_since": (now - timedelta(days=30)).isoformat()}}).json()
+    every = c.get("/articles", params={{"status": "not_real_estate"}}).json()
+print("RESULT=" + json.dumps({{"recent": [recent["total"], [a["_id"] for a in recent["items"]]], "every": every["total"],
+                               "kept": db.processed_articles.count_documents({{"status": "not_real_estate"}})}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["recent"] == [1, ["new"]]
+    assert (out["every"], out["kept"]) == (2, 2)  # nothing deleted: the old one still blocks reprocessing

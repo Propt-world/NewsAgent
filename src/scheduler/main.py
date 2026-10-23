@@ -821,11 +821,16 @@ async def list_articles(
     discovered_before: Optional[datetime] = Query(
         None, description="Only articles discovered at or before this time (for 'load more' that new arrivals "
                           "cannot shift; use with page=1). The total still counts every article of the status."),
+    filtered_since: Optional[datetime] = Query(
+        None, description="Only articles the real-estate check filtered out at or after this time (the Filtered "
+                          "Out screen shows the last 30 days; older records stay so they are never processed again)."),
 ):
     collections = get_async_scheduler_collections()
     query = {}
     if status:
         query["status"] = status
+    if filtered_since is not None:
+        query["filtered_at"] = {"$gte": filtered_since}
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)

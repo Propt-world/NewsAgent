@@ -395,3 +395,45 @@ print("RESULT=" + json.dumps({{"recent": [recent["total"], [a["_id"] for a in re
     out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
     assert out["recent"] == [1, ["new"]]
     assert (out["every"], out["kept"]) == (2, 2)  # nothing deleted: the old one still blocks reprocessing
+
+
+def test_similarity_search_returns_each_article_once_with_its_title(mongo_url, db_name, sync_db):
+    """The real scheduler app with a stand-in vector search: pieces become articles, best piece per article."""
+    script = f"""
+import json
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+for i, title in (("a1", "Emaar launches a tower"), ("a2", "Nakheel sells villas")):
+    db.processed_articles.insert_one({{"_id": i, "source_id": "s", "url": f"https://example.com/{{i}}", "status": "approved",
+        "final_output": {{"title": title, "summary": "x", "content": "long text not needed here"}}}})
+
+class FakeStore:
+    async def query(self, query_text, limit=5, filters=None):
+        piece = lambda url, score: {{"chunk_text": f"piece of {{url}}", "source_id": "s", "score": score,
+                                     "metadata": {{"url": url}}}}
+        return [piece("https://example.com/a1", 0.91), piece("https://example.com/a1", 0.80),
+                piece("https://example.com/a2", 0.75), piece("https://example.com/gone", 0.95),
+                piece("https://example.com/a2", 0.40)][:limit]
+
+import src.scheduler.main as main
+main.get_mongo_store = lambda: FakeStore()
+with TestClient(main.app) as c:
+    high = c.get("/articles/search/similarity", params={{"q": "Emaar tower launch", "limit": 5, "min_score": 0.85}}).json()
+    low = c.get("/articles/search/similarity", params={{"q": "Emaar tower launch", "limit": 5, "min_score": 0.5}}).json()
+print("RESULT=" + json.dumps({{
+    "high": [[i["article"]["_id"], i["article"]["final_output"]["title"], i["similarity_score"]] for i in high["items"]],
+    "high_below": high["best_below_min"], "high_content": "content" in high["items"][0]["article"]["final_output"],
+    "low": [i["article"]["_id"] for i in low["items"]], "low_below": low["best_below_min"]}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    # a1 once (its best piece); an article no longer stored is left out; a2 is a weaker match below 0.85
+    assert out["high"] == [["a1", "Emaar launches a tower", 0.91]]
+    assert out["high_below"] == 0.75 and out["high_content"] is False
+    assert out["low"] == ["a1", "a2"] and out["low_below"] is None

@@ -47,6 +47,7 @@ from src.newsroom.models.links import (  # noqa: F401
     LinkRequest,
     NewNameItem,
     NewNameGroup,
+    NewNamePage,
     NewNameLinkRequest,
     NewNameDismissRequest,
     CountResponse,

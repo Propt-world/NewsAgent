@@ -821,11 +821,16 @@ async def list_articles(
     discovered_before: Optional[datetime] = Query(
         None, description="Only articles discovered at or before this time (for 'load more' that new arrivals "
                           "cannot shift; use with page=1). The total still counts every article of the status."),
+    filtered_since: Optional[datetime] = Query(
+        None, description="Only articles the real-estate check filtered out at or after this time (the Filtered "
+                          "Out screen shows the last 30 days; older records stay so they are never processed again)."),
 ):
     collections = get_async_scheduler_collections()
     query = {}
     if status:
         query["status"] = status
+    if filtered_since is not None:
+        query["filtered_at"] = {"$gte": filtered_since}
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)
@@ -1395,6 +1400,11 @@ async def search_articles_text(
         logger.error(f"Text search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Each article is stored as several pieces: ask for this many pieces per article wanted, keep each article's best
+SIMILARITY_PIECES_PER_ARTICLE = 4
+
+
 @app.get(
     "/articles/search/similarity",
     description="Dedicated API for semantic/AI search to find similar articles or duplicates.",
@@ -1410,43 +1420,50 @@ async def search_articles_text(
     dependencies=[Depends(verify_api_key)],
 )
 async def search_articles_similarity(
-    q: str = Query(..., min_length=5, description="The semantic query or paragraph to match against"),
-    limit: int = Query(5, ge=1, le=50, description="Max similar results to return"),
+    q: str = Query(..., min_length=5, max_length=5000, description="The semantic query or paragraph to match against"),
+    limit: int = Query(5, ge=1, le=50, description="Max similar articles to return"),
     min_score: float = Query(0.7, ge=0.0, le=1.0, description="Minimum relevance score (cosine similarity)")
 ):
     """
-    Vector Search / AI Similarity. Takes a text snippet, embeds it using OpenAI, 
-    and finds contextually similar article chunks in the database.
+    Vector Search / AI Similarity. Embeds the text (one small OpenAI call) and finds approved articles whose
+    stored pieces are closest in meaning. Each article is stored as several pieces, so the best piece per article
+    counts and each article is returned once, with its title and status.
+    Matches compare meaning, not words: one word such as "Dubai" scores low against whole articles; a title or a
+    paragraph scores high. best_below_min tells the reviewer when weaker matches were left out.
     """
     try:
         mongo_store = get_mongo_store()
-        
-        # Execute vector search via MongoStore
-        # Note: Your MongoStore query method returns chunks, not full articles
-        results = await mongo_store.query(query_text=q, limit=limit)
-        
-        formatted_results = []
-        for res in results:
-            score = res.get("score", 0.0)
-            
-            # Optionally filter out weak matches
-            if score >= min_score:
-                formatted_results.append({
-                    "source_article_id": res.get("source_id"),
-                    "matching_chunk": res.get("chunk_text"),
-                    "relevance_score": score,
-                    "metadata": res.get("metadata", {})
-                })
-                
-        return {
-            "status": "success",
-            "query": q,
-            "total_matches": len(formatted_results),
-            "results": formatted_results
-        }
+        hits = await mongo_store.query(query_text=q, limit=min(limit * SIMILARITY_PIECES_PER_ARTICLE, 200))
     except Exception as e:
         logger.error(f"Similarity search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+    best: dict = {}  # article URL -> (score, matching piece)
+    for hit in hits:
+        url = (hit.get("metadata") or {}).get("url")
+        score = hit.get("score") or 0.0
+        if url and score > best.get(url, (-1.0, None))[0]:
+            best[url] = (score, hit.get("chunk_text"))
+    strong = {url: v for url, v in best.items() if v[0] >= min_score}
+    weaker = [v[0] for url, v in best.items() if v[0] < min_score]
+
+    docs = await get_async_scheduler_collections().processed_articles.find(
+        {"url": {"$in": list(strong)}},
+        {"source_id": 1, "url": 1, "status": 1, "discovered_at": 1, "processed_at": 1,
+         "final_output.title": 1, "final_output.summary": 1, "final_output.top_image": 1,
+         "final_output.published_date": 1},
+    ).to_list(length=None) if strong else []
+    docs.sort(key=lambda d: strong[d["url"]][0], reverse=True)
+    items = [{"article": d,
+              "similarity_score": strong[d["url"]][0],
+              "matching_chunk": strong[d["url"]][1]} for d in docs[:limit]]
+    return {
+        "status": "success",
+        "query": q,
+        "total_matches": len(items),
+        "items": items,
+        "best_below_min": max(weaker) if weaker else None,
+    }
 
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT

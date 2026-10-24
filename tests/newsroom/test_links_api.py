@@ -29,6 +29,12 @@ def seeded(api, sync_db):
     return api
 
 
+def _new_names(api, **params):
+    resp = api.get("/newsroom/new-names/page", params=params)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["items"]
+
+
 def _suggest(api, organisations=(), locations=(), source_type="article", source_id=ARTICLE):
     resp = api.post("/newsroom/suggest", json={
         "source_type": source_type, "source_id": source_id,
@@ -175,10 +181,10 @@ def test_link_rejections(seeded):
 
 def test_new_names_queue(seeded, run_async):
     _suggest(seeded, **NAMES)
-    assert seeded.get("/newsroom/new-names").json() == []  # not approved yet
+    assert _new_names(seeded) == []  # not approved yet
 
     run_async(lnk.on_item_status, "article", ARTICLE, "approved")
-    groups = seeded.get("/newsroom/new-names").json()
+    groups = _new_names(seeded)
     assert [(g["name"], g["count"]) for g in groups] == [("Brand New Developer", 1)]
 
     created = seeded.post("/newsroom/entities", json={
@@ -187,14 +193,39 @@ def test_new_names_queue(seeded, run_async):
         "field": ORG, "name_norm": groups[0]["name_norm"], "entity_id": created["id"]})
     assert resp.json() == {"count": 1}
     assert "Brand New Developer" in _links(seeded)
-    assert seeded.get("/newsroom/new-names").json() == []
+    assert _new_names(seeded) == []
+
+
+def test_new_names_one_page_at_a_time(seeded, run_async):
+    _suggest(seeded, organisations=["Alpha Newco", "Beta Newco"], locations=["Gamma Newtown"])
+    _suggest(seeded, organisations=["Beta Newco"], source_id="art-2")
+    run_async(lnk.on_item_status, "article", ARTICLE, "approved")
+    run_async(lnk.on_item_status, "article", "art-2", "approved")
+
+    first = seeded.get("/newsroom/new-names/page", params={"limit": 2}).json()
+    assert first["total"] == 3 and first["skip"] == 0
+    assert [(g["name"], g["count"]) for g in first["items"]] == [("Beta Newco", 2), ("Alpha Newco", 1)]
+    second = seeded.get("/newsroom/new-names/page", params={"limit": 2, "skip": 2}).json()
+    assert [g["name"] for g in second["items"]] == ["Gamma Newtown"] and second["total"] == 3
+    assert seeded.get("/newsroom/new-names/page", params={"skip": 50}).json()["items"] == []
+
+    # Only places, only companies and people, and part of the name in any case
+    assert [g["name"] for g in _new_names(seeded, field=LOC)] == ["Gamma Newtown"]
+    assert [g["name"] for g in _new_names(seeded, field=ORG)] == ["Beta Newco", "Alpha Newco"]
+    assert [g["name"] for g in _new_names(seeded, q="ALPHA")] == ["Alpha Newco"]
+    assert [g["name"] for g in _new_names(seeded, q="newco", field=ORG)] == ["Beta Newco", "Alpha Newco"]
+    found = seeded.get("/newsroom/new-names/page", params={"q": "beta", "limit": 1}).json()
+    assert found["total"] == 1
+    assert len(_new_names(seeded, q="new.*(")) == 3  # punctuation is ignored, as in stored names; never a pattern
+    assert _new_names(seeded, q="   ") != []  # nothing to search for: everything
+    assert seeded.get("/newsroom/new-names/page", params={"field": "person"}).status_code == 422
 
 
 def test_rejected_items_never_feed_the_queue(seeded, run_async, sync_db):
     _suggest(seeded, **NAMES)
     run_async(lnk.on_item_status, "article", ARTICLE, "approved")
     run_async(lnk.on_item_status, "article", ARTICLE, "rejected")
-    assert seeded.get("/newsroom/new-names").json() == []
+    assert _new_names(seeded) == []
     seeded.post(f"{ITEM}/links", json={"entity_id": _id(ORG, "Emaar Properties")})
     run_async(lnk.on_item_status, "article", ARTICLE, "rejected")
     assert sync_db["entity_mentions"].find_one({"source_id": ARTICLE})["item_status"] == "rejected"
@@ -203,7 +234,7 @@ def test_rejected_items_never_feed_the_queue(seeded, run_async, sync_db):
 def test_new_name_dismiss(seeded, run_async):
     _suggest(seeded, **NAMES)
     run_async(lnk.on_item_status, "article", ARTICLE, "approved")
-    name_norm = seeded.get("/newsroom/new-names").json()[0]["name_norm"]
+    name_norm = _new_names(seeded)[0]["name_norm"]
     assert seeded.post("/newsroom/new-names/dismiss", json={"field": ORG, "name_norm": name_norm}).json() == {"count": 1}
     assert seeded.post("/newsroom/new-names/dismiss", json={"field": ORG, "name_norm": name_norm}).status_code == 404
 
@@ -241,12 +272,12 @@ def test_items_changed_refreshes_signal_links_and_queue(seeded, sync_db):
     assert resp.json() == {"updated": 1, "missing": 0}
     mention = sync_db["entity_mentions"].find_one({"source_id": str(signal_id)})
     assert (mention["item_status"], mention["title"]) == ("approved", "Aldar sells out Yas phase 2")
-    assert [g["name"] for g in seeded.get("/newsroom/new-names").json()] == ["Unknown Signal Co"]
+    assert [g["name"] for g in _new_names(seeded)] == ["Unknown Signal Co"]
 
     # Rejected later: out of the queue.
     sync_db["signals"].update_one({"_id": signal_id}, {"$set": {"status": "rejected"}})
     seeded.post("/newsroom/items/changed", json={"source_type": "signal", "source_ids": [str(signal_id)]})
-    assert seeded.get("/newsroom/new-names").json() == []
+    assert _new_names(seeded) == []
 
     # Deleted in social_scrapper: links are kept but marked missing.
     sync_db["signals"].delete_one({"_id": signal_id})
@@ -286,7 +317,10 @@ def test_new_names_page_reads_few_items_in_few_queries(seeded, sync_db, run_coun
                          "created_at": datetime(2026, 9, 1, n // 60, n % 60, tzinfo=timezone.utc)})
     sync_db["entity_suggestions"].insert_many(rows)
 
-    groups, queries = run_counted(lambda db, sources: lnk.list_new_names(db, 100, sources))
+    async def first_page(db, sources):
+        return (await lnk.list_new_names(db, 100, 0, sources))["items"]
+
+    groups, queries = run_counted(first_page)
     assert len(groups) == 21
     popular = groups[0]
     assert (popular["name"], popular["count"], len(popular["items"])) == ("Popular Co", 40, 5)
@@ -299,7 +333,7 @@ def test_new_names_page_reads_few_items_in_few_queries(seeded, sync_db, run_coun
 def test_new_names_show_where_they_were_found(seeded, run_async):
     _suggest(seeded, **NAMES)
     run_async(lnk.on_item_status, "article", ARTICLE, "approved")
-    group = seeded.get("/newsroom/new-names").json()[0]
+    group = _new_names(seeded)[0]
     assert group["items"][0]["title"] == "Emaar launches a tower"
 
 

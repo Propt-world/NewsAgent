@@ -25,11 +25,13 @@ COPIED_FIELDS = ("title", "snippet", "url", "timestamp", "topics")
 
 
 def _same_time(a, b) -> bool:
-    """MongoDB returns times without a timezone (UTC); compare them as UTC."""
+    """MongoDB returns times without a timezone (UTC) and keeps only milliseconds; compare them that way.
+    (A published date written as text with microseconds, e.g. ...12.467721, is stored as ...12.467.)"""
     def utc(value: Optional[datetime]):
         if not isinstance(value, datetime):
             return value
-        return value.replace(tzinfo=None) if value.tzinfo is None else value.astimezone(timezone.utc).replace(tzinfo=None)
+        value = value.replace(tzinfo=None) if value.tzinfo is None else value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.replace(microsecond=value.microsecond // 1000 * 1000)
     return utc(a) == utc(b)
 
 

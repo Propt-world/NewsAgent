@@ -437,3 +437,34 @@ print("RESULT=" + json.dumps({{
     assert out["high"] == [["a1", "Emaar launches a tower", 0.91]]
     assert out["high_below"] == 0.75 and out["high_content"] is False
     assert out["low"] == ["a1", "a2"] and out["low_below"] is None
+
+
+def test_article_list_and_search_take_a_topic(mongo_url, db_name, sync_db):
+    """The Newsroom's Topic filter on its own: articles whose categories include the topic."""
+    script = f"""
+import json
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+for i, cats in (("a1", ["Golden Visa & Residency", "Developer News"]), ("a2", ["Developer News"]), ("a3", [])):
+    db.processed_articles.insert_one({{"_id": i, "source_id": "s", "url": f"https://example.com/{{i}}", "status": "approved",
+        "final_output": {{"title": f"Dubai story {{i}}", "summary": "x", "category": cats}}}})
+from src.scheduler.main import app
+with TestClient(app) as c:
+    listed = c.get("/articles", params={{"status": "approved", "topic": "Golden Visa & Residency"}}).json()
+    found = c.get("/articles/search/text", params={{"q": "dubai", "topic": "Developer News"}}).json()
+    bad = [c.get("/articles", params={{"topic": "Financing"}}).status_code,
+           c.get("/articles/search/text", params={{"q": "dubai", "topic": "Financing"}}).status_code]
+print("RESULT=" + json.dumps({{"listed": [listed["total"], [a["_id"] for a in listed["items"]]],
+                               "found": sorted(a["_id"] for a in found["items"]), "bad": bad}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["listed"] == [1, ["a1"]]
+    assert out["found"] == ["a1", "a2"]
+    assert out["bad"] == [422, 422]

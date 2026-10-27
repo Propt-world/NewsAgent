@@ -1,5 +1,5 @@
 """
-Repairs the copies each link keeps of its item (title, snippet, link, date, status, places).
+Repairs the copies each link keeps of its item (title, snippet, link, date, status, places, topics).
 
 Links copy a few fields of their article or signal so lists are fast. The copies are
 refreshed whenever NewsAgent hears about a change, but a missed message (Newsroom
@@ -21,7 +21,7 @@ from src.newsroom import links as lnk
 logger = logging.getLogger("newsroom")
 
 BATCH = 500
-COPIED_FIELDS = ("title", "snippet", "url", "timestamp")
+COPIED_FIELDS = ("title", "snippet", "url", "timestamp", "topics")
 
 
 def _same_time(a, b) -> bool:
@@ -42,7 +42,7 @@ async def _place_paths(db) -> Dict[str, List[str]]:
 
 async def resync(db, sources: ndb.ItemSources, apply: bool = False) -> Dict[str, int]:
     counts = {"items_checked": 0, "items_fixed": 0, "items_gone": 0,
-              "status": 0, "title_or_text": 0, "link": 0, "date": 0, "places": 0}
+              "status": 0, "title_or_text": 0, "link": 0, "date": 0, "places": 0, "topics": 0}
     paths = await _place_paths(db)
 
     for source_type in lnk.SOURCE_TYPES:
@@ -83,6 +83,8 @@ async def resync(db, sources: ndb.ItemSources, apply: bool = False) -> Dict[str,
                         fixes.add("date")
                     if sorted(m.get("location_ids") or []) != places:
                         fixes.add("places")
+                    if (m.get("topics") or []) != info["topics"]:
+                        fixes.add("topics")
                 if not fixes:
                     continue
                 counts["items_fixed"] += 1

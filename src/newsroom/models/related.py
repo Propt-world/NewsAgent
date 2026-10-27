@@ -21,6 +21,7 @@ class RelatedItem(BaseModel):
     item_status: Optional[str] = None
     shared_entities: List[EntityRef]
     shared_places: List[EntityRef]
+    shared_topics: List[str] = Field(default_factory=list, description="Real-estate topics both items have")
     reason: str
     score: Optional[float] = Field(None, description="Only for similar-text matches")
 

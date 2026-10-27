@@ -7,7 +7,9 @@ Related items:
   "both mention Dubai" would make almost everything related.
 - An item with no organisation links falls back to its specific places
   (communities, landmarks), never whole cities or countries.
-- Ranked by number of shared entities, then place overlap, then recency.
+- Ranked by number of shared entities, then place overlap, then shared topics (the 30 real-estate topics:
+  an article's categories, a signal's kg_topics), then recency. Topics only order items that are already
+  related; they never make two items related on their own ("both are off-plan" would match almost everything).
 - Rejected, duplicated and deleted items are never shown.
 
 Similar articles (option A): an *approved* article with no links falls back to
@@ -23,6 +25,7 @@ from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom.entities import Invalid, NotFound
 from src.newsroom.links import _parse_date
+from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
 
 logger = logging.getLogger("newsroom")
 
@@ -131,8 +134,9 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
     await _check_location(db, location_id)
     own = await db[ndb.ENTITY_MENTIONS].find(
         {"source_type": source_type, "source_id": source_id, "status": "linked"},
-        {"entity_id": 1, "kind": 1, "location_ids": 1}).to_list(length=None)
+        {"entity_id": 1, "kind": 1, "location_ids": 1, "topics": 1}).to_list(length=None)
     own_location_ids = own[0].get("location_ids", []) if own else []
+    own_topics = own[0].get("topics") or [] if own else []
 
     linked = await _names(db, [m["entity_id"] for m in own])
     active = {e["_id"]: e async for e in db[ndb.ENTITIES].find(
@@ -168,13 +172,16 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
             "timestamp": {"$max": "$timestamp"},
             "item_status": {"$first": "$item_status"},
             "location_ids": {"$first": "$location_ids"},
+            "topics": {"$first": "$topics"},
         }},
         {"$addFields": {
             "shared_count": {"$size": "$shared_ids"},
             "place_ids": {"$setIntersection": [{"$ifNull": ["$location_ids", []]}, own_location_ids]},
+            "topic_names": {"$setIntersection": [{"$ifNull": ["$topics", []]}, own_topics]},
         }},
-        {"$addFields": {"place_overlap": {"$size": "$place_ids"}}},
-        {"$sort": {"shared_count": -1, "place_overlap": -1, "timestamp": -1}},
+        {"$addFields": {"place_overlap": {"$size": "$place_ids"}, "topic_overlap": {"$size": "$topic_names"}}},
+        {"$sort": {"shared_count": -1, "place_overlap": -1, "topic_overlap": -1, "timestamp": -1,
+                   "_id.source_type": 1, "_id.source_id": 1}},
         {"$facet": {
             "items": [{"$skip": skip}, {"$limit": limit}],
             "total": [{"$count": "n"}],
@@ -195,6 +202,10 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
         if place_names and basis == "organisations":
             only_countries = all(names.get(i, {}).get("type") == "country" for i in places)
             reason += (" · same country: " if only_countries else " · same area: ") + ", ".join(place_names)
+        # In the item's own order (a $setIntersection has none)
+        topics = [t for t in own_topics if t in (row.get("topic_names") or [])]
+        if topics:
+            reason += (" · same topic: " if len(topics) == 1 else " · same topics: ") + ", ".join(topics)
         items.append({
             "source_type": row["_id"]["source_type"],
             "source_id": row["_id"]["source_id"],
@@ -205,6 +216,7 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
             "item_status": row.get("item_status"),
             "shared_entities": [{"id": i, "name": names[i]["canonical_name"]} for i in shared if i in names],
             "shared_places": [{"id": i, "name": names[i]["canonical_name"]} for i in places if i in names],
+            "shared_topics": topics,
             "reason": reason,
         })
     return {"basis": basis, "items": items, "total": total, "limit": limit, "skip": skip}
@@ -264,17 +276,21 @@ def _history_item(d: dict) -> dict:
 
 async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optional[str] = None,
                          source_type: Optional[str] = None, item_statuses: Optional[List[str]] = None,
-                         q: Optional[str] = None, limit: int = 20, skip: int = 0) -> dict:
+                         q: Optional[str] = None, limit: int = 20, skip: int = 0, topic: Optional[str] = None) -> dict:
     """Distinct items linked to an entity and/or in a place, newest first (the Newsroom list filter).
     A place matches through the item's places and their parents, so Dubai includes Dubai communities.
+    topic narrows them to one of the 30 real-estate topics (on its own the Newsroom asks the article and signal
+    lists, which also have unlinked items).
     Rejected and duplicated items are hidden unless asked for by status (the Newsroom's Rejected view)."""
     if not entity_id and not location_id:
         raise Invalid("Choose a company or a place")
+    if topic and topic not in REAL_ESTATE_CATEGORIES:
+        raise Invalid(f"Unknown topic: {topic}")
     if entity_id and await db[ndb.ENTITIES].count_documents({"_id": entity_id}) == 0:
         raise NotFound(f"Entity {entity_id} not found")
     await _check_location(db, location_id)
 
-    match = filter_match(entity_id, location_id, source_type, item_statuses, q)
+    match = filter_match(entity_id, location_id, source_type, item_statuses, q, topic)
     result = (await (await db[ndb.ENTITY_MENTIONS].aggregate(filter_pipeline(match, limit, skip))).to_list(length=1))[0]
     total = result["total"][0]["n"] if result["total"] else 0
     # Only the page's links are read in full.
@@ -285,8 +301,10 @@ async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optio
 
 
 def filter_match(entity_id: Optional[str], location_id: Optional[str], source_type: Optional[str],
-                 item_statuses: Optional[List[str]], q: Optional[str]) -> dict:
+                 item_statuses: Optional[List[str]], q: Optional[str], topic: Optional[str] = None) -> dict:
     match = {"status": "linked", "item_status": {"$nin": HIDDEN_ITEM_STATUSES}}
+    if topic:
+        match["topics"] = topic
     if entity_id:
         match["entity_id"] = entity_id
     if location_id:

@@ -46,6 +46,7 @@ from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.compose import approval_blocked_reason
 from src.newsroom.db import ensure_newsroom_indexes
+from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
 from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
 from src.newsroom.resync import nightly_repair
 from src.newsroom.router import mount_newsroom
@@ -201,6 +202,16 @@ def ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+TOPIC_QUERY_HELP = "Only articles with this category (one of the 30 real-estate topics), e.g. Off-Plan & New Launches"
+
+
+def _known_topic(topic: str) -> str:
+    """One of the 30 real-estate topics (articles' categories), or 422."""
+    if topic not in REAL_ESTATE_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Unknown topic: {topic}")
+    return topic
 
 
 async def cursor_to_list(cursor):
@@ -824,6 +835,7 @@ async def list_articles(
     filtered_since: Optional[datetime] = Query(
         None, description="Only articles the real-estate check filtered out at or after this time (the Filtered "
                           "Out screen shows the last 30 days; older records stay so they are never processed again)."),
+    topic: Optional[str] = Query(None, max_length=100, description=TOPIC_QUERY_HELP),
 ):
     collections = get_async_scheduler_collections()
     query = {}
@@ -831,6 +843,8 @@ async def list_articles(
         query["status"] = status
     if filtered_since is not None:
         query["filtered_at"] = {"$gte": filtered_since}
+    if topic:
+        query["final_output.category"] = _known_topic(topic)
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)
@@ -1356,16 +1370,21 @@ async def search_articles_text(
     q: str = Query(..., min_length=1, description="The text/keyword to search for"),
     page: int = Query(1, ge=1, description="Page number (starts at 1)"),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status")
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
+    topic: Optional[str] = Query(None, max_length=100, description=TOPIC_QUERY_HELP),
 ):
     """
     Standard Regex Search. Looks for the keyword in the URL, Title, Summary, and Full Content.
     """
+    if topic:
+        _known_topic(topic)
     try:
         collections = get_async_scheduler_collections()
         query = {}
         if status_filter:
             query["status"] = status_filter
+        if topic:
+            query["final_output.category"] = topic
 
         # Case-insensitive search across title, summary, url, and full content
         query["$or"] = [

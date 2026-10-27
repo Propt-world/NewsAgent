@@ -300,3 +300,35 @@ def test_newsroom_list_filter(scene):
     assert scene.get("/newsroom/items").status_code == 422
     assert scene.get("/newsroom/items", params={"location": EMAAR}).status_code == 422  # not a place
     assert scene.get("/newsroom/items", params={"entity": "missing"}).status_code == 404
+
+
+def test_shared_topics_order_related_items_and_narrow_the_list(scene, sync_db):
+    """Topics (articles' categories, signals' kg_topics) only order related items and narrow the list filter."""
+    topics = {"A2": ["Off-Plan & New Launches", "Developer News"], "A8": ["Developer News"], "A4": ["Luxury Residences"]}
+    for article_id, names in topics.items():
+        sync_db["processed_articles"].update_one({"_id": article_id}, {"$set": {"final_output.category": names}})
+    sync_db["signals"].update_one({"_id": ObjectId(scene.s1)}, {"$set": {"kg_topics": ["Off-Plan & New Launches"]}})
+    # What social_scrapper and the pipeline send after a change; NewsAgent re-reads the items
+    for source_type, ids in (("article", list(topics)), ("signal", [scene.s1])):
+        resp = scene.post("/newsroom/items/changed", json={"source_type": source_type, "source_ids": ids})
+        assert resp.status_code == 200, resp.text
+
+    body = _related(scene)
+    # A8 (400 days old, shares a topic) now comes before A4 (4 days old, no shared topic); companies and places
+    # still come first, so the order of the others is unchanged
+    assert _ids(body) == [scene.s1, "A1", "A3", "A8", "A4"]
+    first, a8, a4 = body["items"][0], body["items"][3], body["items"][4]
+    assert first["shared_topics"] == ["Off-Plan & New Launches"]
+    assert first["reason"] == "Shares DAMAC Properties, Emaar Properties · same topic: Off-Plan & New Launches"
+    assert (a8["shared_topics"], a4["shared_topics"]) == (["Developer News"], [])
+
+    # The list filter: company + topic
+    assert _ids(_filtered(scene, entity=EMAAR, topic="Developer News")) == ["A2", "A8"]
+    assert _ids(_filtered(scene, entity=DAMAC, topic="Off-Plan & New Launches")) == [scene.s1, "A2"]
+    assert scene.get("/newsroom/items", params={"entity": EMAAR, "topic": "Financing"}).status_code == 422
+
+    # A new link takes the item's topics straight away
+    _article(sync_db, "A9", 1)
+    sync_db["processed_articles"].update_one({"_id": "A9"}, {"$set": {"final_output.category": ["Developer News"]}})
+    _link(scene, "article", "A9", EMAAR)
+    assert _ids(_filtered(scene, entity=EMAAR, topic="Developer News")) == ["A9", "A2", "A8"]

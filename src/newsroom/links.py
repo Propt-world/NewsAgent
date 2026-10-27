@@ -53,6 +53,13 @@ def _parse_date(value) -> Optional[datetime]:
     return None
 
 
+def _topics(value) -> List[str]:
+    """An item's topics (from the 30 real-estate topics) as a clean list: text only, each once, in order."""
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(t.strip() for t in value if isinstance(t, str) and t.strip()))
+
+
 def _article_info(doc: dict, status: Optional[str]) -> dict:
     final = doc.get("final_output") or {}
     return {
@@ -63,6 +70,8 @@ def _article_info(doc: dict, status: Optional[str]) -> dict:
         # 30% of articles have no published date: fall back to when we processed/found them.
         "timestamp": _parse_date(final.get("published_date")) or doc.get("processed_at") or doc.get("discovered_at"),
         "item_status": status,
+        # The categories NewsAgent tagged it with (3-4 of the 30)
+        "topics": _topics(final.get("category")),
     }
 
 
@@ -75,6 +84,8 @@ def _signal_info(doc: dict) -> dict:
         "url": evidence[0].get("url") if evidence and isinstance(evidence[0], dict) else None,
         "timestamp": doc.get("generated_at") or doc.get("updated_at"),
         "item_status": doc.get("status"),
+        # Internal topics social_scrapper tags signals with (3-4 of the 30, like articles' categories)
+        "topics": _topics(doc.get("kg_topics")),
     }
 
 
@@ -348,6 +359,7 @@ async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, e
             "url": info["url"],
             "timestamp": info["timestamp"],
             "item_status": info["item_status"],
+            "topics": info["topics"],
             "linked_by": actor,
             "linked_at": now,
             "removed_by": None,
@@ -356,7 +368,7 @@ async def link(db, sources: ndb.ItemSources, source_type: str, source_id: str, e
         try:
             await db[ndb.ENTITY_MENTIONS].update_one(
                 {"entity_id": entity_id, "source_type": source_type, "source_id": source_id},
-                {"$set": fields, "$setOnInsert": {"_id": str(uuid.uuid4()), "topics": [], "location_ids": []}},
+                {"$set": fields, "$setOnInsert": {"_id": str(uuid.uuid4()), "location_ids": []}},
                 upsert=True,
             )
         except DuplicateKeyError:
@@ -458,8 +470,9 @@ async def link_many(db, sources: ndb.ItemSources, requests: List[Tuple[str, str,
                     "matched_alias": suggestion.get("matched_alias") if suggestion else None,
                     "suggestion_id": suggestion_id, "title": info["title"], "snippet": info["snippet"],
                     "url": info["url"], "timestamp": info["timestamp"], "item_status": info["item_status"],
+                    "topics": info["topics"],
                     "linked_by": actor, "linked_at": now, "removed_by": None, "removed_at": None},
-                 "$setOnInsert": {"_id": str(uuid.uuid4()), "topics": [], "location_ids": []}},
+                 "$setOnInsert": {"_id": str(uuid.uuid4()), "location_ids": []}},
                 upsert=True))
             audits.append((entity_id, {"source_type": source_type, "source_id": source_id}))
         if suggestion_id:
@@ -577,7 +590,8 @@ async def item_changed(db, sources: ndb.ItemSources, source_type: str, source_id
         return False
     await on_item_status(db, source_type, source_id, info["item_status"])
     await db[ndb.ENTITY_MENTIONS].update_many(query, {"$set": {
-        "title": info["title"], "snippet": info["snippet"], "url": info["url"], "timestamp": info["timestamp"]}})
+        "title": info["title"], "snippet": info["snippet"], "url": info["url"], "timestamp": info["timestamp"],
+        "topics": info["topics"]}})
     return True
 
 

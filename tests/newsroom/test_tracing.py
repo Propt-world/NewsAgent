@@ -110,7 +110,7 @@ def test_article_timeout_is_explained_and_only_the_last_attempt_fails(trace_span
     for attempts_before in (0, 2):  # the first of 3 attempts, then the last
         try:
             asyncio.run(worker._run_article_job(SlowGraph(), {}, {}, "job-1", "https://example.com/a",
-                                                {"attempt": attempts_before}, 3))
+                                                {"attempt": attempts_before}, 3, asyncio.Event()))
             raise AssertionError("the timeout must reach the worker, which retries or gives up")
         except asyncio.TimeoutError:
             pass

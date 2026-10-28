@@ -13,6 +13,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 # Project Imports
 from src.configs.settings import settings
+from src.utils import tracing
 from src.models.InvokeRequest import InvokeRequest
 from src.db.models import PromptTemplate, Category, EmailRecipient
 from src.db.connections import (
@@ -38,9 +39,11 @@ from src.models.Responses import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    tracing.init_tracing()  # Phoenix: the admin backfills (off unless PHOENIX_COLLECTOR_ENDPOINT is set)
     try:
         yield
     finally:
+        tracing.flush_tracing()
         await close_async_api_connections()
         close_legacy_api_connections()
 

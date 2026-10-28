@@ -5,6 +5,7 @@ import hashlib
 from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from src.configs.settings import settings
+from src.utils import tracing
 import certifi
 import asyncio
 import ormsgpack
@@ -66,10 +67,15 @@ class MongoStore:
     async def get_embedding(self, text: str) -> List[float]:
         """Generates embedding for the given text."""
         text = text.replace("\n", " ")
-        response = await self.openai_client.embeddings.create(
-            input=[text], 
-            model=settings.MONGO_EMBEDDING_MODEL
-        )
+        # Traced by hand: this call does not go through LangChain (no double counting)
+        with tracing.embedding_span(settings.MONGO_EMBEDDING_MODEL, text) as span:
+            response = await self.openai_client.embeddings.create(
+                input=[text], 
+                model=settings.MONGO_EMBEDDING_MODEL
+            )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                tracing.set_token_counts(span, usage.prompt_tokens)
         return response.data[0].embedding
 
     def _generate_content_hash(self, source_id: str, chunk_text: str) -> str:

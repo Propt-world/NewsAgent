@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     OPIK_API_KEY: str = os.getenv('OPIK_API_KEY')
     OPIK_WORKSPACE: str = os.getenv('OPIK_WORKSPACE')
     OPIK_PROJECT_NAME: str = os.getenv('OPIK_PROJECT_NAME')
+    # Phoenix tracing (src/utils/tracing.py): unset or empty = off. One project per app per environment.
+    PHOENIX_COLLECTOR_ENDPOINT: Optional[str] = os.getenv('PHOENIX_COLLECTOR_ENDPOINT')
+    PHOENIX_PROJECT_NAME: str = os.getenv('PHOENIX_PROJECT_NAME') or "newsagent/dev"
 
     # Model Configuration
     MODEL_NAME: str = os.getenv('MODEL_NAME', "gpt-4o-mini")

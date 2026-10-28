@@ -6,6 +6,7 @@ from src.configs.settings import settings
 from src.db.connections import get_async_mongo_database, get_legacy_mongo_database
 from src.db.enums import PromptStatus
 from src.models.CountryExtractionModel import CountryExtractionModel
+from src.utils import tracing
 
 
 def _initial_stats() -> dict:
@@ -92,9 +93,11 @@ async def run_country_backfill_async(limit: int = 0):
                     final_output,
                 )
 
-                response: CountryExtractionModel = await structured_llm.ainvoke(
-                    messages
-                )
+                # One trace per article
+                with tracing.job_span("backfill_countries", tags=["backfill"], metadata={"article_id": article_id}):
+                    response: CountryExtractionModel = await structured_llm.ainvoke(
+                        messages
+                    )
                 countries = response.countries
 
                 await articles_col.update_one(
@@ -170,7 +173,9 @@ def run_country_backfill(limit: int = 0):
                     final_output,
                 )
 
-                response: CountryExtractionModel = structured_llm.invoke(messages)
+                # One trace per article
+                with tracing.job_span("backfill_countries", tags=["backfill"], metadata={"article_id": article_id}):
+                    response: CountryExtractionModel = structured_llm.invoke(messages)
                 countries = response.countries
 
                 articles_col.update_one(

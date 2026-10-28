@@ -7,6 +7,7 @@ from src.configs.settings import settings
 from src.db.connections import get_async_mongo_database, get_legacy_mongo_database
 from src.db.enums import PromptStatus
 from src.models.SocialCaptionModel import SocialCaptionModel
+from src.utils import tracing
 
 
 def _initial_stats() -> dict:
@@ -102,7 +103,9 @@ async def run_social_backfill_async(limit: int = 0):
                     final_output,
                 )
 
-                response: SocialCaptionModel = await structured_llm.ainvoke(messages)
+                # One trace per article
+                with tracing.job_span("backfill_social", tags=["backfill"], metadata={"article_id": article_id}):
+                    response: SocialCaptionModel = await structured_llm.ainvoke(messages)
                 social_data = response.model_dump()
 
                 await articles_col.update_one(
@@ -180,7 +183,9 @@ def run_social_backfill(limit: int = 0):
                     final_output,
                 )
 
-                response: SocialCaptionModel = structured_llm.invoke(messages)
+                # One trace per article
+                with tracing.job_span("backfill_social", tags=["backfill"], metadata={"article_id": article_id}):
+                    response: SocialCaptionModel = structured_llm.invoke(messages)
                 social_data = response.model_dump()
 
                 articles_col.update_one(

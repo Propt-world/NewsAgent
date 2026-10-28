@@ -27,5 +27,7 @@ jobs:
             git stash
             git pull
             docker compose down 
+            # Shared with Phoenix (deploy/phoenix) and other services; created once, never removed
+            docker network inspect propt-tracing >/dev/null 2>&1 || docker network create propt-tracing
             docker compose up --build -d 
           EOF

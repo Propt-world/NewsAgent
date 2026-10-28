@@ -154,3 +154,25 @@ def run_counted(mongo_url, db_name):
         return result, counter.count
 
     return runner
+
+
+@pytest.fixture
+def trace_spans(monkeypatch):
+    """Phoenix tracing switched on, with spans kept in memory instead of sent (also LangChain's own spans)."""
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from src.utils import tracing
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing, "_provider", provider)
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument(tracer_provider=provider)
+    try:
+        yield exporter
+    finally:
+        instrumentor.uninstrument()

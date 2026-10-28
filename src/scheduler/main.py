@@ -62,7 +62,7 @@ from src.utils.image_compressor import compress_image
 from src.utils.mongo_store import get_mongo_store
 from src.utils.chunker import Chunker
 from src.utils.loader import normalize_document
-from src.utils import article_edit, article_history, tracing
+from src.utils import article_edit, article_history, observability, tracing
 import tempfile
 import shutil
 
@@ -1364,6 +1364,17 @@ async def article_stats(since: datetime = Query(...), until: datetime = Query(..
         "approved": await articles.count_documents({"status": "approved", "status_changed_at": window}),
         "rejected": await articles.count_documents({"status": "rejected", "status_changed_at": window}),
     }
+
+
+@app.get(
+    "/observability/summary",
+    dependencies=[Depends(verify_api_key)],
+    description="The backoffice's LLM Observability page: AI calls, tokens, cost, time and failures from Phoenix, "
+                "per service, model and kind of job, for the last `days` days. Totals and error messages only "
+                "(never prompts or answers); no AI call; cached for a minute.",
+)
+async def observability_summary(days: int = Query(1, ge=1, le=30, description="1, 7 or 30")):
+    return await observability.summary(days)
 
 
 @app.get(

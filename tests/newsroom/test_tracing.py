@@ -64,6 +64,8 @@ def test_every_step_nests_under_one_job_trace(trace_spans):
     assert {"summary", "translate"} <= steps  # each graph step is its own span
     # The run id groups them, and each call keeps its prompt and answer
     assert all(s.attributes.get("session.id") == "run-1" for s in llm_calls)
+    # Every step carries the job's name: the LLM Observability page adds up cost per kind of job with it
+    assert all('"job": "compose_compose"' in s.attributes.get("metadata", "") for s in llm_calls)
     assert any("Emaar sold out the tower." in str(s.attributes.get("output.value")) for s in llm_calls)
     assert root.attributes["session.id"] == "run-1" and '"status": "succeeded"' in root.attributes["output.value"]
 

@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 _provider = None
 
 
+def _job_context() -> dict:
+    """The surrounding job's session, metadata (its name) and tags, for steps made by hand here (LangChain's own
+    steps get them from the LangChain tracing)."""
+    from openinference.instrumentation import get_attributes_from_context
+
+    return dict(get_attributes_from_context())
+
+
 def _tracer():
     """Phoenix's tracer when on; otherwise one that records nothing."""
     return _provider.get_tracer("newsagent") if _provider is not None else trace.get_tracer("newsagent")
@@ -86,21 +94,22 @@ def job_span(name: str, *, session_id: Optional[str] = None, metadata: Optional[
     from openinference.instrumentation import using_metadata, using_session, using_tags
     from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
+    # Every step inside carries the job's name, so Phoenix can add up cost and tokens per kind of job
+    # (the backoffice's LLM Observability page: metadata["job"] == "article_pipeline")
+    metadata = {"job": name, **(metadata or {})}
     attributes = {SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value}
     if input_value is not None:
         attributes[SpanAttributes.INPUT_VALUE] = input_value
     if session_id:
         attributes[SpanAttributes.SESSION_ID] = session_id
-    if metadata:
-        attributes[SpanAttributes.METADATA] = json.dumps(metadata, default=str, ensure_ascii=False)
+    attributes[SpanAttributes.METADATA] = json.dumps(metadata, default=str, ensure_ascii=False)
     if tags:
         attributes[SpanAttributes.TAG_TAGS] = tags
     with ExitStack() as stack:
         # Also put on every step inside (the LangChain tracing reads these)
         if session_id:
             stack.enter_context(using_session(session_id))
-        if metadata:
-            stack.enter_context(using_metadata(metadata))
+        stack.enter_context(using_metadata(metadata))
         if tags:
             stack.enter_context(using_tags(tags))
         with _tracer().start_as_current_span(name, attributes=attributes) as span:
@@ -122,6 +131,7 @@ def embedding_span(model: str, text: str) -> Iterator[Span]:
         SpanAttributes.LLM_PROVIDER: "openai",
         SpanAttributes.LLM_SYSTEM: "openai",
         SpanAttributes.INPUT_VALUE: text,
+        **_job_context(),
     }
     with _tracer().start_as_current_span("openai.embeddings", attributes=attributes) as span:
         yield span

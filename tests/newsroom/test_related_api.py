@@ -239,6 +239,12 @@ def test_similar_for_approved_article_without_links(similar_scene):
     assert similar_scene.search_calls == [[0.1, 0.2, 0.3]]  # the stored fingerprint, no new AI call
 
 
+def test_similar_articles_by_topic(similar_scene, sync_db):
+    sync_db["processed_articles"].update_one({"_id": "S1"}, {"$set": {"final_output.category": ["Future Forecast"]}})
+    body = _related(similar_scene, item="article/S0", topic="Future Forecast")
+    assert _ids(body) == ["S1"] and body["items"][0]["topics"] == ["Future Forecast"]
+
+
 def test_pending_articles_never_use_similarity(similar_scene):
     assert _related(similar_scene, item="article/P1")["basis"] == "none"
     assert similar_scene.search_calls == []
@@ -321,9 +327,19 @@ def test_shared_topics_order_related_items_and_narrow_the_list(scene, sync_db):
     assert first["shared_topics"] == ["Off-Plan & New Launches"]
     assert first["reason"] == "Shares DAMAC Properties, Emaar Properties · same topic: Off-Plan & New Launches"
     assert (a8["shared_topics"], a4["shared_topics"]) == (["Developer News"], [])
+    # Each item's own topics too, so an item opened from the related list shows them
+    assert (a8["topics"], a4["topics"]) == (["Developer News"], ["Luxury Residences"])
+
+    # The related list's Topic filter: only related items with that topic
+    luxury = _related(scene, topic="Luxury Residences")
+    assert (_ids(luxury), luxury["total"]) == (["A4"], 1)
+    assert _ids(_related(scene, topic="Off-Plan & New Launches")) == [scene.s1]
+    assert scene.get("/newsroom/items/article/A2/related", params={"topic": "Financing"}).status_code == 422
 
     # The list filter: company + topic
-    assert _ids(_filtered(scene, entity=EMAAR, topic="Developer News")) == ["A2", "A8"]
+    by_topic = _filtered(scene, entity=EMAAR, topic="Developer News")
+    assert _ids(by_topic) == ["A2", "A8"]
+    assert by_topic["items"][0]["topics"] == ["Off-Plan & New Launches", "Developer News"]  # shown in the panel
     assert _ids(_filtered(scene, entity=DAMAC, topic="Off-Plan & New Launches")) == [scene.s1, "A2"]
     assert scene.get("/newsroom/items", params={"entity": EMAAR, "topic": "Financing"}).status_code == 422
 

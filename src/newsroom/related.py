@@ -24,7 +24,7 @@ from typing import List, Optional
 from src.configs.settings import settings
 from src.newsroom import db as ndb
 from src.newsroom.entities import Invalid, NotFound
-from src.newsroom.links import _parse_date
+from src.newsroom.links import _parse_date, _topics
 from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
 
 logger = logging.getLogger("newsroom")
@@ -33,6 +33,11 @@ logger = logging.getLogger("newsroom")
 HIDDEN_ITEM_STATUSES = ["rejected", "duplicated", "missing", "deleted"]
 SPECIFIC_PLACE_TYPES = ["community", "landmark"]
 SIMILAR_CANDIDATE_CHUNKS = 50
+
+
+def _check_topic(topic: Optional[str]) -> None:
+    if topic and topic not in REAL_ESTATE_CATEGORIES:
+        raise Invalid(f"Unknown topic: {topic}")
 
 
 def _visible(extra: dict) -> dict:
@@ -75,7 +80,7 @@ async def _vector_search(chunks, vector: List[float], limit: int) -> List[dict]:
 
 
 async def similar_articles(sources: ndb.ItemSources, article_id: str, days: Optional[int],
-                           limit: int, skip: int) -> Optional[dict]:
+                           limit: int, skip: int, topic: Optional[str] = None) -> Optional[dict]:
     """Similar approved articles for an approved article, or None when this cannot apply."""
     if sources is None or sources.chunks is None:
         return None
@@ -102,9 +107,12 @@ async def similar_articles(sources: ndb.ItemSources, article_id: str, days: Opti
     query = {"url": {"$in": list(best)}, "status": {"$nin": HIDDEN_ITEM_STATUSES}}
     if days:
         query["processed_at"] = {"$gte": datetime.now(timezone.utc) - timedelta(days=days)}
+    if topic:
+        query["final_output.category"] = topic
     docs = await sources.articles.find(query, {
         "url": 1, "status": 1, "processed_at": 1, "discovered_at": 1,
         "final_output.title": 1, "final_output.summary": 1, "final_output.published_date": 1,
+        "final_output.category": 1,
     }).to_list(length=None) if best else []
 
     rows = sorted(docs, key=lambda d: best[d["url"]], reverse=True)
@@ -122,6 +130,7 @@ async def similar_articles(sources: ndb.ItemSources, article_id: str, days: Opti
             "item_status": d.get("status"),
             "shared_entities": [],
             "shared_places": [],
+            "topics": _topics(final.get("category")),
             "reason": f"Similar text (score {score:.2f})",
             "score": round(score, 4),
         })
@@ -130,8 +139,10 @@ async def similar_articles(sources: ndb.ItemSources, article_id: str, days: Opti
 
 async def related_items(db, source_type: str, source_id: str, location_id: Optional[str] = None,
                         days: Optional[int] = None, limit: int = 20, skip: int = 0,
-                        sources: Optional[ndb.ItemSources] = None) -> dict:
+                        sources: Optional[ndb.ItemSources] = None, topic: Optional[str] = None) -> dict:
+    """topic: only related items with this real-estate topic (one of the 30)."""
     await _check_location(db, location_id)
+    _check_topic(topic)
     own = await db[ndb.ENTITY_MENTIONS].find(
         {"source_type": source_type, "source_id": source_id, "status": "linked"},
         {"entity_id": 1, "kind": 1, "location_ids": 1, "topics": 1}).to_list(length=None)
@@ -149,7 +160,7 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
     if not basis_ids:
         # No confirmed links: approved articles fall back to similar text (a place filter cannot apply).
         if source_type == "article" and not location_id:
-            similar = await similar_articles(sources, source_id, days, limit, skip)
+            similar = await similar_articles(sources, source_id, days, limit, skip, topic)
             if similar is not None:
                 return similar
         return {"basis": "none", "items": [], "total": 0, "limit": limit, "skip": skip}
@@ -157,6 +168,8 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
     match = _visible({"entity_id": {"$in": basis_ids}})
     if location_id:
         match["location_ids"] = location_id
+    if topic:
+        match["topics"] = topic
     if days:
         match["timestamp"] = {"$gte": datetime.now(timezone.utc) - timedelta(days=days)}
 
@@ -217,6 +230,7 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
             "shared_entities": [{"id": i, "name": names[i]["canonical_name"]} for i in shared if i in names],
             "shared_places": [{"id": i, "name": names[i]["canonical_name"]} for i in places if i in names],
             "shared_topics": topics,
+            "topics": row.get("topics") or [],
             "reason": reason,
         })
     return {"basis": basis, "items": items, "total": total, "limit": limit, "skip": skip}
@@ -254,6 +268,7 @@ async def entity_history(db, entity_id: str, location_id: Optional[str] = None, 
             "timestamp": d.get("timestamp"),
             "item_status": d.get("item_status"),
             "location_ids": d.get("location_ids", []),
+            "topics": d.get("topics") or [],
         } for d in docs],
         "total": total,
         "limit": limit,
@@ -271,6 +286,7 @@ def _history_item(d: dict) -> dict:
         "timestamp": d.get("timestamp"),
         "item_status": d.get("item_status"),
         "location_ids": d.get("location_ids", []),
+        "topics": d.get("topics") or [],
     }
 
 
@@ -284,8 +300,7 @@ async def filtered_items(db, entity_id: Optional[str] = None, location_id: Optio
     Rejected and duplicated items are hidden unless asked for by status (the Newsroom's Rejected view)."""
     if not entity_id and not location_id:
         raise Invalid("Choose a company or a place")
-    if topic and topic not in REAL_ESTATE_CATEGORIES:
-        raise Invalid(f"Unknown topic: {topic}")
+    _check_topic(topic)
     if entity_id and await db[ndb.ENTITIES].count_documents({"_id": entity_id}) == 0:
         raise NotFound(f"Entity {entity_id} not found")
     await _check_location(db, location_id)

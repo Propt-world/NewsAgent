@@ -295,12 +295,14 @@ async def related_items(
     location: Optional[str] = Query(None, max_length=100,
                                     description="Only items in this place (location entity id), e.g. Dubai"),
     days: Optional[int] = Query(None, ge=1, le=3650, description="Only items from the last N days"),
+    topic: Optional[str] = Query(None, max_length=100,
+                                 description="Only items with this real-estate topic (one of the 30)"),
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
     db=Depends(get_newsroom_db),
     sources=Depends(get_item_sources),
 ):
-    return await _call(rel.related_items(db, source_type, source_id, location, days, limit, skip, sources))
+    return await _call(rel.related_items(db, source_type, source_id, location, days, limit, skip, sources, topic))
 
 
 @router.get("/entities/{entity_id}/history", response_model=HistoryResponse,

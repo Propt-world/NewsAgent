@@ -37,6 +37,41 @@ def _trace_article_outcome(span, final_state) -> None:
         tracing.set_output(span, {"outcome": "completed", "title": title})
 
 
+def _trace_timeout(span, attempt: int, max_retries: int) -> None:
+    """An attempt that ran out of time, at the top of its trace. Only the last attempt is a failure; an
+    earlier one is tried again (it usually succeeds), so it is not counted as a failed job."""
+    note = f"Took longer than {WORKFLOW_TIMEOUT_SECONDS:g} s (attempt {attempt} of {max_retries})"
+    if attempt >= max_retries:
+        note += "; moved to the failed list"
+        tracing.set_output(span, {"outcome": "failed", "error": note})
+        tracing.mark_failed(span, note)
+    else:
+        tracing.set_output(span, {"outcome": "retried", "note": note + "; tried again"})
+
+
+async def _run_article_job(app_graph, initial_state, run_config, job_id, source_url, job_data, max_retries):
+    """One attempt of the article workflow under its own trace (every step and AI call nests under it, with the
+    totals at the top). Raises asyncio.TimeoutError after WORKFLOW_TIMEOUT_SECONDS, once the trace says so:
+    left to the trace, the timeout would show as a failure with a blank message."""
+    attempt = job_data.get("attempt", 0) + 1
+    timed_out = False
+    with tracing.job_span("article_pipeline", input_value=source_url, tags=["article"],
+                          metadata={"job_id": job_id, "source_url": source_url,
+                                    "attempt": job_data.get("attempt", 0)}) as job_trace:
+        try:
+            # Execute workflow with timeout to guarantee room for graceful Spot teardown
+            final_state = await asyncio.wait_for(app_graph.ainvoke(initial_state, config=run_config),
+                                                 timeout=WORKFLOW_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            timed_out = True
+            _trace_timeout(job_trace, attempt, max_retries)
+        else:
+            _trace_article_outcome(job_trace, final_state)
+    if timed_out:
+        raise asyncio.TimeoutError()  # the worker retries it or moves it to the failed list
+    return final_state
+
+
 async def update_job_status(r, job_id, status, result=None, error=None):
     """
     Helper to update Redis Job Status hash key (job:{job_id}).
@@ -247,19 +282,8 @@ async def run_worker():
                     if opik_tracer:
                         run_config["callbacks"] = [opik_tracer]
 
-                    # One trace per article: every step and AI call nests under it, with the totals at the top
-                    with tracing.job_span("article_pipeline", input_value=source_url, tags=["article"],
-                                          metadata={"job_id": job_id, "source_url": source_url,
-                                                    "attempt": job_data.get("attempt", 0)}) as job_trace:
-                        # Execute workflow with timeout to guarantee room for graceful Spot teardown
-                        final_state = await asyncio.wait_for(
-                            app_graph.ainvoke(
-                                initial_state,
-                                config=run_config,
-                            ),
-                            timeout=WORKFLOW_TIMEOUT_SECONDS,
-                        )
-                        _trace_article_outcome(job_trace, final_state)
+                    final_state = await _run_article_job(app_graph, initial_state, run_config, job_id,
+                                                         source_url, job_data, max_retries)
 
                     error_message = final_state.get("error_message")
 

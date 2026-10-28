@@ -16,3 +16,6 @@ add_model() {  # name, provider, input USD per 1M tokens, output USD per 1M toke
 
 # NewsAgent (Similar Articles, approved-article embeddings) and social_scrapper (Grok duplicate checks)
 add_model "text-embedding-3-large" "openai" 0.13 0
+# social_scrapper: Grok Scout (GROK_MODEL_ID, through OpenRouter; checked on openrouter.ai 2026-10-28).
+# Web searches ($0.005 each on OpenRouter) are not token-based, so Phoenix does not include them.
+add_model "x-ai/grok-4.3" "xai" 1.25 2.5

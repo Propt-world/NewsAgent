@@ -1,5 +1,5 @@
 """
-LLM Observability for the backoffice: totals read from Phoenix (never prompts or answers).
+LLM Observability for the backoffice: figures read from Phoenix (never prompts or answers).
 
 The backoffice cannot reach Phoenix (it runs inside the server's network), so NewsAgent asks it and returns
 a summary per service (Phoenix project), per model, per kind of job, and the latest failed jobs. No AI call is
@@ -7,8 +7,14 @@ made; answers are cached for a minute so refreshing the page does not load Phoen
 
 Per-job figures work because every step of a job carries the job's name (tracing.job_span sets
 metadata["job"]), so Phoenix can add up cost and tokens with one filter per job.
+
+Detail, only when a reviewer asks for it (never on page load): job_runs() lists a kind of job's latest runs,
+trace_steps() one run's steps (name, time, status, error, model, tokens, cost). Prompt and answer text is
+never returned: it stays in Phoenix until the backoffice's calls go through a server route (security slice).
 """
+import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 CACHE_SECONDS = 60
 FAILURES_SHOWN = 20
+RUNS_SHOWN = 20
+MAX_STEPS = 500
+DETAIL_CACHE_SIZE = 200
 
 # The jobs the services trace (tracing.job_span names), with how the backoffice shows them and which
 # service (Phoenix project prefix) runs them
@@ -51,10 +60,15 @@ JOBS_PER_REQUEST = 9
 SERVICE_LABELS = {"newsagent": "NewsAgent", "social-scraper": "Social scraper"}
 
 _cache: Dict[int, Tuple[float, dict]] = {}
+_detail_cache: Dict[tuple, Tuple[float, dict]] = {}
 
 
 class PhoenixUnavailable(RuntimeError):
     pass
+
+
+class NotFound(LookupError):
+    """An unknown kind of job or trace (the endpoint answers 404)."""
 
 
 def phoenix_url() -> Optional[str]:
@@ -137,6 +151,17 @@ def _jobs_query(names: List[str]) -> str:
     return "query Jobs($range: TimeRange!, $project: ID!) {\n  node(id: $project) { ... on Project {%s\n  } }\n}" % "".join(fields)
 
 
+def _reported(project_name: str) -> bool:
+    """A Phoenix project the page reports on: those in PHOENIX_REPORT_PROJECTS, else all but "default"."""
+    wanted = [p.strip() for p in (settings.PHOENIX_REPORT_PROJECTS or "").split(",") if p.strip()]
+    return project_name in wanted if wanted else project_name != "default"
+
+
+async def _report_projects(client: httpx.AsyncClient) -> List[dict]:
+    listed = [e["node"] for e in (await _graphql(client, PROJECTS_QUERY, {}))["projects"]["edges"]]
+    return [p for p in listed if _reported(p["name"])]
+
+
 def _jobs_for(project: str) -> List[str]:
     prefix = project.partition("/")[0]
     own = [name for name, (_, service) in JOBS.items() if service == prefix]
@@ -165,11 +190,7 @@ async def summary(days: int, now: Optional[datetime] = None) -> dict:
     projects = []
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            listed = [e["node"] for e in (await _graphql(client, PROJECTS_QUERY, {}))["projects"]["edges"]]
-            wanted = [p.strip() for p in (settings.PHOENIX_REPORT_PROJECTS or "").split(",") if p.strip()]
-            for p in listed:
-                if (p["name"] not in wanted) if wanted else p["name"] == "default":
-                    continue
+            for p in await _report_projects(client):
                 variables = {"range": time_range, "project": p["id"]}
                 node = (await _graphql(client, PROJECT_QUERY, variables))["node"]
                 node["name"], node["job_figures"] = p["name"], {}
@@ -226,3 +247,182 @@ async def summary(days: int, now: Optional[datetime] = None) -> dict:
     if now is None:
         _cache[days] = (time.monotonic(), result)
     return result
+
+
+# --- Detail, fetched only when a reviewer opens a job or one of its runs --------------------------------
+
+RUNS_QUERY = """
+query Runs($range: TimeRange!, $project: ID!, $filter: String!, $first: Int!) {
+  node(id: $project) { ... on Project {
+    spans(first: $first, timeRange: $range, filterCondition: $filter, sort: {col: startTime, dir: desc}) {
+      edges { node {
+        startTime latencyMs statusCode statusMessage cumulativeTokenCountTotal
+        context { traceId }
+        output { value }
+        trace { numSpans costSummary { total { cost } } }
+      } }
+    }
+  } }
+}"""
+
+TRACE_QUERY = """
+query Trace($traceId: String!) {
+  getTraceByOtelId(traceId: $traceId) {
+    traceId startTime latencyMs numSpans
+    project { name }
+    costSummary { prompt { cost tokens } completion { cost tokens } total { cost tokens } }
+    spans(first: %d) { edges { node {
+      spanId parentId name spanKind statusCode statusMessage startTime latencyMs
+      tokenCountPrompt tokenCountCompletion costSummary { total { cost } } attributes
+    } } }
+  }
+}""" % MAX_STEPS
+
+TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _cached(key: tuple) -> Optional[dict]:
+    hit = _detail_cache.get(key)
+    return hit[1] if hit and time.monotonic() - hit[0] < CACHE_SECONDS else None
+
+
+def _remember(key: tuple, value: dict) -> dict:
+    if len(_detail_cache) >= DETAIL_CACHE_SIZE:
+        _detail_cache.pop(min(_detail_cache, key=lambda k: _detail_cache[k][0]))  # the oldest answer
+    _detail_cache[key] = (time.monotonic(), value)
+    return value
+
+
+def _status(code: Optional[str]) -> str:
+    return "failed" if code == "ERROR" else "ok"
+
+
+def _outcome(output: Optional[dict]) -> Optional[str]:
+    """The job's own one-word result from the top of its trace (completed, retried, handed back, skipped…)."""
+    try:
+        value = json.loads((output or {}).get("value") or "")
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, dict):
+        outcome = value.get("outcome") or value.get("status")
+        return str(outcome)[:60] if outcome else None
+    return None
+
+
+def _model(attributes: Optional[str]) -> Optional[str]:
+    """Only the model's name from a step's details (the rest, prompts and answers included, is dropped)."""
+    try:
+        attrs = json.loads(attributes or "{}")
+    except ValueError:
+        return None
+    for group in ("llm", "embedding"):
+        part = attrs.get(group)
+        if isinstance(part, dict) and part.get("model_name"):
+            return str(part["model_name"])
+        if attrs.get(f"{group}.model_name"):
+            return str(attrs[f"{group}.model_name"])
+    return None
+
+
+def _unavailable(result: dict) -> Optional[dict]:
+    if not phoenix_url():
+        result["message"] = "Tracing is not switched on: PHOENIX_COLLECTOR_ENDPOINT is not set on NewsAgent."
+        return result
+    return None
+
+
+async def job_runs(job: str, days: int, limit: int = RUNS_SHOWN, now: Optional[datetime] = None) -> dict:
+    """A kind of job's latest runs (newest first), each with its time, cost, tokens, status and number of steps."""
+    if job not in JOBS:
+        raise NotFound(f"Unknown job: {job}")
+    label, service = JOBS[job]
+    cached = _cached(("runs", job, days, limit)) if now is None else None
+    if cached:
+        return cached
+    until = now or datetime.now(timezone.utc)
+    since = until - timedelta(days=days)
+    result = {"available": False, "message": None, "job": job, "label": label, "days": days, "runs": []}
+    if _unavailable(result):
+        return result
+    variables = {"range": {"start": since.isoformat(), "end": until.isoformat()},
+                 "filter": f"name == {_q(job)} and parent_id is None", "first": limit}
+    runs = []
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            for p in await _report_projects(client):
+                if p["name"].partition("/")[0] != service:
+                    continue
+                node = (await _graphql(client, RUNS_QUERY, {**variables, "project": p["id"]}))["node"]
+                for edge in node["spans"]["edges"]:
+                    run = edge["node"]
+                    trace = run.get("trace") or {}
+                    runs.append({"trace_id": run["context"]["traceId"], "service": service_label(p["name"]),
+                                 "at": run["startTime"], "duration_ms": run.get("latencyMs"),
+                                 "status": _status(run.get("statusCode")), "outcome": _outcome(run.get("output")),
+                                 "error": (run.get("statusMessage") or "")[:300] or None,
+                                 "tokens": int(run.get("cumulativeTokenCountTotal") or 0),
+                                 "cost_usd": _cost(trace.get("costSummary"))[0], "steps": trace.get("numSpans")})
+    except PhoenixUnavailable as e:
+        logger.warning(f"[OBSERVABILITY] {e}")
+        result["message"] = str(e)
+        return result
+    result["runs"] = sorted(runs, key=lambda r: r["at"], reverse=True)[:limit]
+    result["available"] = True
+    return _remember(("runs", job, days, limit), result) if now is None else result
+
+
+async def trace_steps(trace_id: str) -> dict:
+    """One run's steps in order, each with its depth (step inside step), start (ms after the run started),
+    time, status, error, model, tokens and cost. No prompt or answer text."""
+    trace_id = (trace_id or "").strip().lower()
+    if not TRACE_ID.match(trace_id):
+        raise NotFound("A trace id is 32 letters and digits (0-9, a-f)")
+    cached = _cached(("trace", trace_id))
+    if cached:
+        return cached
+    result = {"available": False, "message": None, "trace_id": trace_id}
+    if _unavailable(result):
+        return result
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            trace = (await _graphql(client, TRACE_QUERY, {"traceId": trace_id})).get("getTraceByOtelId")
+    except PhoenixUnavailable as e:
+        logger.warning(f"[OBSERVABILITY] {e}")
+        result["message"] = str(e)
+        return result
+    if not trace or not _reported((trace.get("project") or {}).get("name") or ""):
+        raise NotFound("No such trace (it may be older than Phoenix keeps traces)")
+
+    spans = [e["node"] for e in trace["spans"]["edges"]]
+    by_id = {s["spanId"]: s for s in spans}
+
+    def depth(span: dict) -> int:
+        level, parent = 0, span.get("parentId")
+        while parent in by_id and level < 50:
+            level, parent = level + 1, by_id[parent].get("parentId")
+        return level
+
+    start = datetime.fromisoformat(trace["startTime"])
+    steps = []
+    for s in sorted(spans, key=lambda s: s["startTime"]):
+        prompt, completion = int(s.get("tokenCountPrompt") or 0), int(s.get("tokenCountCompletion") or 0)
+        steps.append({"span_id": s["spanId"], "parent_id": s.get("parentId"), "depth": depth(s), "name": s["name"],
+                      "kind": (s.get("spanKind") or "").lower(), "status": _status(s.get("statusCode")),
+                      "error": (s.get("statusMessage") or "")[:300] or None,
+                      "start_ms": round((datetime.fromisoformat(s["startTime"]) - start).total_seconds() * 1000),
+                      "duration_ms": s.get("latencyMs"), "model": _model(s.get("attributes")),
+                      "tokens_prompt": prompt, "tokens_completion": completion,
+                      "cost_usd": _cost(s.get("costSummary"))[0]})
+    root = next((s for s in steps if not s["parent_id"]), steps[0] if steps else None)
+    _, prompt_tokens = _cost(trace.get("costSummary"), "prompt")
+    _, completion_tokens = _cost(trace.get("costSummary"), "completion")
+    result.update({
+        "available": True, "service": service_label(trace["project"]["name"]),
+        "job": root["name"] if root else None, "label": JOBS.get(root["name"], (root["name"], ""))[0] if root else None,
+        "at": trace["startTime"], "duration_ms": trace.get("latencyMs"),
+        "status": "failed" if any(s["status"] == "failed" for s in steps if not s["parent_id"]) else "ok",
+        "cost_usd": _cost(trace.get("costSummary"))[0], "tokens_prompt": prompt_tokens,
+        "tokens_completion": completion_tokens, "steps_total": trace.get("numSpans") or len(steps),
+        "steps": steps,
+    })
+    return _remember(("trace", trace_id), result)

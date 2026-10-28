@@ -1378,6 +1378,35 @@ async def observability_summary(days: int = Query(1, ge=1, le=30, description="1
 
 
 @app.get(
+    "/observability/jobs/{job}/runs",
+    dependencies=[Depends(verify_api_key)],
+    description="A kind of job's latest runs from Phoenix (newest first): time, cost, tokens, status, outcome and "
+                "number of steps. Called only when a reviewer opens the job on the LLM Observability page. "
+                "No prompts or answers; no AI call; cached for a minute.",
+)
+async def observability_job_runs(job: str, days: int = Query(1, ge=1, le=30),
+                                 limit: int = Query(observability.RUNS_SHOWN, ge=1, le=50)):
+    try:
+        return await observability.job_runs(job, days, limit)
+    except observability.NotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get(
+    "/observability/traces/{trace_id}",
+    dependencies=[Depends(verify_api_key)],
+    description="One run's steps from Phoenix: name, start, time, status, error, model, tokens and cost of each step "
+                "inside it. Called only when a reviewer opens a run. No prompts or answers (they stay in Phoenix); "
+                "no AI call; cached for a minute.",
+)
+async def observability_trace(trace_id: str):
+    try:
+        return await observability.trace_steps(trace_id)
+    except observability.NotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get(
     "/articles/search/text",
     response_model=PaginatedArticleResponse,
     description="Dedicated API for standard text search across articles, including full content.",

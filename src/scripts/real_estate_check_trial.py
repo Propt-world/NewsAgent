@@ -27,6 +27,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.configs.settings import settings
 from src.graph.nodes import check_real_estate as rec
+from src.utils import tracing
 
 CACHE = "checks.jsonl"
 
@@ -70,7 +71,9 @@ async def run_checks(items: list, cache_path: Path, max_usd: float, concurrency:
                     stats["stopped_by_cap"] += 1
                     return
                 try:
-                    check, error = await rec.run_check(item["title"], item["text"]), None
+                    with tracing.job_span("real_estate_trial", tags=["real_estate_check", "trial"],
+                                          metadata={"article_id": item["id"], "status": item.get("status")}):
+                        check, error = await rec.run_check(item["title"], item["text"]), None
                 except Exception as e:
                     check, error = None, str(e)[:300]
                 stats["checked"] += 1
@@ -123,6 +126,7 @@ def main() -> int:
     parser.add_argument("--max-usd", type=float, default=0.30, help="stops starting checks at this cost")
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
+    tracing.init_tracing()  # Phoenix, when PHOENIX_COLLECTOR_ENDPOINT is set
     if not args.articles and not args.from_db:
         parser.error("give --articles and/or --from-db")
     args.out.mkdir(parents=True, exist_ok=True)

@@ -239,6 +239,12 @@ def test_similar_for_approved_article_without_links(similar_scene):
     assert similar_scene.search_calls == [[0.1, 0.2, 0.3]]  # the stored fingerprint, no new AI call
 
 
+def test_similar_articles_by_topic(similar_scene, sync_db):
+    sync_db["processed_articles"].update_one({"_id": "S1"}, {"$set": {"final_output.category": ["Future Forecast"]}})
+    body = _related(similar_scene, item="article/S0", topic="Future Forecast")
+    assert _ids(body) == ["S1"] and body["items"][0]["topics"] == ["Future Forecast"]
+
+
 def test_pending_articles_never_use_similarity(similar_scene):
     assert _related(similar_scene, item="article/P1")["basis"] == "none"
     assert similar_scene.search_calls == []
@@ -300,3 +306,45 @@ def test_newsroom_list_filter(scene):
     assert scene.get("/newsroom/items").status_code == 422
     assert scene.get("/newsroom/items", params={"location": EMAAR}).status_code == 422  # not a place
     assert scene.get("/newsroom/items", params={"entity": "missing"}).status_code == 404
+
+
+def test_shared_topics_order_related_items_and_narrow_the_list(scene, sync_db):
+    """Topics (articles' categories, signals' kg_topics) only order related items and narrow the list filter."""
+    topics = {"A2": ["Off-Plan & New Launches", "Developer News"], "A8": ["Developer News"], "A4": ["Luxury Residences"]}
+    for article_id, names in topics.items():
+        sync_db["processed_articles"].update_one({"_id": article_id}, {"$set": {"final_output.category": names}})
+    sync_db["signals"].update_one({"_id": ObjectId(scene.s1)}, {"$set": {"kg_topics": ["Off-Plan & New Launches"]}})
+    # What social_scrapper and the pipeline send after a change; NewsAgent re-reads the items
+    for source_type, ids in (("article", list(topics)), ("signal", [scene.s1])):
+        resp = scene.post("/newsroom/items/changed", json={"source_type": source_type, "source_ids": ids})
+        assert resp.status_code == 200, resp.text
+
+    body = _related(scene)
+    # A8 (400 days old, shares a topic) now comes before A4 (4 days old, no shared topic); companies and places
+    # still come first, so the order of the others is unchanged
+    assert _ids(body) == [scene.s1, "A1", "A3", "A8", "A4"]
+    first, a8, a4 = body["items"][0], body["items"][3], body["items"][4]
+    assert first["shared_topics"] == ["Off-Plan & New Launches"]
+    assert first["reason"] == "Shares DAMAC Properties, Emaar Properties · same topic: Off-Plan & New Launches"
+    assert (a8["shared_topics"], a4["shared_topics"]) == (["Developer News"], [])
+    # Each item's own topics too, so an item opened from the related list shows them
+    assert (a8["topics"], a4["topics"]) == (["Developer News"], ["Luxury Residences"])
+
+    # The related list's Topic filter: only related items with that topic
+    luxury = _related(scene, topic="Luxury Residences")
+    assert (_ids(luxury), luxury["total"]) == (["A4"], 1)
+    assert _ids(_related(scene, topic="Off-Plan & New Launches")) == [scene.s1]
+    assert scene.get("/newsroom/items/article/A2/related", params={"topic": "Financing"}).status_code == 422
+
+    # The list filter: company + topic
+    by_topic = _filtered(scene, entity=EMAAR, topic="Developer News")
+    assert _ids(by_topic) == ["A2", "A8"]
+    assert by_topic["items"][0]["topics"] == ["Off-Plan & New Launches", "Developer News"]  # shown in the panel
+    assert _ids(_filtered(scene, entity=DAMAC, topic="Off-Plan & New Launches")) == [scene.s1, "A2"]
+    assert scene.get("/newsroom/items", params={"entity": EMAAR, "topic": "Financing"}).status_code == 422
+
+    # A new link takes the item's topics straight away
+    _article(sync_db, "A9", 1)
+    sync_db["processed_articles"].update_one({"_id": "A9"}, {"$set": {"final_output.category": ["Developer News"]}})
+    _link(scene, "article", "A9", EMAAR)
+    assert _ids(_filtered(scene, entity=EMAAR, topic="Developer News")) == ["A9", "A2", "A8"]

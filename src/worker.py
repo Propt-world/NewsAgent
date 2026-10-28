@@ -15,11 +15,26 @@ from src.graph.nodes.load_agent_configuration import close_async_config_client
 from src.models.MainWorkflowState import MainWorkflowState
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
+from src.utils import tracing
 
 # Spot grace period execution budget (seconds)
 # Fargate Spot gives 120s from SIGTERM to SIGKILL. We limit workflow execution to 110s
 # to leave 10s for DB/Redis status updates, re-queueing, and clean resource teardown.
 WORKFLOW_TIMEOUT_SECONDS = 110.0
+
+
+def _trace_article_outcome(span, final_state) -> None:
+    """How the article job ended, at the top of its trace (a logic failure is not an exception)."""
+    error_message = final_state.get("error_message")
+    article = final_state.get("news_article")
+    title = getattr(article, "title", None) if article is not None else None
+    if error_message:
+        tracing.set_output(span, {"outcome": "failed", "error": error_message})
+        tracing.mark_failed(span, error_message)
+    elif is_skipped(final_state):
+        tracing.set_output(span, {"outcome": "skipped: not real estate", "check": final_state.get("real_estate_check")})
+    else:
+        tracing.set_output(span, {"outcome": "completed", "title": title})
 
 
 async def update_job_status(r, job_id, status, result=None, error=None):
@@ -159,6 +174,7 @@ async def run_worker():
         return
 
     try:
+        tracing.init_tracing()  # Phoenix, beside Opik while both run (off unless PHOENIX_COLLECTOR_ENDPOINT is set)
         workflow_builder = MainWorkflow()
         app_graph = workflow_builder.create_workflow()
 
@@ -231,14 +247,19 @@ async def run_worker():
                     if opik_tracer:
                         run_config["callbacks"] = [opik_tracer]
 
-                    # Execute workflow with timeout to guarantee room for graceful Spot teardown
-                    final_state = await asyncio.wait_for(
-                        app_graph.ainvoke(
-                            initial_state,
-                            config=run_config,
-                        ),
-                        timeout=WORKFLOW_TIMEOUT_SECONDS,
-                    )
+                    # One trace per article: every step and AI call nests under it, with the totals at the top
+                    with tracing.job_span("article_pipeline", input_value=source_url, tags=["article"],
+                                          metadata={"job_id": job_id, "source_url": source_url,
+                                                    "attempt": job_data.get("attempt", 0)}) as job_trace:
+                        # Execute workflow with timeout to guarantee room for graceful Spot teardown
+                        final_state = await asyncio.wait_for(
+                            app_graph.ainvoke(
+                                initial_state,
+                                config=run_config,
+                            ),
+                            timeout=WORKFLOW_TIMEOUT_SECONDS,
+                        )
+                        _trace_article_outcome(job_trace, final_state)
 
                     error_message = final_state.get("error_message")
 
@@ -342,6 +363,7 @@ async def run_worker():
         await close_async_governance_clients()
         if r is not None:
             await r.aclose()
+        tracing.flush_tracing()  # the last traces, before the container stops
         print("[WORKER] Worker shutdown complete.")
 
 

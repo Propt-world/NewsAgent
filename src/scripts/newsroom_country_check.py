@@ -26,6 +26,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.configs.settings import settings
 from src.scheduler.db import _database_target, _mongo_client_options
+from src.utils import tracing
 
 NAMES_MARKER = "NAMES (only when the response has the fields companies, projects and places):"
 
@@ -71,7 +72,9 @@ async def run_phase(phase: str, articles: List[dict], usage, max_usd: float, con
             if usage.total_cost >= max_usd:
                 return
             try:
-                results[article["_id"]] = {"countries": await countries_for(article, prompts)}
+                with tracing.job_span(f"country_check_{phase}", tags=["country_check", "trial"],
+                                      metadata={"article_id": article["_id"], "phase": phase}):  # one trace per article
+                    results[article["_id"]] = {"countries": await countries_for(article, prompts)}
             except Exception as e:
                 results[article["_id"]] = {"error": str(e)[:200]}
 
@@ -126,6 +129,7 @@ def main() -> int:
     parser.add_argument("--max-usd", type=float, default=0.20, help="stop starting calls at this cost")
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
+    tracing.init_tracing()  # Phoenix, when PHOENIX_COLLECTOR_ENDPOINT is set
     print(f"--- Database: {_database_target()} / {settings.MONGO_DB_NAME} | read-only | model {settings.MODEL_NAME} ---")
     rows = asyncio.run(main_async(args))
     args.out.mkdir(parents=True, exist_ok=True)

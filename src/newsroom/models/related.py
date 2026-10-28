@@ -21,6 +21,8 @@ class RelatedItem(BaseModel):
     item_status: Optional[str] = None
     shared_entities: List[EntityRef]
     shared_places: List[EntityRef]
+    shared_topics: List[str] = Field(default_factory=list, description="Real-estate topics both items have")
+    topics: List[str] = Field(default_factory=list, description="This item's own real-estate topics")
     reason: str
     score: Optional[float] = Field(None, description="Only for similar-text matches")
 
@@ -51,6 +53,7 @@ class HistoryItem(BaseModel):
     timestamp: Optional[UtcDatetime] = None
     item_status: Optional[str] = None
     location_ids: List[str] = []
+    topics: List[str] = Field(default_factory=list, description="The item's real-estate topics")
 
 
 class HistoryResponse(BaseModel):

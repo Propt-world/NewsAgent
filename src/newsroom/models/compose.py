@@ -47,6 +47,23 @@ class EarlierCompose(BaseModel):
     title: Optional[str] = None
 
 
+class EarlierSignalCheck(BaseModel):
+    id: str
+    created_at: UtcDatetime
+    status: Literal["queued", "running", "succeeded", "not_a_signal"]
+    requested_by: Optional[str] = None
+    drafts: int = Field(0, description="Signal drafts it wrote")
+    saved: int = Field(0, description="Of those, saved as signals")
+    reason: Optional[str] = Field(None, description="Why it was not a signal")
+
+
+class SignalFromArticle(BaseModel):
+    id: str
+    summary: str
+    status: Optional[str] = None
+    generated_at: Optional[UtcDatetime] = None
+
+
 class SourceCheck(BaseModel):
     article: Optional[str] = Field(None, description="Why these sources cannot become a new article (empty = they can)")
     signal: Optional[str] = Field(None, description="Why these sources cannot become a new signal (empty = they can)")
@@ -54,6 +71,11 @@ class SourceCheck(BaseModel):
                                                     "warning); the reviewer may still go on")
     previous: List[EarlierCompose] = Field(default_factory=list, description="Finished composes of exactly these "
                                            "sources (last 30 days), newest first: a warning only")
+    previous_checks: List[EarlierSignalCheck] = Field(
+        default_factory=list, description="One article only: its earlier \"Check for a signal\" runs (last 30 days, "
+                                          "also one running now), newest first: a warning only")
+    signals_from_article: List[SignalFromArticle] = Field(
+        default_factory=list, description="One article only: signals already saved from it")
 
 
 class DeskSuggestion(BaseModel):

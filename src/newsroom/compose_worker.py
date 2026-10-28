@@ -33,6 +33,7 @@ from src.newsroom import links as lnk
 from src.newsroom.compose import AUTHOR, COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.desks import byline
 from src.newsroom.prompts import PROMPTS_BY_NAME
+from src.utils import tracing
 from src.newsroom.public_links import shown_url
 from src.newsroom.signal_options import GCC_REGIONS, REAL_ESTATE_CATEGORIES, SIGNAL_ANGLES, SIGNAL_CATEGORIES
 
@@ -284,6 +285,17 @@ def run_cost(usage) -> float:
     return round(cost, 6)
 
 
+def _trace_run_outcome(span, update: dict, usage) -> None:
+    """How the run ended, at the top of its trace, with this start's cost as the daily budget counts it
+    (to compare with the cost Phoenix works out from the tokens)."""
+    status = update.get("status")
+    span.set_attribute("newsroom.cost_usd", run_cost(usage))
+    span.set_attribute("newsroom.tokens_total", usage.total_tokens or 0)
+    tracing.set_output(span, {"status": status, "error": update.get("error"), "result": update.get("result")})
+    if status == "failed":
+        tracing.mark_failed(span, update.get("error") or "failed")
+
+
 REQUEUE = "requeue"
 INTERRUPTED = "Stopped {n} times because the worker was shutting down; try again."
 
@@ -306,52 +318,62 @@ async def run_compose_job(run_id: str, db=None, sources: Optional[ndb.ItemSource
     if run is None:
         return None  # unknown, or no longer queued (finished, failed or given up)
 
-    update = {}
-    tracer = get_compose_tracer(run)
-    update["opik_traced"] = tracer is not None
-    interrupted = False
-    with get_openai_callback() as usage:
-        async def checkpoint() -> None:
-            """After each paid step: today's spend sees this job's cost so far (kept even if the worker dies)."""
-            await db[ndb.COMPOSE_RUNS].update_one(
-                {"_id": run_id, "status": "running"}, {"$set": {"running_cost_usd": run_cost(usage)}})
-
-        try:
-            result, status = await asyncio.wait_for(
-                _compose(db, sources, run, update, tracer, checkpoint), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
-            update.update({"status": status, "result": result, "finished_at": _now()})
-        except asyncio.CancelledError:
-            # The worker is shutting down: wait in the queue again unless it has had its starts.
-            interrupted = run.get("attempts", 1) < settings.NEWSROOM_COMPOSE_MAX_ATTEMPTS
-            if interrupted:
-                update.update({"status": "queued", "started_at": None, "deadline_at": cmp.wait_deadline(_now()),
-                               "error": None})
-            else:
-                update.update({"status": "failed", "finished_at": _now(),
-                               "error": INTERRUPTED.format(n=run.get("attempts", 1))})
-        except Exception as e:
-            logger.exception(f"[NEWSROOM] Compose run {run_id} failed")
-            update.update({"status": "failed", "error": (str(e) or type(e).__name__)[:500], "finished_at": _now()})
-        finally:
-            # Spend adds up over every start; written only while this worker still owns the run,
-            # so a run the clean-up already marked failed is not turned back into a success.
-            spent = {
-                "tokens.prompt": usage.prompt_tokens,
-                "tokens.completion": usage.completion_tokens,
-                "tokens.total": usage.total_tokens,
-                "cost_usd": run_cost(usage),
-            }
-            # The running figure becomes part of cost_usd now.
-            res = await db[ndb.COMPOSE_RUNS].update_one(
-                {"_id": run_id, "status": "running"},
-                {"$set": update, "$inc": spent, "$unset": {"running_cost_usd": ""}},
-            )
-            if res.matched_count == 0:
-                # Already given up (timed out): still count what was spent.
+    # One trace per run in Phoenix: every step (Researcher, Writer, Editor, the article or signal steps) nests
+    # under it, grouped by the run id; the top shows the run's totals and how it ended.
+    with tracing.job_span(
+        f"compose_{run['kind']}", session_id=run_id, input_value=", ".join(run.get("source_keys") or []),
+        tags=list(dict.fromkeys(t for t in ("newsroom", "compose", run.get("kind"), run.get("output_type")) if t)),
+        metadata={"compose_run_id": run_id, "kind": run.get("kind"), "output_type": run.get("output_type"),
+                  "model": settings.NEWSROOM_COMPOSE_MODEL, "requested_by": run.get("requested_by"),
+                  "sources": run.get("source_keys") or [], "attempt": run.get("attempts", 1)},
+    ) as run_trace:
+        update = {}
+        tracer = get_compose_tracer(run)
+        update["opik_traced"] = tracer is not None
+        interrupted = False
+        with get_openai_callback() as usage:
+            async def checkpoint() -> None:
+                """After each paid step: today's spend sees this job's cost so far (kept even if the worker dies)."""
                 await db[ndb.COMPOSE_RUNS].update_one(
-                    {"_id": run_id}, {"$inc": spent, "$unset": {"running_cost_usd": ""}})
-                logger.warning(f"[NEWSROOM] Compose run {run_id} ended after it was given up; its result was not kept")
-                interrupted = False
+                    {"_id": run_id, "status": "running"}, {"$set": {"running_cost_usd": run_cost(usage)}})
+
+            try:
+                result, status = await asyncio.wait_for(
+                    _compose(db, sources, run, update, tracer, checkpoint), timeout=settings.NEWSROOM_COMPOSE_TIMEOUT_MINUTES * 60)
+                update.update({"status": status, "result": result, "finished_at": _now()})
+            except asyncio.CancelledError:
+                # The worker is shutting down: wait in the queue again unless it has had its starts.
+                interrupted = run.get("attempts", 1) < settings.NEWSROOM_COMPOSE_MAX_ATTEMPTS
+                if interrupted:
+                    update.update({"status": "queued", "started_at": None, "deadline_at": cmp.wait_deadline(_now()),
+                                   "error": None})
+                else:
+                    update.update({"status": "failed", "finished_at": _now(),
+                                   "error": INTERRUPTED.format(n=run.get("attempts", 1))})
+            except Exception as e:
+                logger.exception(f"[NEWSROOM] Compose run {run_id} failed")
+                update.update({"status": "failed", "error": (str(e) or type(e).__name__)[:500], "finished_at": _now()})
+            finally:
+                # Spend adds up over every start; written only while this worker still owns the run,
+                # so a run the clean-up already marked failed is not turned back into a success.
+                spent = {
+                    "tokens.prompt": usage.prompt_tokens,
+                    "tokens.completion": usage.completion_tokens,
+                    "tokens.total": usage.total_tokens,
+                    "cost_usd": run_cost(usage),
+                }
+                # The running figure becomes part of cost_usd now.
+                res = await db[ndb.COMPOSE_RUNS].update_one(
+                    {"_id": run_id, "status": "running"},
+                    {"$set": update, "$inc": spent, "$unset": {"running_cost_usd": ""}},
+                )
+                if res.matched_count == 0:
+                    # Already given up (timed out): still count what was spent.
+                    await db[ndb.COMPOSE_RUNS].update_one(
+                        {"_id": run_id}, {"$inc": spent, "$unset": {"running_cost_usd": ""}})
+                    logger.warning(f"[NEWSROOM] Compose run {run_id} ended after it was given up; its result was not kept")
+                    interrupted = False
+        _trace_run_outcome(run_trace, update, usage)
     if tracer is not None:
         try:
             tracer.flush()

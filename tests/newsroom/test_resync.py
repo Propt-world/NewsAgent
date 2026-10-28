@@ -90,3 +90,26 @@ def test_repair_keeps_the_new_names_queue_in_step_with_approval(scene, sync_db, 
 
     assert _run(mongo_url, db_name, apply=True)["items_fixed"] >= 1
     assert sync_db["entity_suggestions"].find_one({"source_id": "art-9"})["in_new_names_queue"] is True
+
+
+def test_repair_copies_topics_onto_links(scene, sync_db, mongo_url, db_name):
+    """Links made before topics were copied (or a missed signal tagging) get them from the nightly repair."""
+    sync_db["processed_articles"].update_one(
+        {"_id": "art-1"}, {"$set": {"final_output.category": ["Off-Plan & New Launches", "Developer News"]}})
+    assert _mention(sync_db, "art-1")["topics"] == []
+
+    dry = _run(mongo_url, db_name, apply=False)
+    assert (dry["items_fixed"], dry["topics"]) == (1, 1)
+    _run(mongo_url, db_name, apply=True)
+    assert _mention(sync_db, "art-1")["topics"] == ["Off-Plan & New Launches", "Developer News"]
+    assert _mention(sync_db, "art-1", DUBAI)["topics"] == ["Off-Plan & New Launches", "Developer News"]
+    assert _run(mongo_url, db_name, apply=False)["items_fixed"] == 0
+
+
+def test_dates_with_microseconds_are_not_fixed_every_night(scene, sync_db, mongo_url, db_name):
+    """A published date written as text with microseconds is stored to the millisecond: that is not a change."""
+    sync_db["processed_articles"].update_one(
+        {"_id": "art-1"}, {"$set": {"final_output.published_date": "2026-10-12T13:58:12.467721+00:00"}})
+    assert _run(mongo_url, db_name, apply=False)["date"] == 1  # the link still has the old date
+    _run(mongo_url, db_name, apply=True)
+    assert _run(mongo_url, db_name, apply=False)["items_fixed"] == 0  # quiet from then on

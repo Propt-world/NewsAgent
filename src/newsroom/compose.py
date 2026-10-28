@@ -173,7 +173,33 @@ async def source_mix_problems(sources: ndb.ItemSources, items: List[dict], db) -
     problems["topics"] = topic_warning([(d["title"] or d["source_id"], topics.get((d["source_type"], d["source_id"])))
                                         for d in docs])
     problems["previous"] = await earlier_composes(db, keys)
+    problems.update(await earlier_signal_checks(db, sources, keys))
     return problems
+
+
+async def earlier_signal_checks(db, sources: ndb.ItemSources, keys: List[tuple]) -> dict:
+    """For "Check for a signal" on one article: its earlier checks (also one running now) and the signals already
+    made from it, so the reviewer sees it was done before (a warning only, like earlier composes). Checks older
+    than NEWSROOM_COMPOSE_KEEP_DAYS no longer keep their sources, so they are not found; saved signals always are."""
+    if len(keys) != 1 or keys[0][0] != "article":
+        return {"previous_checks": [], "signals_from_article": []}
+    article_id = keys[0][1]
+    docs = await db[ndb.COMPOSE_RUNS].find(
+        {"kind": "extract_signal", "source_keys": f"article:{article_id}",
+         "status": {"$in": ["queued", "running", "succeeded", "not_a_signal"]}},
+        {"created_at": 1, "status": 1, "requested_by": 1, "result.reason": 1, "result.drafts": 1, "saved_drafts": 1},
+    ).sort("created_at", -1).limit(5).to_list(length=5)
+    checks = [{"id": d["_id"], "created_at": d["created_at"], "status": d["status"], "requested_by": d.get("requested_by"),
+               "drafts": len((d.get("result") or {}).get("drafts") or []), "saved": len(d.get("saved_drafts") or {}),
+               "reason": (d.get("result") or {}).get("reason")} for d in docs]
+    signals = []
+    if sources is not None and sources.signals is not None:
+        async for s in sources.signals.find(
+                {"article_id": article_id, "status": {"$ne": "deleted"}},
+                {"summary_en": 1, "summary": 1, "status": 1, "generated_at": 1}).sort("generated_at", -1).limit(10):
+            signals.append({"id": str(s["_id"]), "summary": s.get("summary_en") or s.get("summary") or "",
+                            "status": s.get("status"), "generated_at": s.get("generated_at")})
+    return {"previous_checks": checks, "signals_from_article": signals}
 
 
 async def earlier_composes(db, keys: List[tuple]) -> List[dict]:

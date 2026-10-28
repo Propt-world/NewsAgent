@@ -952,7 +952,8 @@ def test_the_compose_window_can_ask_before_starting(mix):
         return mix.post("/newsroom/compose/source-check", json={"sources": [
             {"source_type": t, "source_id": ids.get(i, i)} for t, i in sources]}).json()
 
-    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None, "previous": []}
+    assert check(("article", "A1"), ("article", "C1")) == {"article": None, "signal": None, "topics": None, "previous": [],
+                                                           "previous_checks": [], "signals_from_article": []}
     two_signals = check(("signal", "S"), ("signal", "S2"))
     assert "Signals alone are too short" in two_signals["article"] and two_signals["signal"] is None
     two_ours = check(("article", "C1"), ("signal", "CS"))
@@ -1019,3 +1020,52 @@ def test_the_compose_window_warns_about_earlier_composes_of_the_same_sources(mix
         ("before", "roundup", "sales", "C9", "Emaar and DAMAC")]
     assert check(("article", "A1"), ("article", "A2")) == []
     assert _compose(mix, ("article", "A1"), ("article", "C1")).status_code == 202  # still allowed
+
+
+def test_compose_runs_are_traced_in_phoenix(scene, job, trace_spans):
+    """One trace per run, grouped by the run id, with how it ended and the cost the daily budget counts."""
+    body = _compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json()
+    run, _ = job(body)
+    root = next(s for s in trace_spans.get_finished_spans() if s.name == "compose_compose")
+    assert root.attributes["session.id"] == run["_id"]
+    assert list(root.attributes["tag.tags"]) == ["newsroom", "compose", "signal"]
+    assert root.attributes["newsroom.cost_usd"] == run["cost_usd"]
+    assert '"status": "succeeded"' in root.attributes["output.value"]
+    assert root.status.status_code.name != "ERROR"
+
+
+def test_a_failed_compose_run_is_marked_failed_in_phoenix(scene, job, trace_spans):
+    answers = {**ANSWERS, "ResearchNotes": RuntimeError("model down")}
+    body = _compose(scene, ("article", "A1"), ("signal", scene.signal_id), output_type="signal").json()
+    run, _ = job(body, answers=answers)
+    assert run["status"] == "failed"
+    root = next(s for s in trace_spans.get_finished_spans() if s.name == "compose_compose")
+    assert root.status.status_code.name == "ERROR" and "model down" in root.status.description
+
+
+def test_an_article_already_checked_for_a_signal_says_so(scene, job, sync_db):
+    """Opening "Check for a signal" again shows the earlier checks and the signals already made (a warning only)."""
+    def checked():
+        resp = scene.post("/newsroom/compose/source-check", json={"sources": [{"source_type": "article", "source_id": "A2"}]})
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    assert (checked()["previous_checks"], checked()["signals_from_article"]) == ([], [])
+
+    job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json())  # not a signal
+    answers = {**ANSWERS, "ExtractDecision": cw.ExtractDecision(is_signal=True, reason="", drafts=[SIGNAL])}
+    run, _ = job(scene.post("/newsroom/extract-signal", json={"article_id": "A2"}).json(), answers)
+    saved = ObjectId()
+    sync_db["signals"].insert_one({"_id": saved, "summary_en": "Emaar sold 500 units in Dubai.", "status": "draft",
+                                   "generated_at": NOW, "article_id": "A2", "generated_from": run["_id"]})
+    assert scene.post(f"/newsroom/compose/{run['_id']}/saved", json={"signal_id": str(saved)}).status_code == 200
+
+    body = checked()
+    newest, first = body["previous_checks"]
+    assert (newest["status"], newest["drafts"], newest["saved"]) == ("succeeded", 1, 1)
+    assert (first["status"], first["reason"]) == ("not_a_signal", "Only an event announcement.")
+    assert [(s["id"], s["status"]) for s in body["signals_from_article"]] == [(str(saved), "draft")]
+    # Composing several items is a different question: no check history there
+    many = scene.post("/newsroom/compose/source-check", json={"sources": [
+        {"source_type": "article", "source_id": "A2"}, {"source_type": "signal", "source_id": scene.signal_id}]}).json()
+    assert many["previous_checks"] == [] and many["signals_from_article"] == []

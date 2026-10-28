@@ -34,6 +34,7 @@ from src.newsroom import backfill as bf
 from src.newsroom import db as ndb
 from src.newsroom.pipeline import split_names
 from src.scheduler.db import _database_target, _mongo_client_options
+from src.utils import tracing
 
 SOURCE_TYPES = {"article": ["article"], "signal": ["signal"], "both": ["article", "signal"]}
 
@@ -83,7 +84,9 @@ async def article_names(db, articles, cache_path: Path, max_usd: float, concurre
                 if usage.total_cost >= max_usd:
                     stats["no_names_cost_cap"] += 1
                     return
-                found, error = await bf.ai_article_names(doc, prompts)
+                with tracing.job_span("backfill_names", tags=["backfill", "newsroom"],
+                                      metadata={"article_id": bf.item_id(doc)}):  # one trace per article
+                    found, error = await bf.ai_article_names(doc, prompts)
                 stats["ai_called"] += 1
                 out.write(json.dumps({"article_id": bf.item_id(doc), "names": found, "error": error}) + "\n")
                 out.flush()
@@ -187,6 +190,7 @@ def main() -> int:
     parser.add_argument("--undo", action="store_true", help="remove every link the backfill made")
     parser.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args()
+    tracing.init_tracing()  # Phoenix, when PHOENIX_COLLECTOR_ENDPOINT is set
     args.out.mkdir(parents=True, exist_ok=True)
 
     print(f"Database: {_database_target()} | articles and Newsroom: {settings.MONGO_DB_NAME} | signals: {settings.NEWSROOM_SIGNALS_DB_NAME}")

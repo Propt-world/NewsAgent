@@ -59,6 +59,15 @@ class Settings(BaseSettings):
     OPIK_API_KEY: str = os.getenv('OPIK_API_KEY')
     OPIK_WORKSPACE: str = os.getenv('OPIK_WORKSPACE')
     OPIK_PROJECT_NAME: str = os.getenv('OPIK_PROJECT_NAME')
+    # Phoenix tracing (src/utils/tracing.py): unset or empty = off. One project per app per environment.
+    PHOENIX_COLLECTOR_ENDPOINT: Optional[str] = os.getenv('PHOENIX_COLLECTOR_ENDPOINT')
+    PHOENIX_PROJECT_NAME: str = os.getenv('PHOENIX_PROJECT_NAME') or "newsagent/dev"
+    # The backoffice's LLM Observability page reads Phoenix through NewsAgent (src/utils/observability.py):
+    # where to read it (default: the collector address without /v1/traces), its key once login is on, and which
+    # projects to show (comma list; default every project except "default")
+    PHOENIX_URL: Optional[str] = os.getenv('PHOENIX_URL')
+    PHOENIX_API_KEY: Optional[str] = os.getenv('PHOENIX_API_KEY')
+    PHOENIX_REPORT_PROJECTS: Optional[str] = os.getenv('PHOENIX_REPORT_PROJECTS')
 
     # Model Configuration
     MODEL_NAME: str = os.getenv('MODEL_NAME', "gpt-4o-mini")

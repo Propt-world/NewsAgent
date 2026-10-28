@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import traceback
 import uuid
@@ -46,6 +47,7 @@ from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
 from src.newsroom.compose import approval_blocked_reason
 from src.newsroom.db import ensure_newsroom_indexes
+from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
 from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
 from src.newsroom.resync import nightly_repair
 from src.newsroom.router import mount_newsroom
@@ -60,7 +62,7 @@ from src.utils.image_compressor import compress_image
 from src.utils.mongo_store import get_mongo_store
 from src.utils.chunker import Chunker
 from src.utils.loader import normalize_document
-from src.utils import article_edit, article_history
+from src.utils import article_edit, article_history, observability, tracing
 import tempfile
 import shutil
 
@@ -203,6 +205,16 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
+TOPIC_QUERY_HELP = "Only articles with this category (one of the 30 real-estate topics), e.g. Off-Plan & New Launches"
+
+
+def _known_topic(topic: str) -> str:
+    """One of the 30 real-estate topics (articles' categories), or 422."""
+    if topic not in REAL_ESTATE_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Unknown topic: {topic}")
+    return topic
+
+
 async def cursor_to_list(cursor):
     return [doc async for doc in cursor]
 
@@ -329,6 +341,7 @@ async def run_scheduler_cycle():
 # FASTAPI APP
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    tracing.init_tracing()  # Phoenix: article edits, embeddings, Similar Articles (off unless PHOENIX_COLLECTOR_ENDPOINT is set)
     logger.info("Pinging MongoDB Atlas...")
     db_status = await check_database_dependency()
     if db_status == "connected":
@@ -353,6 +366,7 @@ async def lifespan(app: FastAPI):
     logger.info("--- 🗓️ Scheduler Service Started ---")
     yield
     scheduler.shutdown()
+    tracing.flush_tracing()
     await close_async_governance_clients()
     await close_async_email_client()
     await close_async_mongo_client()
@@ -824,6 +838,7 @@ async def list_articles(
     filtered_since: Optional[datetime] = Query(
         None, description="Only articles the real-estate check filtered out at or after this time (the Filtered "
                           "Out screen shows the last 30 days; older records stay so they are never processed again)."),
+    topic: Optional[str] = Query(None, max_length=100, description=TOPIC_QUERY_HELP),
 ):
     collections = get_async_scheduler_collections()
     query = {}
@@ -831,6 +846,8 @@ async def list_articles(
         query["status"] = status
     if filtered_since is not None:
         query["filtered_at"] = {"$gte": filtered_since}
+    if topic:
+        query["final_output.category"] = _known_topic(topic)
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)
@@ -967,7 +984,10 @@ async def update_article_status(
             # 3. Store in Vector DB
             if docs_to_ingest:
                 mongo_store = get_mongo_store()
-                await mongo_store.add_documents(docs_to_ingest)
+                # One trace per approval: an embedding call per piece of the article
+                with tracing.job_span("article_vectorize", tags=["embeddings"],
+                                      metadata={"article_id": article_id, "pieces": len(docs_to_ingest)}):
+                    await mongo_store.add_documents(docs_to_ingest)
                 # Note: mongo_store connection is managed globally/singleton, so strict close per request isn't typical here 
                 # unless we want to force cleanup, but get_mongo_store reuses the client.
                 logger.info(f"✅ Embeddings stored for {article_id} ({len(docs_to_ingest)} chunks)")
@@ -1261,7 +1281,12 @@ async def _article_for_edit(article_id: str) -> dict:
 async def translate_article_text(article_id: str, parts: ArticleTextParts):
     doc = await _article_for_edit(article_id)
     try:
-        return await article_edit.translate(doc, parts.model_dump())
+        # One trace per Translate click
+        with tracing.job_span("article_translate", tags=["article_edit"], metadata={"article_id": article_id},
+                              input_value=json.dumps(parts.model_dump(exclude_none=True), ensure_ascii=False)) as span:
+            arabic = await article_edit.translate(doc, parts.model_dump())
+            tracing.set_output(span, arabic)
+        return arabic
     except article_edit.EditError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except article_edit.ConfigurationError:
@@ -1282,7 +1307,12 @@ async def update_article_text(article_id: str, edit: ArticleTextUpdate, by: str 
     try:
         # Before any AI step: an article edited since the screen opened it is not overwritten
         await article_history.check_version(articles, article_id, edit.expected_version)
-        fields, regenerated = await article_edit.save(doc, edit.model_dump(exclude={"expected_version"}))
+        # One trace per Save: the SEO and social-caption steps it runs again nest under it
+        with tracing.job_span("article_edit", tags=["article_edit"], metadata={"article_id": article_id, "edited_by": by},
+                              input_value=json.dumps(edit.model_dump(exclude={"expected_version"}, exclude_none=True),
+                                                     ensure_ascii=False)) as span:
+            fields, regenerated = await article_edit.save(doc, edit.model_dump(exclude={"expected_version"}))
+            tracing.set_output(span, {"updated": sorted(fields), "regenerated": regenerated})
     except article_history.EditConflict as e:
         raise HTTPException(status_code=409, detail=str(e))
     except article_edit.EditError as e:
@@ -1337,6 +1367,17 @@ async def article_stats(since: datetime = Query(...), until: datetime = Query(..
 
 
 @app.get(
+    "/observability/summary",
+    dependencies=[Depends(verify_api_key)],
+    description="The backoffice's LLM Observability page: AI calls, tokens, cost, time and failures from Phoenix, "
+                "per service, model and kind of job, for the last `days` days. Totals and error messages only "
+                "(never prompts or answers); no AI call; cached for a minute.",
+)
+async def observability_summary(days: int = Query(1, ge=1, le=30, description="1, 7 or 30")):
+    return await observability.summary(days)
+
+
+@app.get(
     "/articles/search/text",
     response_model=PaginatedArticleResponse,
     description="Dedicated API for standard text search across articles, including full content.",
@@ -1356,16 +1397,21 @@ async def search_articles_text(
     q: str = Query(..., min_length=1, description="The text/keyword to search for"),
     page: int = Query(1, ge=1, description="Page number (starts at 1)"),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status")
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
+    topic: Optional[str] = Query(None, max_length=100, description=TOPIC_QUERY_HELP),
 ):
     """
     Standard Regex Search. Looks for the keyword in the URL, Title, Summary, and Full Content.
     """
+    if topic:
+        _known_topic(topic)
     try:
         collections = get_async_scheduler_collections()
         query = {}
         if status_filter:
             query["status"] = status_filter
+        if topic:
+            query["final_output.category"] = topic
 
         # Case-insensitive search across title, summary, url, and full content
         query["$or"] = [
@@ -1433,7 +1479,9 @@ async def search_articles_similarity(
     """
     try:
         mongo_store = get_mongo_store()
-        hits = await mongo_store.query(query_text=q, limit=min(limit * SIMILARITY_PIECES_PER_ARTICLE, 200))
+        with tracing.job_span("similarity_search", tags=["embeddings"], input_value=q,
+                              metadata={"limit": limit, "min_score": min_score}):
+            hits = await mongo_store.query(query_text=q, limit=min(limit * SIMILARITY_PIECES_PER_ARTICLE, 200))
     except Exception as e:
         logger.error(f"Similarity search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

@@ -27,6 +27,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.newsroom import backfill_trial as bt
 from src.newsroom.seed import SEED_DIR, build_plan
+from src.utils import tracing
 
 MODEL_CACHE = "model_names.jsonl"
 
@@ -113,7 +114,9 @@ async def run_model(ids, articles, cache_path: Path, max_usd: float, concurrency
                 if usage.total_cost >= max_usd:
                     stats["stopped_by_cap"] = True
                     return
-                names, error = await bf.ai_article_names(articles[article_id], prompts)
+                with tracing.job_span("backfill_trial_names", tags=["backfill", "newsroom", "trial"],
+                                      metadata={"article_id": article_id}):  # one trace per article
+                    names, error = await bf.ai_article_names(articles[article_id], prompts)
                 stats["called"] += 1
                 record = {"article_id": article_id, "names": names, "error": error}
                 stats["failed"] += bool(error)
@@ -179,6 +182,7 @@ def main() -> int:
     parser.add_argument("--max-usd", type=float, default=0.10, help="pass 2 stops starting calls at this cost")
     parser.add_argument("--concurrency", type=int, default=4)
     args = parser.parse_args()
+    tracing.init_tracing()  # Phoenix, when PHOENIX_COLLECTOR_ENDPOINT is set
 
     plan = build_plan(args.seed_dir)
     if plan.errors:

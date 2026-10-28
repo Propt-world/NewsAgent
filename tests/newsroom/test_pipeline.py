@@ -437,3 +437,109 @@ print("RESULT=" + json.dumps({{
     assert out["high"] == [["a1", "Emaar launches a tower", 0.91]]
     assert out["high_below"] == 0.75 and out["high_content"] is False
     assert out["low"] == ["a1", "a2"] and out["low_below"] is None
+
+
+def test_article_list_and_search_take_a_topic(mongo_url, db_name, sync_db):
+    """The Newsroom's Topic filter on its own: articles whose categories include the topic."""
+    script = f"""
+import json
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+db = MongoClient({mongo_url!r})[{db_name!r}]
+for i, cats in (("a1", ["Golden Visa & Residency", "Developer News"]), ("a2", ["Developer News"]), ("a3", [])):
+    db.processed_articles.insert_one({{"_id": i, "source_id": "s", "url": f"https://example.com/{{i}}", "status": "approved",
+        "final_output": {{"title": f"Dubai story {{i}}", "summary": "x", "category": cats}}}})
+from src.scheduler.main import app
+with TestClient(app) as c:
+    listed = c.get("/articles", params={{"status": "approved", "topic": "Golden Visa & Residency"}}).json()
+    found = c.get("/articles/search/text", params={{"q": "dubai", "topic": "Developer News"}}).json()
+    bad = [c.get("/articles", params={{"topic": "Financing"}}).status_code,
+           c.get("/articles/search/text", params={{"q": "dubai", "topic": "Financing"}}).status_code]
+print("RESULT=" + json.dumps({{"listed": [listed["total"], [a["_id"] for a in listed["items"]]],
+                               "found": sorted(a["_id"] for a in found["items"]), "bad": bad}}))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": ""})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["listed"] == [1, ["a1"]]
+    assert out["found"] == ["a1", "a2"]
+    assert out["bad"] == [422, 422]
+
+
+def test_scheduler_edits_and_embeddings_are_traced(mongo_url, db_name, sync_db):
+    """The real scheduler app with spans kept in memory: one trace per Translate and per Similar Articles search,
+    the embedding call (made with the OpenAI library directly) traced inside it with its model and tokens."""
+    script = f"""
+import json
+from types import SimpleNamespace
+from fastapi.testclient import TestClient
+from pymongo import MongoClient
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+db = MongoClient({mongo_url!r})[{db_name!r}]
+db.processed_articles.insert_one({{"_id": "a1", "source_id": "s", "url": "https://example.com/a1", "status": "approved",
+    "final_output": {{"title": "Emaar launches a tower", "summary": "x", "content": "y"}}}})
+
+from src.utils import tracing
+exporter = InMemorySpanExporter()
+provider = TracerProvider(); provider.add_span_processor(SimpleSpanProcessor(exporter))
+tracing._provider = provider
+
+import src.scheduler.main as main
+from src.utils import article_edit, mongo_store
+
+async def fake_translate(doc, parts):
+    return {{"title_ar": "إعمار تطلق برجا"}}
+main.article_edit.translate = fake_translate
+
+class FakeEmbeddings:
+    async def create(self, input, model):
+        return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2])], usage=SimpleNamespace(prompt_tokens=9, total_tokens=9))
+mongo_store._openai_client_instance = SimpleNamespace(embeddings=FakeEmbeddings())
+
+class NoHits:
+    async def aggregate(self, pipeline):
+        class Cursor:
+            async def to_list(self, length=None):
+                return []
+        return Cursor()
+
+with TestClient(main.app) as c:
+    store = mongo_store.get_mongo_store()
+    store.collection = NoHits()  # no Atlas vector search locally
+    main.get_mongo_store = lambda: store
+    t = c.post("/articles/a1/translate", json={{"title": "Emaar launches a tower"}})
+    s = c.get("/articles/search/similarity", params={{"q": "Emaar tower launch", "limit": 3}})
+
+spans = exporter.get_finished_spans()
+by_id = {{sp.context.span_id: sp for sp in spans}}
+def parent_name(sp):
+    return by_id[sp.parent.span_id].name if sp.parent and sp.parent.span_id in by_id else None
+emb = next(sp for sp in spans if sp.name == "openai.embeddings")
+print("RESULT=" + json.dumps({{
+    "codes": [t.status_code, s.status_code],
+    "names": sorted({{sp.name for sp in spans}}),
+    "translate_output": next(sp for sp in spans if sp.name == "article_translate").attributes.get("output.value"),
+    "embedding_parent": parent_name(emb),
+    "embedding": [emb.attributes.get("openinference.span.kind"), emb.attributes.get("llm.model_name"),
+                  emb.attributes.get("llm.token_count.prompt"), emb.attributes.get("llm.token_count.total")],
+}}, ensure_ascii=False))
+"""
+    env = {k: v for k, v in os.environ.items()}
+    env.update({"DATABASE_URL": mongo_url, "MONGO_DB_NAME": db_name, "NEWSROOM_SIGNALS_DB_NAME": db_name,
+                "NEWSROOM_ENABLED": "true", "WEBHOOK_SECRET": "", "NEWSAGENT_API_KEY": "", "MONGO_EMBEDDING_MODEL": "text-embedding-3-large"})
+    result = subprocess.run([sys.executable, "-c", script], cwd=REPO_ROOT, env=env,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-3000:]
+    out = json.loads(next(l for l in result.stdout.splitlines() if l.startswith("RESULT=")).removeprefix("RESULT="))
+    assert out["codes"] == [200, 200]
+    assert {"article_translate", "similarity_search", "openai.embeddings"} <= set(out["names"])
+    assert "إعمار" in out["translate_output"]
+    assert out["embedding_parent"] == "similarity_search"
+    assert out["embedding"] == ["LLM", "text-embedding-3-large", 9, 9]  # LLM: Phoenix counts tokens and cost

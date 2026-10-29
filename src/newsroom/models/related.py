@@ -25,12 +25,15 @@ class RelatedItem(BaseModel):
     topics: List[str] = Field(default_factory=list, description="This item's own real-estate topics")
     reason: str
     score: Optional[float] = Field(None, description="Only for similar-text matches")
+    match: Literal["strong", "text", "topic"] = Field(
+        "strong", description="strong: a shared company or specific place; text: similar text (approved only, "
+                              "fills the list when there are fewer than 5 strong matches)")
 
 
 class RelatedResponse(BaseModel):
     basis: Literal["organisations", "places", "similar", "none"] = Field(
         ..., description="What 'related' was based on: shared organisations, specific places, "
-                         "similar text (approved articles with no links), or nothing")
+                         "similar text only (no links), or nothing")
     items: List[RelatedItem]
     total: int
     limit: int

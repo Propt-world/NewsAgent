@@ -20,7 +20,7 @@ the knowledge graph keeps only confirmed links.
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 from bson import ObjectId
 
@@ -212,8 +212,7 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
         basis = "places"
     if not basis_ids:
         result = {"basis": "none", "items": [], "total": 0, "limit": limit, "skip": skip}
-        return await _with_text_matches(db, sources, source_type, source_id, own_topics, result,
-                                        location_id, days, topic)
+        return await _finish(db, sources, source_type, source_id, own_topics, result, None, location_id, days, topic)
 
     match = _visible({"entity_id": {"$in": basis_ids}})
     if location_id:
@@ -285,25 +284,156 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
             "match": "strong",
         })
     result = {"basis": basis, "items": items, "total": total, "limit": limit, "skip": skip}
-    return await _with_text_matches(db, sources, source_type, source_id, own_topics, result, location_id, days, topic)
+    return await _finish(db, sources, source_type, source_id, own_topics, result, match, location_id, days, topic)
 
 
-async def _with_text_matches(db, sources, source_type: str, source_id: str, own_topics: List[str], result: dict,
-                             location_id: Optional[str], days: Optional[int], topic: Optional[str]) -> dict:
-    """Fewer than FALLBACK_FILL strong matches (first page, no place filter): similar text fills up to it."""
-    if result["skip"] or location_id or result["total"] >= FALLBACK_FILL:
-        return result
+async def _finish(db, sources, source_type: str, source_id: str, own_topics: List[str], result: dict,
+                  strong_match: Optional[dict], location_id: Optional[str], days: Optional[int],
+                  topic: Optional[str]) -> dict:
+    """The strong matches, then: with a Topic chosen, every other approved item with that topic; otherwise, when
+    there are fewer than FALLBACK_FILL, similar text and then same-topic items up to it. Plus the topic counts."""
     if not own_topics:
         own_topics = await _own_topics(sources, source_type, source_id)
-    shown = {(i["source_type"], i["source_id"]) for i in result["items"]}
-    extra = await text_matches(db, sources, source_type, source_id, own_topics, FALLBACK_FILL - result["total"],
-                               shown, days, topic)
-    if extra:
-        result["items"] = result["items"] + extra
-        result["total"] += len(extra)
-        if result["basis"] == "none":
-            result["basis"] = "similar"
+    if topic and not location_id:
+        result = await _topic_browse(db, sources, source_type, source_id, own_topics, topic, days, result, strong_match)
+    elif not result["skip"] and not location_id and result["total"] < FALLBACK_FILL:
+        shown = {(i["source_type"], i["source_id"]) for i in result["items"]}
+        extra = await text_matches(db, sources, source_type, source_id, own_topics,
+                                   FALLBACK_FILL - result["total"], shown, days)
+        shown |= {(i["source_type"], i["source_id"]) for i in extra}
+        extra += await topic_matches(sources, source_type, source_id, own_topics,
+                                     FALLBACK_FILL - result["total"] - len(extra), shown, days)
+        if extra:
+            result["items"] = result["items"] + extra
+            result["total"] += len(extra)
+            if result["basis"] == "none":
+                result["basis"] = "similar" if any(i["match"] == "text" for i in extra) else "topics"
+    wanted = own_topics + ([topic] if topic and topic not in own_topics else [])
+    result["topic_counts"] = await topic_counts(sources, wanted, days)
     return result
+
+
+# --- Same topic: approved articles and signals sharing one of the item's 30 real-estate topics --------------
+
+TOPIC_GROUP_DAYS = 30  # the same-topic group looks this far back unless the When filter says otherwise
+
+
+def _since(days: Optional[int]) -> Optional[datetime]:
+    return datetime.now(timezone.utc) - timedelta(days=days) if days else None
+
+
+def _topic_query(source_type: str, topics: List[str], since: Optional[datetime], exclude_ids: List[Any]) -> dict:
+    if source_type == "article":
+        query = {"status": "approved", "final_output.category": {"$in": topics}}
+        date_field = "processed_at"
+    else:
+        query = {"status": "approved", "kg_topics": {"$in": topics}}
+        date_field = "generated_at"
+    if since:
+        query[date_field] = {"$gte": since}
+    if exclude_ids:
+        query["_id"] = {"$nin": exclude_ids}
+    return query
+
+
+async def _topic_rows(sources: ndb.ItemSources, topics: List[str], since: Optional[datetime], exclude: set,
+                      take: int, most_shared_first: bool) -> Tuple[List[dict], int]:
+    """(up to `take` approved articles and signals with any of `topics`, newest first, or sharing the most topics
+    first; how many there are in all), leaving out `exclude` ((source_type, source_id) pairs)."""
+    rows, total = [], 0
+    for kind, collection, field, date_field in (
+            ("article", sources.articles, "final_output.category", "processed_at"),
+            ("signal", sources.signals, "kg_topics", "generated_at")):
+        skip_ids = [i for t, i in exclude if t == kind]
+        if kind == "signal":
+            skip_ids = [ObjectId(i) for i in skip_ids if ObjectId.is_valid(i)]
+        query = _topic_query(kind, topics, since, skip_ids)
+        total += await collection.count_documents(query)
+        if take <= 0:
+            continue
+        sort = {"overlap": -1, date_field: -1, "_id": 1} if most_shared_first else {date_field: -1, "_id": 1}
+        pipeline = [
+            {"$match": query},
+            {"$addFields": {"overlap": {"$size": {"$setIntersection": [{"$ifNull": [f"${field}", []]}, topics]}}}},
+            {"$sort": sort},
+            {"$limit": take},
+            {"$project": {"embedding": 0, "final_output.content": 0}},
+        ]
+        for doc in await (await collection.aggregate(pipeline)).to_list(length=take):
+            info = _article_info(doc, "approved") if kind == "article" else _signal_info(doc)
+            stamp = doc.get(date_field)
+            rows.append({"kind": kind, "id": str(doc["_id"]), "overlap": doc["overlap"], "info": info,
+                         "sort_at": stamp if stamp is None or stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)})
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    key = (lambda r: (-r["overlap"], -(r["sort_at"] or oldest).timestamp(), r["kind"], r["id"])) if most_shared_first \
+        else (lambda r: (-(r["sort_at"] or oldest).timestamp(), r["kind"], r["id"]))
+    return sorted(rows, key=key), total
+
+
+def _topic_item(row: dict, own_topics: List[str]) -> dict:
+    info = row["info"]
+    shared = [t for t in own_topics if t in info["topics"]]
+    return {
+        "source_type": row["kind"], "source_id": row["id"], "title": info.get("title"), "snippet": info.get("snippet"),
+        "url": info.get("url"), "timestamp": info.get("timestamp"), "item_status": info.get("item_status"),
+        "shared_entities": [], "shared_places": [], "shared_topics": shared, "topics": info["topics"],
+        "reason": ("Same topic: " if len(shared) == 1 else "Same topics: ") + ", ".join(shared),
+        "match": "topic",
+    }
+
+
+async def topic_matches(sources: Optional[ndb.ItemSources], source_type: str, source_id: str,
+                        own_topics: List[str], want: int, skip_items: set, days: Optional[int] = None) -> List[dict]:
+    """Up to `want` approved articles and signals sharing at least one of the item's topics (the most shared first,
+    then the newest), from the last `days` days (TOPIC_GROUP_DAYS unless given)."""
+    if sources is None or want <= 0 or not own_topics:
+        return []
+    exclude = set(skip_items) | {(source_type, source_id)}
+    rows, _ = await _topic_rows(sources, own_topics, _since(days or TOPIC_GROUP_DAYS), exclude, want, True)
+    return [_topic_item(r, own_topics) for r in rows[:want]]
+
+
+async def _strong_keys(db, strong_match: Optional[dict], source_type: str, source_id: str) -> set:
+    if not strong_match:
+        return set()
+    rows = await (await db[ndb.ENTITY_MENTIONS].aggregate([
+        {"$match": strong_match},
+        {"$group": {"_id": {"t": "$source_type", "i": "$source_id"}}},
+    ])).to_list(length=None)
+    return {(r["_id"]["t"], r["_id"]["i"]) for r in rows} - {(source_type, source_id)}
+
+
+async def _topic_browse(db, sources, source_type: str, source_id: str, own_topics: List[str], topic: str,
+                        days: Optional[int], result: dict, strong_match: Optional[dict]) -> dict:
+    """The related list's Topic filter: the strong matches with that topic (as before), then every other approved
+    article and signal with that topic, newest first, page by page (Load more)."""
+    if sources is None:
+        return result
+    strong_total, limit, skip = result["total"], result["limit"], result["skip"]
+    exclude = await _strong_keys(db, strong_match, source_type, source_id) | {(source_type, source_id)}
+    others_skip = max(0, skip - strong_total)
+    room = limit - len(result["items"])
+    rows, others_total = await _topic_rows(sources, [topic], _since(days), exclude, others_skip + room, False)
+    extra = [_topic_item(r, own_topics if topic in own_topics else [topic]) for r in rows[others_skip:others_skip + room]]
+    result["items"] = result["items"] + extra
+    result["total"] = strong_total + others_total
+    if result["basis"] == "none" and extra:
+        result["basis"] = "topics"
+    return result
+
+
+async def topic_counts(sources: Optional[ndb.ItemSources], topics: List[str], days: Optional[int]) -> List[dict]:
+    """How many approved articles and signals have each topic (in the When window if one is chosen)."""
+    if sources is None:
+        return []
+    since, counts = _since(days), []
+    for topic in topics:
+        counts.append({
+            "topic": topic,
+            "articles": await sources.articles.count_documents(_topic_query("article", [topic], since, [])),
+            "signals": await sources.signals.count_documents(_topic_query("signal", [topic], since, [])),
+        })
+    return counts
 
 
 async def entity_history(db, entity_id: str, location_id: Optional[str] = None, before: Optional[datetime] = None,

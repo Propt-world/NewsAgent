@@ -123,7 +123,8 @@ def test_specific_place_fallback(scene):
     assert set(_ids(body)) == {"A1", "A2"}
     assert body["items"][0]["reason"] == "Shares Dubai Creek Harbour"
     # A whole city is too broad to relate items on its own.
-    assert _related(scene, item="article/A7") == {"basis": "none", "items": [], "total": 0, "limit": 20, "skip": 0}
+    assert _related(scene, item="article/A7") == {"basis": "none", "items": [], "total": 0, "limit": 20, "skip": 0,
+                                                  "topic_counts": []}
 
 
 def test_unlinked_item_has_nothing(scene):
@@ -299,8 +300,10 @@ def test_five_strong_matches_need_no_search(scene):
 
 
 def test_filters_apply_to_similar_text(similar_scene):
-    assert _ids(_related(similar_scene, item="article/S0", days=30)) == ["S2", str(G1), "S1", str(G3)]  # not S5
-    assert _ids(_related(similar_scene, item="article/S0", topic="Future Forecast")) == [str(G1), "S1", str(G3)]
+    # Not S5 (40 days old); S4 (too weak as text) comes back as a same-topic match (Developer News)
+    body = _related(similar_scene, item="article/S0", days=30)
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S2", "text"), (str(G1), "text"), ("S1", "text"), (str(G3), "text"), ("S4", "topic")]
     assert _related(similar_scene, item="article/S0", location=DUBAI)["basis"] == "none"  # place: strong only
 
 
@@ -309,15 +312,80 @@ def test_a_missing_vector_index_leaves_only_its_part_out(similar_scene, monkeypa
         raise RuntimeError("index not found")
 
     monkeypatch.setattr(related, "_signal_vector_search", broken)  # e.g. dev without the signals' index
-    assert _ids(_related(similar_scene, item="article/S0")) == ["S2", "S1", "S5"]
+    body = _related(similar_scene, item="article/S0")
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S2", "text"), ("S1", "text"), ("S5", "text"), ("S4", "topic")]  # topics still fill the list
     monkeypatch.setattr(related, "_vector_search", broken)
-    assert _related(similar_scene, item="article/S0")["basis"] == "none"
+    body = _related(similar_scene, item="article/S0")
+    assert body["basis"] == "topics" and {i["match"] for i in body["items"]} == {"topic"}
 
 
 def test_no_stored_vector_no_search(similar_scene, sync_db):
     sync_db["article_vectors"].delete_many({})
-    assert _related(similar_scene, item="article/P1")["basis"] == "none"
+    body = _related(similar_scene, item="article/P1")
+    assert body["basis"] == "topics" and {i["match"] for i in body["items"]} == {"topic"}  # no text matches
     assert similar_scene.search_calls == []
+
+
+# --- Same topic: one shared topic is enough; the Topic filter lists every approved item; counts -------------
+
+def test_same_topic_group_fills_after_text_most_shared_first(similar_scene, sync_db):
+    """An item with no links and no vector: approved items sharing its topics, most shared first, then newest."""
+    sync_db["processed_articles"].insert_one({
+        "_id": "N1", "url": "https://example.com/N1", "status": "processed", "processed_at": NOW,
+        "final_output": {"title": "New", "summary": "...", "category": ["Future Forecast", "Developer News"]}})
+    sync_db["processed_articles"].update_one({"_id": "S2"},
+                                             {"$set": {"final_output.category": ["Future Forecast", "Developer News"]}})
+    body = _related(similar_scene, item="article/N1")
+    assert body["basis"] == "topics"
+    # S2 shares both topics; then one each, newest first (G1 1 day, S0 1 day, S1 2 days, G3 2 days...); never
+    # pending (P1), rejected (S3) or the item itself; at most 5
+    assert _ids(body)[0] == "S2" and len(body["items"]) == 5
+    assert not {"N1", "P1", "S3"} & set(_ids(body))
+    first = body["items"][0]
+    assert (first["match"], first["reason"]) == ("topic", "Same topics: Future Forecast, Developer News")
+    one = next(i for i in body["items"] if i["source_id"] == str(G1))
+    assert (one["reason"], one["shared_topics"]) == ("Same topic: Future Forecast", ["Future Forecast"])
+
+
+def test_same_topic_group_only_looks_back_30_days_unless_asked(similar_scene, sync_db):
+    sync_db["processed_articles"].insert_one({
+        "_id": "N1", "url": "https://example.com/N1", "status": "processed", "processed_at": NOW,
+        "final_output": {"title": "New", "summary": "...", "category": ["Developer News"]}})
+    assert "S5" not in _ids(_related(similar_scene, item="article/N1"))  # 40 days old
+    assert "S5" in _ids(_related(similar_scene, item="article/N1", days=60))
+
+
+def test_topic_filter_lists_every_approved_item_with_it_page_by_page(similar_scene, sync_db):
+    for n in range(7):
+        sync_db["signals"].insert_one({"_id": ObjectId(), "summary_en": f"Forecast {n}", "status": "approved",
+                                       "generated_at": NOW - timedelta(days=10 + n), "evidence": [],
+                                       "kg_topics": ["Future Forecast"]})
+    first = _related(similar_scene, item="article/S0", topic="Future Forecast", limit=4)
+    # Newest first: G1, S1, G3, then the 7 older signals; 10 in all, not capped at 5
+    assert first["total"] == 10 and len(first["items"]) == 4
+    assert _ids(first)[:3] == [str(G1), "S1", str(G3)] and {i["match"] for i in first["items"]} == {"topic"}
+    second = _related(similar_scene, item="article/S0", topic="Future Forecast", limit=4, skip=4)
+    third = _related(similar_scene, item="article/S0", topic="Future Forecast", limit=4, skip=8)
+    every = _ids(first) + _ids(second) + _ids(third)
+    assert len(every) == len(set(every)) == 10  # Load more: no repeats, nothing skipped
+
+
+def test_topic_filter_keeps_strong_matches_first(similar_scene):
+    _link(similar_scene, "article", "S0", EMAAR)
+    _link(similar_scene, "article", "S1", EMAAR)
+    body = _related(similar_scene, item="article/S0", topic="Future Forecast")
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S1", "strong"), (str(G1), "topic"), (str(G3), "topic")]  # S1 once
+    assert body["total"] == 3
+
+
+def test_topic_counts_for_the_items_topics(similar_scene):
+    body = _related(similar_scene, item=f"signal/{G1}")
+    # Approved only: S1 (article); G1 and G3 (signals; G2 is a draft)
+    assert body["topic_counts"] == [{"topic": "Future Forecast", "articles": 1, "signals": 2}]
+    chosen = _related(similar_scene, item=f"signal/{G1}", topic="Developer News")["topic_counts"]
+    assert {"topic": "Developer News", "articles": 4, "signals": 0} in chosen  # S0, S2, S4, S5
 
 
 def _filtered(api, **params):

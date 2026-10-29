@@ -287,8 +287,11 @@ async def unlink_entity(source_type: SourceType, source_id: PathId, entity_id: P
 @router.get("/items/{source_type}/{source_id}/related", response_model=RelatedResponse,
             description="Other articles and signals sharing this item's confirmed companies (or, if it has none, "
                         "its specific places). Ranked by shared entities, then shared places, then shared topics "
-                        "(the 30 real-estate topics), then recency. "
-                        "An approved article with no links shows similar approved articles instead (no AI call).")
+                        "(the 30 real-estate topics), then recency. With fewer than 5 of those, approved articles "
+                        "and signals with similar text, then with a shared topic, fill the list up to 5 (match: "
+                        "text / topic). With a Topic chosen: those strong matches, then every approved item with "
+                        "that topic (Load more). topic_counts: approved articles and signals per topic. "
+                        "No AI call; nothing is saved.")
 async def related_items(
     source_type: SourceType,
     source_id: PathId,
@@ -296,7 +299,8 @@ async def related_items(
                                     description="Only items in this place (location entity id), e.g. Dubai"),
     days: Optional[int] = Query(None, ge=1, le=3650, description="Only items from the last N days"),
     topic: Optional[str] = Query(None, max_length=100,
-                                 description="Only items with this real-estate topic (one of the 30)"),
+                                 description="Items with this real-estate topic (one of the 30): the strong matches "
+                                             "with it, then every approved article and signal with it"),
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
     db=Depends(get_newsroom_db),

@@ -259,3 +259,12 @@ def test_a_stuck_article_is_retried_then_handed_back_on_sigterm(redis_server, mo
     queue, status, dlq = _queue_status_dlq(redis_server)
     assert [j.get("attempt") for j in queue] == [2]  # the shutdown hand-back does not use an attempt
     assert (status, dlq) == ("queued", 0)
+
+
+def test_the_article_time_limits_are_the_shutdown_aware_ones():
+    """Guards against a merge from production bringing the old fixed 110 s limit back (it did once: 2026-10-29)."""
+    import inspect
+
+    assert (worker.WORKFLOW_TIMEOUT_SECONDS, worker.SHUTDOWN_GRACE_SECONDS) == (180.0, 100.0)
+    source = inspect.getsource(worker)
+    assert source.count("WORKFLOW_TIMEOUT_SECONDS = ") == 1 and "asyncio.wait_for(\n" not in source

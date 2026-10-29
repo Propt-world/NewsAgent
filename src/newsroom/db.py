@@ -26,6 +26,8 @@ ENTITY_IGNORE = "entity_ignore"
 ENTITY_AUDIT = "entity_audit"
 ENTITY_SUGGESTIONS = "entity_suggestions"
 COMPOSE_RUNS = "compose_runs"
+# A small vector per pending article (article_vectors.py); read only by article id, so no other index
+ARTICLE_VECTORS = "article_vectors"
 # Short-lived locks (e.g. starting a compose job: limits are checked and the run recorded as one step)
 NEWSROOM_LOCKS = "newsroom_locks"
 

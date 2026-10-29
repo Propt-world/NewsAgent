@@ -41,6 +41,7 @@ JOBS: Dict[str, Tuple[str, str]] = {
     "article_edit": ("Article edits: Save", "newsagent"),
     "article_vectorize": ("Approved-article embeddings", "newsagent"),
     "similarity_search": ("Similar Articles searches", "newsagent"),
+    "article_match_vector": ("Pending-article vectors", "newsagent"),
     "backfill_countries": ("Backfill: countries", "newsagent"),
     "backfill_social": ("Backfill: social captions", "newsagent"),
     "backfill_names": ("Backfill: Newsroom names", "newsagent"),
@@ -53,6 +54,7 @@ JOBS: Dict[str, Tuple[str, str]] = {
     "post_analysis": ("Social posts analysed", "social-scraper"),
     "signal_refine": ("Signal Refine", "social-scraper"),
     "signal_topics": ("Topic tagging (added signals)", "social-scraper"),
+    "signal_vectors": ("Signal vectors (older signals)", "social-scraper"),
 }
 # Phoenix allows 50 named fields per request: 5 per job
 JOBS_PER_REQUEST = 9

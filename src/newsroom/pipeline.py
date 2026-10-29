@@ -7,6 +7,7 @@ article processing and review never fail because of the Newsroom.
 import logging
 from typing import Any, List, Tuple
 
+from src.newsroom import article_vectors
 from src.newsroom import links as lnk
 from src.newsroom.compose import COMPOSED_SOURCE_ID, composed_url
 from src.newsroom.desks import is_newsroom_byline
@@ -52,6 +53,7 @@ async def article_stored(url: str, newsroom_names: Any) -> None:
     Background step after the result webhook stored an article: creates entity suggestions from the
     names the pipeline found, and refreshes existing links (an article can be processed again).
     """
+    article = None
     try:
         article = await get_async_scheduler_collections().processed_articles.find_one({"url": url}, {"_id": 1})
         if article is None:
@@ -64,27 +66,37 @@ async def article_stored(url: str, newsroom_names: Any) -> None:
         await lnk.item_changed(get_newsroom_db(), get_item_sources(), "article", article["_id"])
     except Exception:
         logger.exception(f"[NEWSROOM] Article hook failed for {url}")
+        if article is None:
+            return
+    # A small vector while it waits in Pending, for text matches (never raises)
+    await article_vectors.refresh(get_newsroom_db(), get_item_sources().articles, article["_id"])
 
 
 async def article_edited(article_id: str) -> None:
-    """After an article's title is edited: its links show the new title."""
+    """After an article's title or text is edited: its links show the new title, and a pending article's vector
+    follows the new title and summary."""
     try:
         await lnk.item_changed(get_newsroom_db(), get_item_sources(), "article", article_id)
     except Exception:
         logger.exception(f"[NEWSROOM] Edit hook failed for article {article_id}")
+    await article_vectors.refresh(get_newsroom_db(), get_item_sources().articles, article_id)
 
 
 async def article_moved(article_id: str) -> None:
-    """After the Archive or Delete button moved an article: archived stays linked, deleted is hidden."""
+    """After the Archive or Delete button moved an article: archived stays linked, deleted is hidden; either way it
+    is no longer pending, so its pending vector goes."""
     try:
         await lnk.item_changed(get_newsroom_db(), get_item_sources(), "article", article_id)
     except Exception:
         logger.exception(f"[NEWSROOM] Archive/delete hook failed for article {article_id}")
+    await article_vectors.drop(get_newsroom_db(), article_id)
 
 
 async def article_status_changed(article_id: str, new_status: str) -> None:
-    """Keeps links' item status current and feeds the new-names queue on approval."""
+    """Keeps links' item status current and feeds the new-names queue on approval. The pending vector goes when the
+    article leaves Pending (approval makes the full vectors as before) and comes back if it is set to Pending again."""
     try:
         await lnk.on_item_status(get_newsroom_db(), "article", article_id, new_status)
     except Exception:
         logger.exception(f"[NEWSROOM] Status hook failed for article {article_id}")
+    await article_vectors.refresh(get_newsroom_db(), get_item_sources().articles, article_id)

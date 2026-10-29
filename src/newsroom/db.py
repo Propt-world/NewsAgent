@@ -26,11 +26,16 @@ ENTITY_IGNORE = "entity_ignore"
 ENTITY_AUDIT = "entity_audit"
 ENTITY_SUGGESTIONS = "entity_suggestions"
 COMPOSE_RUNS = "compose_runs"
+# A small vector per pending article (article_vectors.py); read only by article id, so no other index
+ARTICLE_VECTORS = "article_vectors"
 # Short-lived locks (e.g. starting a compose job: limits are checked and the run recorded as one step)
 NEWSROOM_LOCKS = "newsroom_locks"
 
 # (collection, keys, options)
 INDEX_SPECS = [
+    # NewsAgent's own articles (same database): related items' same-topic group, Topic filter and topic counts
+    ("processed_articles", [("status", ASCENDING), ("final_output.category", ASCENDING), ("processed_at", DESCENDING)],
+     {"name": "newsroom_status_topic_time"}),
     (ENTITIES, [("kind", ASCENDING), ("canonical_norm", ASCENDING)], {"unique": True, "name": "kind_canonical_unique"}),
     (ENTITIES, [("kind", ASCENDING), ("status", ASCENDING), ("type", ASCENDING)], {"name": "kind_status_type"}),
     (ENTITIES, [("parent_id", ASCENDING)], {"name": "parent"}),

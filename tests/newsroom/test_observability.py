@@ -1,5 +1,6 @@
 """LLM Observability summary from Phoenix (Phoenix answers are stand-ins; no real Phoenix or AI)."""
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -103,3 +104,126 @@ def test_cached_for_a_minute(phoenix):
     first = asyncio.run(obs.summary(1))
     asked = len(phoenix)
     assert asyncio.run(obs.summary(1)) is first and len(phoenix) == asked  # no new questions to Phoenix
+
+
+# --- Detail on demand: a job's runs and one run's steps --------------------------------------------------
+
+TRACE = "96338b63fb836cd3832a26e835114a1a"
+
+
+def _run(trace_id, at, status="OK", outcome="completed", message=None, cost=0.001):
+    return {"node": {"startTime": at, "latencyMs": 4000.0, "statusCode": status, "statusMessage": message,
+                     "cumulativeTokenCountTotal": 1500.0, "context": {"traceId": trace_id},
+                     "output": {"value": json.dumps({"outcome": outcome, "title": "Emaar tower"})},
+                     "trace": {"numSpans": 7, "costSummary": {"total": {"cost": cost}}}}}
+
+
+def _span(span_id, parent, name, start, kind="CHAIN", status="OK", message=None, attributes="{}", cost=0.0,
+          prompt=0, completion=0):
+    return {"node": {"spanId": span_id, "parentId": parent, "name": name, "spanKind": kind, "statusCode": status,
+                     "statusMessage": message, "startTime": start, "latencyMs": 100.0, "tokenCountPrompt": prompt,
+                     "tokenCountCompletion": completion, "costSummary": {"total": {"cost": cost}},
+                     "attributes": attributes}}
+
+
+@pytest.fixture
+def phoenix_detail(monkeypatch):
+    monkeypatch.setattr(settings, "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")
+    monkeypatch.setattr(settings, "PHOENIX_REPORT_PROJECTS", None)
+    asked = []
+    trace_project = {"name": "newsagent/dev"}
+    secret = json.dumps({"llm": {"model_name": "gpt-4o-mini", "input_messages": [{"message": {"content": "SECRET PROMPT"}}],
+                                 "output_messages": [{"message": {"content": "SECRET ANSWER"}}]},
+                         "input": {"value": "SECRET PROMPT"}})
+
+    async def fake_graphql(client, query, variables):
+        asked.append((query, variables))
+        if query.startswith("{ projects"):
+            return {"projects": {"edges": [{"node": {"id": "p0", "name": "default"}},
+                                           {"node": {"id": "p1", "name": "newsagent/dev"}},
+                                           {"node": {"id": "p2", "name": "social-scraper/dev"}}]}}
+        if "query Runs" in query:
+            return {"node": {"spans": {"edges": [
+                _run("a" * 32, "2026-10-28T10:00:00+00:00"),
+                _run("b" * 32, "2026-10-28T11:00:00+00:00", status="ERROR", outcome="failed",
+                     message="Took longer than 180 s (attempt 3 of 3); moved to the failed list"),
+                _run("c" * 32, "2026-10-28T09:00:00+00:00", outcome="retried")]}}}
+        if "query Trace" in query:
+            if variables["traceId"] != TRACE:
+                return {"getTraceByOtelId": None}
+            return {"getTraceByOtelId": {
+                "traceId": TRACE, "startTime": "2026-10-28T10:00:00+00:00", "latencyMs": 4000.0, "numSpans": 4,
+                "project": trace_project,
+                "costSummary": {"prompt": {"cost": 0.0009, "tokens": 1800}, "completion": {"cost": 0.0003, "tokens": 200},
+                                "total": {"cost": 0.0012, "tokens": 2000}},
+                "spans": {"edges": [
+                    _span("s3", "s2", "ChatOpenAI", "2026-10-28T10:00:01.500+00:00", kind="LLM", attributes=secret,
+                          cost=0.0012, prompt=1800, completion=200),
+                    _span("s1", None, "article_pipeline", "2026-10-28T10:00:00+00:00"),
+                    _span("s2", "s1", "summary", "2026-10-28T10:00:01+00:00"),
+                    _span("s4", "s1", "generate_seo", "2026-10-28T10:00:03+00:00", status="ERROR",
+                          message="SEO step failed")]}}}
+        raise AssertionError(query)
+
+    monkeypatch.setattr(obs, "_graphql", fake_graphql)
+    obs._detail_cache.clear()
+    return asked, trace_project
+
+
+def test_job_runs_newest_first_from_the_jobs_own_service(phoenix_detail):
+    asked, _ = phoenix_detail
+    r = asyncio.run(obs.job_runs("article_pipeline", 7, now=NOW))
+    assert r["available"] and r["label"] == "Articles processed"
+    assert [run["trace_id"][0] for run in r["runs"]] == ["b", "a", "c"]
+    failed, done, retried = r["runs"]
+    assert failed["status"] == "failed" and "moved to the failed list" in failed["error"]
+    assert (done["status"], done["outcome"], done["cost_usd"], done["tokens"], done["steps"]) == ("ok", "completed", 0.001, 1500, 7)
+    assert retried["status"] == "ok" and retried["outcome"] == "retried"  # a retried attempt is not a failure
+    runs_asked = [v for q, v in asked if "query Runs" in q]
+    assert [v["project"] for v in runs_asked] == ["p1"]  # only NewsAgent's project, never "default" or the scraper
+    assert runs_asked[0]["filter"] == 'name == "article_pipeline" and parent_id is None'
+
+
+def test_job_runs_unknown_job(phoenix_detail):
+    with pytest.raises(obs.NotFound):
+        asyncio.run(obs.job_runs("anything_else", 1, now=NOW))
+
+
+def test_trace_steps_in_order_with_depth_and_no_prompt_or_answer_text(phoenix_detail):
+    r = asyncio.run(obs.trace_steps(TRACE.upper()))
+    assert r["available"] and (r["job"], r["label"], r["service"]) == ("article_pipeline", "Articles processed", "NewsAgent (dev)")
+    assert (r["cost_usd"], r["tokens_prompt"], r["tokens_completion"], r["status"]) == (0.0012, 1800, 200, "ok")
+    assert [(s["name"], s["depth"], s["start_ms"]) for s in r["steps"]] == [
+        ("article_pipeline", 0, 0), ("summary", 1, 1000), ("ChatOpenAI", 2, 1500), ("generate_seo", 1, 3000)]
+    llm = r["steps"][2]
+    assert (llm["kind"], llm["model"], llm["tokens_prompt"], llm["tokens_completion"], llm["cost_usd"]) == (
+        "llm", "gpt-4o-mini", 1800, 200, 0.0012)
+    assert r["steps"][3]["status"] == "failed" and r["steps"][3]["error"] == "SEO step failed"
+    assert "SECRET" not in json.dumps(r)  # prompts and answers stay in Phoenix
+
+
+def test_trace_steps_refuses_bad_unknown_and_unreported_traces(phoenix_detail):
+    _, trace_project = phoenix_detail
+    for bad in ("not-a-trace", "z" * 32, "b" * 32):  # not an id, not hex, not in Phoenix
+        with pytest.raises(obs.NotFound):
+            asyncio.run(obs.trace_steps(bad))
+    trace_project["name"] = "default"  # a project the page does not report on
+    with pytest.raises(obs.NotFound):
+        asyncio.run(obs.trace_steps(TRACE))
+
+
+def test_detail_is_cached_for_a_minute(phoenix_detail):
+    asked, _ = phoenix_detail
+    first = asyncio.run(obs.trace_steps(TRACE))
+    count = len(asked)
+    assert asyncio.run(obs.trace_steps(TRACE)) is first and len(asked) == count
+
+
+def test_detail_endpoints_answer_404_for_unknown_items(phoenix_detail):
+    from fastapi import HTTPException
+    from src.scheduler.main import observability_job_runs, observability_trace
+
+    for call in (observability_job_runs("nope", 1, 20), observability_trace("not-a-trace")):
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(call)
+        assert e.value.status_code == 404

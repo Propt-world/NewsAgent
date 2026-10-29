@@ -123,7 +123,8 @@ def test_specific_place_fallback(scene):
     assert set(_ids(body)) == {"A1", "A2"}
     assert body["items"][0]["reason"] == "Shares Dubai Creek Harbour"
     # A whole city is too broad to relate items on its own.
-    assert _related(scene, item="article/A7") == {"basis": "none", "items": [], "total": 0, "limit": 20, "skip": 0}
+    assert _related(scene, item="article/A7") == {"basis": "none", "items": [], "total": 0, "limit": 20, "skip": 0,
+                                                  "topic_counts": []}
 
 
 def test_unlinked_item_has_nothing(scene):
@@ -193,88 +194,198 @@ def test_queries_use_indexes_and_stay_fast(scene, sync_db):
     assert elapsed < 3.0, f"related + history took {elapsed:.2f}s"
 
 
-# --- Similar articles (option A: approved articles only, stored fingerprints, no AI call) ---
+# --- Similar text: approved articles and signals fill the list when strong matches are few ------------------
+
+G1, G2, G3 = ObjectId(), ObjectId(), ObjectId()  # approved, draft and approved signals
+
 
 @pytest.fixture
 def similar_scene(api, sync_db, monkeypatch):
-    """Approved articles with stored chunks; the Atlas vector search itself is replaced (not available locally)."""
-    from src.newsroom import related
+    """Approved and pending articles with stored vectors, and signals; Atlas's vector search itself is replaced
+    (not available locally)."""
+    from src.newsroom import article_vectors
 
     apply_plan(build_plan(), sync_db)
     for article_id, status, days_ago in [("S0", "approved", 1), ("S1", "approved", 2), ("S2", "approved", 3),
-                                         ("S3", "rejected", 1), ("S4", "approved", 4), ("P1", "processed", 1)]:
+                                         ("S3", "rejected", 1), ("S4", "approved", 4), ("P1", "processed", 1),
+                                         ("S5", "approved", 40)]:
         sync_db["processed_articles"].insert_one({
             "_id": article_id, "url": f"https://example.com/{article_id}", "status": status,
             "processed_at": NOW - timedelta(days=days_ago),
-            "final_output": {"title": f"Article {article_id}", "summary": "..."}})
-    for article_id in ["S0", "S1", "S2", "S3", "S4"]:
+            "final_output": {"title": f"Article {article_id}", "summary": "...",
+                             "category": ["Future Forecast"] if article_id == "S1" else ["Developer News"]}})
+    for article_id in ["S0", "S1", "S2", "S3", "S4", "S5"]:
         sync_db["vectorized_articles"].insert_one({
             "_id": f"chunk-{article_id}", "embedding": [0.1, 0.2, 0.3],
             "metadata": {"url": f"https://example.com/{article_id}", "chunk_index": 0}})
+    sync_db["article_vectors"].insert_one({"_id": "P1", "vector": article_vectors.pack([0.5, 0.25, 0.125])})
+    for signal_id, status, days_ago in [(G1, "approved", 1), (G2, "draft", 1), (G3, "approved", 2)]:
+        sync_db["signals"].insert_one({"_id": signal_id, "summary_en": f"Signal {signal_id}", "status": status,
+                                       "generated_at": NOW - timedelta(days=days_ago), "evidence": [],
+                                       "kg_topics": ["Future Forecast"], "embedding": [0.9, 0.8, 0.7]})
 
     calls = []
 
-    async def fake_search(chunks, vector, limit):
-        calls.append(vector)
+    async def fake_articles(chunks, vector, limit):
+        calls.append(("articles", list(vector)))
         return [
-            {"metadata": {"url": "https://example.com/S0"}, "score": 1.0},    # itself
+            {"metadata": {"url": "https://example.com/S0"}, "score": 1.0},    # the opened article itself
             {"metadata": {"url": "https://example.com/S2"}, "score": 0.93},
             {"metadata": {"url": "https://example.com/S1"}, "score": 0.88},
-            {"metadata": {"url": "https://example.com/S1"}, "score": 0.81},   # second chunk of S1
+            {"metadata": {"url": "https://example.com/S1"}, "score": 0.81},   # second piece of S1
             {"metadata": {"url": "https://example.com/S3"}, "score": 0.95},   # rejected later
+            {"metadata": {"url": "https://example.com/P1"}, "score": 0.94},   # pending: never a match
+            {"metadata": {"url": "https://example.com/S5"}, "score": 0.85},   # 40 days old
             {"metadata": {"url": "https://example.com/S4"}, "score": 0.62},   # too weak
         ]
 
-    monkeypatch.setattr(related, "_vector_search", fake_search)
+    async def fake_signals(signals, vector, limit):
+        calls.append(("signals", list(vector)))
+        docs = {d["_id"]: d for d in sync_db["signals"].find({}, {"embedding": 0})}
+        return [{**docs[G2], "score": 0.97},   # draft: never a match
+                {**docs[G1], "score": 0.91},
+                {**docs[G3], "score": 0.83}]
+
+    monkeypatch.setattr(related, "_vector_search", fake_articles)
+    monkeypatch.setattr(related, "_signal_vector_search", fake_signals)
     api.search_calls = calls
     return api
 
 
-def test_similar_for_approved_article_without_links(similar_scene):
+def test_approved_article_without_links_gets_similar_articles_and_signals(similar_scene):
     body = _related(similar_scene, item="article/S0")
     assert body["basis"] == "similar"
-    assert _ids(body) == ["S2", "S1"]  # itself, rejected and weak matches left out; best score first
-    assert body["items"][0]["reason"] == "Similar text (score 0.93)"
-    assert body["items"][1]["score"] == 0.88
-    assert similar_scene.search_calls == [[0.1, 0.2, 0.3]]  # the stored fingerprint, no new AI call
+    # Best score first, both types; itself, rejected, pending, draft and weak matches left out; at most 5
+    assert _ids(body) == ["S2", str(G1), "S1", "S5", str(G3)]
+    first = body["items"][0]
+    assert (first["reason"], first["match"], first["score"]) == ("Similar text (score 0.93)", "text", 0.93)
+    assert body["items"][1]["source_type"] == "signal" and body["items"][1]["topics"] == ["Future Forecast"]
+    assert similar_scene.search_calls == [("articles", [0.1, 0.2, 0.3]), ("signals", [0.1, 0.2, 0.3])]  # stored
 
 
-def test_similar_articles_by_topic(similar_scene, sync_db):
-    sync_db["processed_articles"].update_one({"_id": "S1"}, {"$set": {"final_output.category": ["Future Forecast"]}})
-    body = _related(similar_scene, item="article/S0", topic="Future Forecast")
-    assert _ids(body) == ["S1"] and body["items"][0]["topics"] == ["Future Forecast"]
+def test_pending_article_uses_its_small_vector(similar_scene):
+    body = _related(similar_scene, item="article/P1")
+    assert body["basis"] == "similar" and "P1" not in _ids(body) and str(G1) in _ids(body)
+    assert similar_scene.search_calls[0] == ("articles", [0.5, 0.25, 0.125])
 
 
-def test_pending_articles_never_use_similarity(similar_scene):
-    assert _related(similar_scene, item="article/P1")["basis"] == "none"
-    assert similar_scene.search_calls == []
+def test_signal_uses_its_own_vector_and_finds_articles_too(similar_scene):
+    body = _related(similar_scene, item=f"signal/{G1}")
+    assert _ids(body) == ["S0", "S2", "S1", "S5", str(G3)]  # not itself (G1); at most 5
+    assert similar_scene.search_calls[0] == ("articles", [0.9, 0.8, 0.7])
+    assert body["items"][2]["shared_topics"] == ["Future Forecast"]  # S1
 
 
-def test_linked_articles_use_companies_not_similarity(similar_scene):
+def test_strong_matches_first_then_similar_text_up_to_five(similar_scene):
     _link(similar_scene, "article", "S0", EMAAR)
-    assert _related(similar_scene, item="article/S0")["basis"] == "organisations"
-    assert similar_scene.search_calls == []
+    _link(similar_scene, "article", "S2", EMAAR)
+    body = _related(similar_scene, item="article/S0")
+    assert body["basis"] == "organisations"
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S2", "strong"), (str(G1), "text"), ("S1", "text"), ("S5", "text"), (str(G3), "text")]  # S2 once
+    assert body["total"] == 5
 
 
-def test_place_filter_does_not_apply_to_similarity(similar_scene):
-    assert _related(similar_scene, item="article/S0", location=DUBAI)["basis"] == "none"
+def test_five_strong_matches_need_no_search(scene):
+    calls = []
+
+    async def watch(*a):
+        calls.append(a)
+        return []
+
+    from unittest.mock import patch
+    with patch.object(related, "_vector_search", watch), patch.object(related, "_signal_vector_search", watch):
+        assert _related(scene)["total"] == 5
+    assert calls == []
 
 
-def test_signals_never_use_similarity(similar_scene, sync_db):
-    signal_id = ObjectId()
-    sync_db["signals"].insert_one({"_id": signal_id, "summary_en": "x", "status": "approved", "evidence": []})
-    assert _related(similar_scene, item=f"signal/{signal_id}")["basis"] == "none"
-    assert similar_scene.search_calls == []
+def test_filters_apply_to_similar_text(similar_scene):
+    # Not S5 (40 days old); S4 (too weak as text) comes back as a same-topic match (Developer News)
+    body = _related(similar_scene, item="article/S0", days=30)
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S2", "text"), (str(G1), "text"), ("S1", "text"), (str(G3), "text"), ("S4", "topic")]
+    assert _related(similar_scene, item="article/S0", location=DUBAI)["basis"] == "none"  # place: strong only
 
 
-def test_missing_vector_index_shows_nothing(similar_scene, monkeypatch):
-    from src.newsroom import related
-
+def test_a_missing_vector_index_leaves_only_its_part_out(similar_scene, monkeypatch):
     async def broken(*_):
         raise RuntimeError("index not found")
 
+    monkeypatch.setattr(related, "_signal_vector_search", broken)  # e.g. dev without the signals' index
+    body = _related(similar_scene, item="article/S0")
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S2", "text"), ("S1", "text"), ("S5", "text"), ("S4", "topic")]  # topics still fill the list
     monkeypatch.setattr(related, "_vector_search", broken)
-    assert _related(similar_scene, item="article/S0")["basis"] == "none"
+    body = _related(similar_scene, item="article/S0")
+    assert body["basis"] == "topics" and {i["match"] for i in body["items"]} == {"topic"}
+
+
+def test_no_stored_vector_no_search(similar_scene, sync_db):
+    sync_db["article_vectors"].delete_many({})
+    body = _related(similar_scene, item="article/P1")
+    assert body["basis"] == "topics" and {i["match"] for i in body["items"]} == {"topic"}  # no text matches
+    assert similar_scene.search_calls == []
+
+
+# --- Same topic: one shared topic is enough; the Topic filter lists every approved item; counts -------------
+
+def test_same_topic_group_fills_after_text_most_shared_first(similar_scene, sync_db):
+    """An item with no links and no vector: approved items sharing its topics, most shared first, then newest."""
+    sync_db["processed_articles"].insert_one({
+        "_id": "N1", "url": "https://example.com/N1", "status": "processed", "processed_at": NOW,
+        "final_output": {"title": "New", "summary": "...", "category": ["Future Forecast", "Developer News"]}})
+    sync_db["processed_articles"].update_one({"_id": "S2"},
+                                             {"$set": {"final_output.category": ["Future Forecast", "Developer News"]}})
+    body = _related(similar_scene, item="article/N1")
+    assert body["basis"] == "topics"
+    # S2 shares both topics; then one each, newest first (G1 1 day, S0 1 day, S1 2 days, G3 2 days...); never
+    # pending (P1), rejected (S3) or the item itself; at most 5
+    assert _ids(body)[0] == "S2" and len(body["items"]) == 5
+    assert not {"N1", "P1", "S3"} & set(_ids(body))
+    first = body["items"][0]
+    assert (first["match"], first["reason"]) == ("topic", "Same topics: Future Forecast, Developer News")
+    one = next(i for i in body["items"] if i["source_id"] == str(G1))
+    assert (one["reason"], one["shared_topics"]) == ("Same topic: Future Forecast", ["Future Forecast"])
+
+
+def test_same_topic_group_only_looks_back_30_days_unless_asked(similar_scene, sync_db):
+    sync_db["processed_articles"].insert_one({
+        "_id": "N1", "url": "https://example.com/N1", "status": "processed", "processed_at": NOW,
+        "final_output": {"title": "New", "summary": "...", "category": ["Developer News"]}})
+    assert "S5" not in _ids(_related(similar_scene, item="article/N1"))  # 40 days old
+    assert "S5" in _ids(_related(similar_scene, item="article/N1", days=60))
+
+
+def test_topic_filter_lists_every_approved_item_with_it_page_by_page(similar_scene, sync_db):
+    for n in range(7):
+        sync_db["signals"].insert_one({"_id": ObjectId(), "summary_en": f"Forecast {n}", "status": "approved",
+                                       "generated_at": NOW - timedelta(days=10 + n), "evidence": [],
+                                       "kg_topics": ["Future Forecast"]})
+    first = _related(similar_scene, item="article/S0", topic="Future Forecast", limit=4)
+    # Newest first: G1, S1, G3, then the 7 older signals; 10 in all, not capped at 5
+    assert first["total"] == 10 and len(first["items"]) == 4
+    assert _ids(first)[:3] == [str(G1), "S1", str(G3)] and {i["match"] for i in first["items"]} == {"topic"}
+    second = _related(similar_scene, item="article/S0", topic="Future Forecast", limit=4, skip=4)
+    third = _related(similar_scene, item="article/S0", topic="Future Forecast", limit=4, skip=8)
+    every = _ids(first) + _ids(second) + _ids(third)
+    assert len(every) == len(set(every)) == 10  # Load more: no repeats, nothing skipped
+
+
+def test_topic_filter_keeps_strong_matches_first(similar_scene):
+    _link(similar_scene, "article", "S0", EMAAR)
+    _link(similar_scene, "article", "S1", EMAAR)
+    body = _related(similar_scene, item="article/S0", topic="Future Forecast")
+    assert [(i["source_id"], i["match"]) for i in body["items"]] == [
+        ("S1", "strong"), (str(G1), "topic"), (str(G3), "topic")]  # S1 once
+    assert body["total"] == 3
+
+
+def test_topic_counts_for_the_items_topics(similar_scene):
+    body = _related(similar_scene, item=f"signal/{G1}")
+    # Approved only: S1 (article); G1 and G3 (signals; G2 is a draft)
+    assert body["topic_counts"] == [{"topic": "Future Forecast", "articles": 1, "signals": 2}]
+    chosen = _related(similar_scene, item=f"signal/{G1}", topic="Developer News")["topic_counts"]
+    assert {"topic": "Developer News", "articles": 4, "signals": 0} in chosen  # S0, S2, S4, S5
 
 
 def _filtered(api, **params):

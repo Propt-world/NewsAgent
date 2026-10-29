@@ -99,6 +99,30 @@ def test_article_job_outcome_is_shown(trace_spans):
     assert '"outcome": "completed"' in done.attributes["output.value"] and done.status.status_code != StatusCode.ERROR
 
 
+def test_article_timeout_is_explained_and_only_the_last_attempt_fails(trace_spans, monkeypatch):
+    from src import worker
+
+    class SlowGraph:
+        async def ainvoke(self, state, config=None):
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(worker, "WORKFLOW_TIMEOUT_SECONDS", 0.01)
+    for attempts_before in (0, 2):  # the first of 3 attempts, then the last
+        try:
+            asyncio.run(worker._run_article_job(SlowGraph(), {}, {}, "job-1", "https://example.com/a",
+                                                {"attempt": attempts_before}, 3, asyncio.Event()))
+            raise AssertionError("the timeout must reach the worker, which retries or gives up")
+        except asyncio.TimeoutError:
+            pass
+    retried, last = trace_spans.get_finished_spans()
+    # A first attempt that ran out of time is tried again: not a failed job
+    assert retried.status.status_code != StatusCode.ERROR
+    assert "Took longer than 0.01 s (attempt 1 of 3); tried again" in retried.attributes["output.value"]
+    # The last attempt is a failure, with the reason instead of a blank "TimeoutError:"
+    assert last.status.status_code == StatusCode.ERROR
+    assert last.status.description == "Took longer than 0.01 s (attempt 3 of 3); moved to the failed list"
+
+
 def test_scripts_send_their_last_traces_on_exit(monkeypatch):
     """A short script exits before the batch is sent: init_tracing registers a send on exit."""
     import atexit

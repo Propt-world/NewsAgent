@@ -181,3 +181,90 @@ def test_compose_runs_beside_a_busy_article_queue_and_sigterm_hands_both_back(re
     assert started == ["run-1"]          # compose started while an article was still being processed
     assert compose == [_compose_job(1)]  # handed back on SIGTERM
     assert len(articles) == 3            # production's handling put the cut-off article back too
+
+
+# --- Article time limits: only the shutdown notice cuts an article short (real SIGTERM) ----------------
+
+def _start_worker_then_sigterm(after_seconds, stops_within):
+    """Real SIGTERM mid-article; returns whether the worker stopped by itself within `stops_within` seconds
+    (not cancelled by the test), as it must before Fargate's SIGKILL."""
+    async def scenario():
+        task = asyncio.create_task(worker.run_worker())
+        await asyncio.sleep(after_seconds)
+        os.kill(os.getpid(), signal.SIGTERM)  # what ECS sends on a Fargate Spot interruption
+        done, _ = await asyncio.wait({task}, timeout=stops_within)
+        if not done:
+            task.cancel()
+            await asyncio.wait({task})
+        return bool(done)
+    return asyncio.run(scenario())
+
+
+def _article_setup(redis_server, monkeypatch, seconds, attempt=None):
+    monkeypatch.setattr(settings, "NEWSROOM_ENABLED", "false")
+    article = type("Article", (), {"dict": lambda self: {"title": "A slow article"}, "title": "A slow article"})()
+    FakeWorkflow.graph = FakeGraph({"https://example.com/slow": {"error_message": None, "news_article": article}},
+                                   seconds=seconds)
+    monkeypatch.setattr(worker, "MainWorkflow", FakeWorkflow)
+    job = {"job_id": "job-1", "source_url": "https://example.com/slow"}
+    if attempt is not None:
+        job["attempt"] = attempt
+
+    async def push():
+        await redis_server().lpush(ARTICLES, json.dumps(job))
+    asyncio.run(push())
+    return job
+
+
+def _queue_status_dlq(redis_server):
+    async def read():
+        r = redis_server()
+        return ([json.loads(j) for j in await r.lrange(ARTICLES, 0, -1)], await r.hget("job:job-1", "status"),
+                await r.llen("test_dlq"))
+    return asyncio.run(read())
+
+
+def test_sigterm_gives_the_article_time_to_finish(redis_server, monkeypatch):
+    monkeypatch.setattr(worker, "SHUTDOWN_GRACE_SECONDS", 5)
+    _article_setup(redis_server, monkeypatch, seconds=1.0)
+    assert _start_worker_then_sigterm(0.3, stops_within=4)  # finished its article, then stopped
+    queue, status, dlq = _queue_status_dlq(redis_server)
+    assert (queue, status, dlq) == ([], "completed", 0)
+
+
+def test_sigterm_hands_back_an_article_that_cannot_finish_in_time_without_using_an_attempt(redis_server, monkeypatch):
+    monkeypatch.setattr(worker, "SHUTDOWN_GRACE_SECONDS", 0.5)
+    job = _article_setup(redis_server, monkeypatch, seconds=30, attempt=1)
+    assert _start_worker_then_sigterm(0.3, stops_within=3)  # stopped by itself after the grace, not killed
+    queue, status, dlq = _queue_status_dlq(redis_server)
+    assert queue == [job]  # back in the queue unchanged: still attempt 1, for the next worker
+    assert (status, dlq) == ("queued", 0)
+
+
+def test_a_slow_article_is_not_cut_off_without_a_shutdown_notice(redis_server, monkeypatch):
+    # Grace shorter than the article: it would be cut off if the grace applied without a notice
+    monkeypatch.setattr(worker, "SHUTDOWN_GRACE_SECONDS", 0.2)
+    _article_setup(redis_server, monkeypatch, seconds=1.0)
+    _start_worker_then_sigterm(1.5, stops_within=3)  # notice only after the article finished
+    queue, status, dlq = _queue_status_dlq(redis_server)
+    assert (queue, status, dlq) == ([], "completed", 0)
+
+
+def test_a_stuck_article_is_retried_then_handed_back_on_sigterm(redis_server, monkeypatch):
+    monkeypatch.setattr(worker, "WORKFLOW_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(worker, "SHUTDOWN_GRACE_SECONDS", 0.2)
+    _article_setup(redis_server, monkeypatch, seconds=30)
+    # Stuck at 0.5 s: retried (attempt 1), stuck again (attempt 2), then the notice arrives mid-attempt 3
+    assert _start_worker_then_sigterm(1.25, stops_within=3)
+    queue, status, dlq = _queue_status_dlq(redis_server)
+    assert [j.get("attempt") for j in queue] == [2]  # the shutdown hand-back does not use an attempt
+    assert (status, dlq) == ("queued", 0)
+
+
+def test_the_article_time_limits_are_the_shutdown_aware_ones():
+    """Guards against a merge from production bringing the old fixed 110 s limit back (it did once: 2026-10-29)."""
+    import inspect
+
+    assert (worker.WORKFLOW_TIMEOUT_SECONDS, worker.SHUTDOWN_GRACE_SECONDS) == (180.0, 100.0)
+    source = inspect.getsource(worker)
+    assert source.count("WORKFLOW_TIMEOUT_SECONDS = ") == 1 and "asyncio.wait_for(\n" not in source

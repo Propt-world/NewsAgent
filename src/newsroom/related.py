@@ -8,23 +8,27 @@ Related items:
 - An item with no organisation links falls back to its specific places
   (communities, landmarks), never whole cities or countries.
 - Ranked by number of shared entities, then place overlap, then shared topics (the 30 real-estate topics:
-  an article's categories, a signal's kg_topics), then recency. Topics only order items that are already
-  related; they never make two items related on their own ("both are off-plan" would match almost everything).
+  an article's categories, a signal's kg_topics), then recency. These strong matches are always shown.
 - Rejected, duplicated and deleted items are never shown.
 
-Similar articles (option A): an *approved* article with no links falls back to
-articles whose stored fingerprint (embedding, made at approval) is close to its
-own. No new AI call is ever made, and pending articles never use this.
+Similar text: when an item has fewer than FALLBACK_FILL strong matches, approved articles and approved signals
+whose stored vectors are close to the opened item's own fill the list up to FALLBACK_FILL, each labelled with its
+score. The opened item may be pending or approved (a pending article's small vector, article_vectors.py; an
+approved article's first stored piece; a signal's own vector). No AI call is made, and nothing is saved:
+the knowledge graph keeps only confirmed links.
 """
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
+
+from bson import ObjectId
 
 from src.configs.settings import settings
+from src.newsroom import article_vectors
 from src.newsroom import db as ndb
 from src.newsroom.entities import Invalid, NotFound
-from src.newsroom.links import _parse_date, _topics
+from src.newsroom.links import _article_info, _parse_date, _signal_info, _topics
 from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
 
 logger = logging.getLogger("newsroom")
@@ -33,6 +37,9 @@ logger = logging.getLogger("newsroom")
 HIDDEN_ITEM_STATUSES = ["rejected", "duplicated", "missing", "deleted"]
 SPECIFIC_PLACE_TYPES = ["community", "landmark"]
 SIMILAR_CANDIDATE_CHUNKS = 50
+SIMILAR_CANDIDATE_SIGNALS = 50
+# Fewer strong matches than this: similar text fills the list up to it
+FALLBACK_FILL = 5
 
 
 def _check_topic(topic: Optional[str]) -> None:
@@ -79,62 +86,108 @@ async def _vector_search(chunks, vector: List[float], limit: int) -> List[dict]:
     return await (await chunks.aggregate(pipeline)).to_list(length=limit)
 
 
-async def similar_articles(sources: ndb.ItemSources, article_id: str, days: Optional[int],
-                           limit: int, skip: int, topic: Optional[str] = None) -> Optional[dict]:
-    """Similar approved articles for an approved article, or None when this cannot apply."""
-    if sources is None or sources.chunks is None:
+async def _signal_vector_search(signals, vector: List[float], limit: int) -> List[dict]:
+    """Atlas Vector Search over signals' own vectors (the index Grok Scout's duplicate check uses; no AI call)."""
+    pipeline = [
+        {"$vectorSearch": {"index": settings.NEWSROOM_SIGNAL_VECTOR_INDEX, "path": "embedding",
+                           "queryVector": vector, "numCandidates": limit * 10, "limit": limit}},
+        {"$set": {"score": {"$meta": "vectorSearchScore"}}},
+        {"$project": {"embedding": 0}},  # the 3072 numbers are not needed back
+    ]
+    return await (await signals.aggregate(pipeline)).to_list(length=limit)
+
+
+async def _own_vector(db, sources: ndb.ItemSources, source_type: str, source_id: str) -> Optional[List[float]]:
+    """The opened item's stored vector: a signal's own; a pending article's small one; an approved article's
+    first stored piece (made at approval). None when it has none (it then gets no text matches)."""
+    if source_type == "signal":
+        if not ObjectId.is_valid(source_id):
+            return None
+        doc = await sources.signals.find_one({"_id": ObjectId(source_id)}, {"embedding": 1})
+        return list(doc["embedding"]) if doc and doc.get("embedding") else None
+    article = await sources.articles.find_one({"_id": source_id}, {"url": 1, "status": 1})
+    if article is None:
         return None
-    article = await sources.articles.find_one({"_id": article_id}, {"url": 1, "status": 1})
-    if article is None or article.get("status") != "approved" or not article.get("url"):
-        return None
-    own = await sources.chunks.find_one(
-        {"metadata.url": article["url"]}, {"embedding": 1}, sort=[("metadata.chunk_index", 1)])
-    if not own or not own.get("embedding"):
-        return None
+    if article.get("status") != article_vectors.PENDING and sources.chunks is not None and article.get("url"):
+        piece = await sources.chunks.find_one(
+            {"metadata.url": article["url"]}, {"embedding": 1}, sort=[("metadata.chunk_index", 1)])
+        if piece and piece.get("embedding"):
+            return list(piece["embedding"])
+    return await article_vectors.get(db, source_id)
+
+
+async def text_matches(db, sources: Optional[ndb.ItemSources], source_type: str, source_id: str,
+                       own_topics: List[str], want: int, skip_items: set, days: Optional[int] = None,
+                       topic: Optional[str] = None) -> List[dict]:
+    """Up to `want` approved articles and signals whose vectors are close to the opened item's (best first),
+    leaving out `skip_items` ((source_type, source_id) pairs). A missing vector index only leaves its part out."""
+    if sources is None or want <= 0:
+        return []
+    vector = await _own_vector(db, sources, source_type, source_id)
+    if not vector:
+        return []
+    since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+    floor = settings.NEWSROOM_SIMILARITY_MIN_SCORE
+    found = []  # (score, source_type, source_id, info)
+
+    if sources.chunks is not None:
+        try:
+            hits = await _vector_search(sources.chunks, vector, SIMILAR_CANDIDATE_CHUNKS)
+        except Exception as e:
+            logger.warning(f"[NEWSROOM] Similar-articles search failed: {e}")
+            hits = []
+        best = {}
+        for hit in hits:
+            url, score = (hit.get("metadata") or {}).get("url"), hit.get("score") or 0.0
+            if url and score >= floor:
+                best[url] = max(score, best.get(url, 0.0))
+        if best:
+            docs = await sources.articles.find({"url": {"$in": list(best)}, "status": "approved"}, {
+                "url": 1, "source_id": 1, "processed_at": 1, "discovered_at": 1, "final_output.title": 1,
+                "final_output.summary": 1, "final_output.published_date": 1, "final_output.category": 1,
+            }).to_list(length=None)
+            for d in docs:
+                found.append((best[d["url"]], "article", d["_id"], _article_info(d, d.get("status") or "approved")))
+
     try:
-        hits = await _vector_search(sources.chunks, own["embedding"], SIMILAR_CANDIDATE_CHUNKS)
+        hits = await _signal_vector_search(sources.signals, vector, SIMILAR_CANDIDATE_SIGNALS)
     except Exception as e:
-        # For example the vector index is missing in this environment: show nothing rather than fail.
-        logger.warning(f"[NEWSROOM] Similar-articles search failed: {e}")
-        return None
-
-    best = {}
+        logger.warning(f"[NEWSROOM] Similar-signals search failed (no vector index on signals?): {e}")
+        hits = []
     for hit in hits:
-        url = (hit.get("metadata") or {}).get("url")
         score = hit.get("score") or 0.0
-        if url and url != article["url"] and score >= settings.NEWSROOM_SIMILARITY_MIN_SCORE:
-            best[url] = max(score, best.get(url, 0.0))
-    query = {"url": {"$in": list(best)}, "status": {"$nin": HIDDEN_ITEM_STATUSES}}
-    if days:
-        query["processed_at"] = {"$gte": datetime.now(timezone.utc) - timedelta(days=days)}
-    if topic:
-        query["final_output.category"] = topic
-    docs = await sources.articles.find(query, {
-        "url": 1, "status": 1, "processed_at": 1, "discovered_at": 1,
-        "final_output.title": 1, "final_output.summary": 1, "final_output.published_date": 1,
-        "final_output.category": 1,
-    }).to_list(length=None) if best else []
+        if hit.get("status") == "approved" and score >= floor:
+            found.append((score, "signal", str(hit["_id"]), _signal_info(hit)))
 
-    rows = sorted(docs, key=lambda d: best[d["url"]], reverse=True)
-    items = []
-    for d in rows[skip:skip + limit]:
-        final = d.get("final_output") or {}
-        score = best[d["url"]]
+    items, seen = [], set(skip_items) | {(source_type, source_id)}
+    for score, kind, item_id, info in sorted(found, key=lambda f: (-f[0], f[1], f[2])):
+        if (kind, item_id) in seen:
+            continue
+        stamp = info.get("timestamp")
+        if since and (stamp is None or (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)) < since):
+            continue
+        if topic and topic not in info["topics"]:
+            continue
+        seen.add((kind, item_id))
+        shared = [t for t in own_topics if t in info["topics"]]
         items.append({
-            "source_type": "article",
-            "source_id": d["_id"],
-            "title": final.get("title"),
-            "snippet": (final.get("summary") or "")[:300],
-            "url": d["url"],
-            "timestamp": _parse_date(final.get("published_date")) or d.get("processed_at") or d.get("discovered_at"),
-            "item_status": d.get("status"),
-            "shared_entities": [],
-            "shared_places": [],
-            "topics": _topics(final.get("category")),
-            "reason": f"Similar text (score {score:.2f})",
-            "score": round(score, 4),
+            "source_type": kind, "source_id": item_id, "title": info.get("title"), "snippet": info.get("snippet"),
+            "url": info.get("url"), "timestamp": stamp, "item_status": info.get("item_status"),
+            "shared_entities": [], "shared_places": [], "shared_topics": shared, "topics": info["topics"],
+            "reason": f"Similar text (score {score:.2f})", "score": round(score, 4), "match": "text",
         })
-    return {"basis": "similar", "items": items, "total": len(rows), "limit": limit, "skip": skip}
+        if len(items) >= want:
+            break
+    return items
+
+
+async def _own_topics(sources: Optional[ndb.ItemSources], source_type: str, source_id: str) -> List[str]:
+    if sources is None:
+        return []
+    from src.newsroom.links import items_info
+
+    info = (await items_info(sources, source_type, [source_id])).get(source_id) or {}
+    return info.get("topics") or []
 
 
 async def related_items(db, source_type: str, source_id: str, location_id: Optional[str] = None,
@@ -158,12 +211,8 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
         basis_ids = [eid for eid, e in active.items() if e["kind"] == "location" and e["type"] in SPECIFIC_PLACE_TYPES]
         basis = "places"
     if not basis_ids:
-        # No confirmed links: approved articles fall back to similar text (a place filter cannot apply).
-        if source_type == "article" and not location_id:
-            similar = await similar_articles(sources, source_id, days, limit, skip, topic)
-            if similar is not None:
-                return similar
-        return {"basis": "none", "items": [], "total": 0, "limit": limit, "skip": skip}
+        result = {"basis": "none", "items": [], "total": 0, "limit": limit, "skip": skip}
+        return await _finish(db, sources, source_type, source_id, own_topics, result, None, location_id, days, topic)
 
     match = _visible({"entity_id": {"$in": basis_ids}})
     if location_id:
@@ -232,8 +281,159 @@ async def related_items(db, source_type: str, source_id: str, location_id: Optio
             "shared_topics": topics,
             "topics": row.get("topics") or [],
             "reason": reason,
+            "match": "strong",
         })
-    return {"basis": basis, "items": items, "total": total, "limit": limit, "skip": skip}
+    result = {"basis": basis, "items": items, "total": total, "limit": limit, "skip": skip}
+    return await _finish(db, sources, source_type, source_id, own_topics, result, match, location_id, days, topic)
+
+
+async def _finish(db, sources, source_type: str, source_id: str, own_topics: List[str], result: dict,
+                  strong_match: Optional[dict], location_id: Optional[str], days: Optional[int],
+                  topic: Optional[str]) -> dict:
+    """The strong matches, then: with a Topic chosen, every other approved item with that topic; otherwise, when
+    there are fewer than FALLBACK_FILL, similar text and then same-topic items up to it. Plus the topic counts."""
+    if not own_topics:
+        own_topics = await _own_topics(sources, source_type, source_id)
+    if topic and not location_id:
+        result = await _topic_browse(db, sources, source_type, source_id, own_topics, topic, days, result, strong_match)
+    elif not result["skip"] and not location_id and result["total"] < FALLBACK_FILL:
+        shown = {(i["source_type"], i["source_id"]) for i in result["items"]}
+        extra = await text_matches(db, sources, source_type, source_id, own_topics,
+                                   FALLBACK_FILL - result["total"], shown, days)
+        shown |= {(i["source_type"], i["source_id"]) for i in extra}
+        extra += await topic_matches(sources, source_type, source_id, own_topics,
+                                     FALLBACK_FILL - result["total"] - len(extra), shown, days)
+        if extra:
+            result["items"] = result["items"] + extra
+            result["total"] += len(extra)
+            if result["basis"] == "none":
+                result["basis"] = "similar" if any(i["match"] == "text" for i in extra) else "topics"
+    wanted = own_topics + ([topic] if topic and topic not in own_topics else [])
+    result["topic_counts"] = await topic_counts(sources, wanted, days)
+    return result
+
+
+# --- Same topic: approved articles and signals sharing one of the item's 30 real-estate topics --------------
+
+TOPIC_GROUP_DAYS = 30  # the same-topic group looks this far back unless the When filter says otherwise
+
+
+def _since(days: Optional[int]) -> Optional[datetime]:
+    return datetime.now(timezone.utc) - timedelta(days=days) if days else None
+
+
+def _topic_query(source_type: str, topics: List[str], since: Optional[datetime], exclude_ids: List[Any]) -> dict:
+    if source_type == "article":
+        query = {"status": "approved", "final_output.category": {"$in": topics}}
+        date_field = "processed_at"
+    else:
+        query = {"status": "approved", "kg_topics": {"$in": topics}}
+        date_field = "generated_at"
+    if since:
+        query[date_field] = {"$gte": since}
+    if exclude_ids:
+        query["_id"] = {"$nin": exclude_ids}
+    return query
+
+
+async def _topic_rows(sources: ndb.ItemSources, topics: List[str], since: Optional[datetime], exclude: set,
+                      take: int, most_shared_first: bool) -> Tuple[List[dict], int]:
+    """(up to `take` approved articles and signals with any of `topics`, newest first, or sharing the most topics
+    first; how many there are in all), leaving out `exclude` ((source_type, source_id) pairs)."""
+    rows, total = [], 0
+    for kind, collection, field, date_field in (
+            ("article", sources.articles, "final_output.category", "processed_at"),
+            ("signal", sources.signals, "kg_topics", "generated_at")):
+        skip_ids = [i for t, i in exclude if t == kind]
+        if kind == "signal":
+            skip_ids = [ObjectId(i) for i in skip_ids if ObjectId.is_valid(i)]
+        query = _topic_query(kind, topics, since, skip_ids)
+        total += await collection.count_documents(query)
+        if take <= 0:
+            continue
+        sort = {"overlap": -1, date_field: -1, "_id": 1} if most_shared_first else {date_field: -1, "_id": 1}
+        pipeline = [
+            {"$match": query},
+            {"$addFields": {"overlap": {"$size": {"$setIntersection": [{"$ifNull": [f"${field}", []]}, topics]}}}},
+            {"$sort": sort},
+            {"$limit": take},
+            {"$project": {"embedding": 0, "final_output.content": 0}},
+        ]
+        for doc in await (await collection.aggregate(pipeline)).to_list(length=take):
+            info = _article_info(doc, "approved") if kind == "article" else _signal_info(doc)
+            stamp = doc.get(date_field)
+            rows.append({"kind": kind, "id": str(doc["_id"]), "overlap": doc["overlap"], "info": info,
+                         "sort_at": stamp if stamp is None or stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)})
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    key = (lambda r: (-r["overlap"], -(r["sort_at"] or oldest).timestamp(), r["kind"], r["id"])) if most_shared_first \
+        else (lambda r: (-(r["sort_at"] or oldest).timestamp(), r["kind"], r["id"]))
+    return sorted(rows, key=key), total
+
+
+def _topic_item(row: dict, own_topics: List[str]) -> dict:
+    info = row["info"]
+    shared = [t for t in own_topics if t in info["topics"]]
+    return {
+        "source_type": row["kind"], "source_id": row["id"], "title": info.get("title"), "snippet": info.get("snippet"),
+        "url": info.get("url"), "timestamp": info.get("timestamp"), "item_status": info.get("item_status"),
+        "shared_entities": [], "shared_places": [], "shared_topics": shared, "topics": info["topics"],
+        "reason": ("Same topic: " if len(shared) == 1 else "Same topics: ") + ", ".join(shared),
+        "match": "topic",
+    }
+
+
+async def topic_matches(sources: Optional[ndb.ItemSources], source_type: str, source_id: str,
+                        own_topics: List[str], want: int, skip_items: set, days: Optional[int] = None) -> List[dict]:
+    """Up to `want` approved articles and signals sharing at least one of the item's topics (the most shared first,
+    then the newest), from the last `days` days (TOPIC_GROUP_DAYS unless given)."""
+    if sources is None or want <= 0 or not own_topics:
+        return []
+    exclude = set(skip_items) | {(source_type, source_id)}
+    rows, _ = await _topic_rows(sources, own_topics, _since(days or TOPIC_GROUP_DAYS), exclude, want, True)
+    return [_topic_item(r, own_topics) for r in rows[:want]]
+
+
+async def _strong_keys(db, strong_match: Optional[dict], source_type: str, source_id: str) -> set:
+    if not strong_match:
+        return set()
+    rows = await (await db[ndb.ENTITY_MENTIONS].aggregate([
+        {"$match": strong_match},
+        {"$group": {"_id": {"t": "$source_type", "i": "$source_id"}}},
+    ])).to_list(length=None)
+    return {(r["_id"]["t"], r["_id"]["i"]) for r in rows} - {(source_type, source_id)}
+
+
+async def _topic_browse(db, sources, source_type: str, source_id: str, own_topics: List[str], topic: str,
+                        days: Optional[int], result: dict, strong_match: Optional[dict]) -> dict:
+    """The related list's Topic filter: the strong matches with that topic (as before), then every other approved
+    article and signal with that topic, newest first, page by page (Load more)."""
+    if sources is None:
+        return result
+    strong_total, limit, skip = result["total"], result["limit"], result["skip"]
+    exclude = await _strong_keys(db, strong_match, source_type, source_id) | {(source_type, source_id)}
+    others_skip = max(0, skip - strong_total)
+    room = limit - len(result["items"])
+    rows, others_total = await _topic_rows(sources, [topic], _since(days), exclude, others_skip + room, False)
+    extra = [_topic_item(r, own_topics if topic in own_topics else [topic]) for r in rows[others_skip:others_skip + room]]
+    result["items"] = result["items"] + extra
+    result["total"] = strong_total + others_total
+    if result["basis"] == "none" and extra:
+        result["basis"] = "topics"
+    return result
+
+
+async def topic_counts(sources: Optional[ndb.ItemSources], topics: List[str], days: Optional[int]) -> List[dict]:
+    """How many approved articles and signals have each topic (in the When window if one is chosen)."""
+    if sources is None:
+        return []
+    since, counts = _since(days), []
+    for topic in topics:
+        counts.append({
+            "topic": topic,
+            "articles": await sources.articles.count_documents(_topic_query("article", [topic], since, [])),
+            "signals": await sources.signals.count_documents(_topic_query("signal", [topic], since, [])),
+        })
+    return counts
 
 
 async def entity_history(db, entity_id: str, location_id: Optional[str] = None, before: Optional[datetime] = None,

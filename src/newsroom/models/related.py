@@ -25,16 +25,28 @@ class RelatedItem(BaseModel):
     topics: List[str] = Field(default_factory=list, description="This item's own real-estate topics")
     reason: str
     score: Optional[float] = Field(None, description="Only for similar-text matches")
+    match: Literal["strong", "text", "topic"] = Field(
+        "strong", description="strong: a shared company or specific place; text: similar text; topic: a shared "
+                              "real-estate topic (text and topic: approved only, they fill the list when there are "
+                              "fewer than 5 strong matches; with a Topic chosen, every approved item with it)")
+
+
+class TopicCount(BaseModel):
+    topic: str
+    articles: int = Field(..., description="Approved articles with this topic (in the When window, if chosen)")
+    signals: int = Field(..., description="Approved signals with this topic (in the When window, if chosen)")
 
 
 class RelatedResponse(BaseModel):
-    basis: Literal["organisations", "places", "similar", "none"] = Field(
+    basis: Literal["organisations", "places", "similar", "topics", "none"] = Field(
         ..., description="What 'related' was based on: shared organisations, specific places, "
-                         "similar text (approved articles with no links), or nothing")
+                         "similar text or shared topics only (no links), or nothing")
     items: List[RelatedItem]
     total: int
     limit: int
     skip: int
+    topic_counts: List[TopicCount] = Field(default_factory=list, description="For each of the item's topics (and "
+                                           "the chosen one): approved articles and signals with it")
 
 
 class HistoryEntity(BaseModel):

@@ -195,6 +195,9 @@ scheduler = AsyncIOScheduler()
 # Semaphore to limit concurrent browser instances
 CONCURRENCY_LIMIT = asyncio.Semaphore(3)
 
+# Track active crawl tasks for graceful shutdown on SIGTERM
+_active_crawler_tasks: set[asyncio.Task] = set()
+
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -332,7 +335,9 @@ async def run_scheduler_cycle():
                     should_run = True
 
             if should_run:
-                asyncio.create_task(check_single_source(source_doc))
+                crawl_task = asyncio.create_task(check_single_source(source_doc))
+                _active_crawler_tasks.add(crawl_task)
+                crawl_task.add_done_callback(_active_crawler_tasks.discard)
 
     except Exception:
         logger.exception("Error in scheduler cycle")
@@ -365,12 +370,19 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("--- 🗓️ Scheduler Service Started ---")
     yield
-    scheduler.shutdown()
+    logger.info("--- 🛑 Scheduler Service Shutting Down (SIGTERM) ---")
+    scheduler.shutdown(wait=False)
+    if _active_crawler_tasks:
+        logger.info(f"Waiting for {len(_active_crawler_tasks)} active source crawl(s) to finish...")
+        done, pending = await asyncio.wait(_active_crawler_tasks, timeout=10.0)
+        for t in pending:
+            t.cancel()
     tracing.flush_tracing()
     await close_async_governance_clients()
     await close_async_email_client()
     await close_async_mongo_client()
     close_legacy_mongo_client()
+    logger.info("--- 🛑 Scheduler Teardown Complete ---")
 
 
 app = FastAPI(title="NewsAgent Scheduler & Archive", lifespan=lifespan, root_path="/newscheduler")
@@ -1375,6 +1387,35 @@ async def article_stats(since: datetime = Query(...), until: datetime = Query(..
 )
 async def observability_summary(days: int = Query(1, ge=1, le=30, description="1, 7 or 30")):
     return await observability.summary(days)
+
+
+@app.get(
+    "/observability/jobs/{job}/runs",
+    dependencies=[Depends(verify_api_key)],
+    description="A kind of job's latest runs from Phoenix (newest first): time, cost, tokens, status, outcome and "
+                "number of steps. Called only when a reviewer opens the job on the LLM Observability page. "
+                "No prompts or answers; no AI call; cached for a minute.",
+)
+async def observability_job_runs(job: str, days: int = Query(1, ge=1, le=30),
+                                 limit: int = Query(observability.RUNS_SHOWN, ge=1, le=50)):
+    try:
+        return await observability.job_runs(job, days, limit)
+    except observability.NotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get(
+    "/observability/traces/{trace_id}",
+    dependencies=[Depends(verify_api_key)],
+    description="One run's steps from Phoenix: name, start, time, status, error, model, tokens and cost of each step "
+                "inside it. Called only when a reviewer opens a run. No prompts or answers (they stay in Phoenix); "
+                "no AI call; cached for a minute.",
+)
+async def observability_trace(trace_id: str):
+    try:
+        return await observability.trace_steps(trace_id)
+    except observability.NotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get(

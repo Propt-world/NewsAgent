@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     NEWSROOM_SIGNALS_COLLECTION: str = os.getenv('NEWSROOM_SIGNALS_COLLECTION', 'signals')
     # "Similar articles" (approved articles only): minimum cosine score to show a match
     NEWSROOM_SIMILARITY_MIN_SCORE: float = float(os.getenv('NEWSROOM_SIMILARITY_MIN_SCORE', '0.8'))
+    # The signals' Atlas vector index (the one social_scrapper's Grok duplicate check uses)
+    NEWSROOM_SIGNAL_VECTOR_INDEX: str = os.getenv('NEWSROOM_SIGNAL_VECTOR_INDEX', 'vector_index')
+    # A small title + summary vector for each pending article (src/newsroom/article_vectors.py, ~$0.00004 each)
+    NEWSROOM_PENDING_VECTORS_ENABLED: bool = os.getenv('NEWSROOM_PENDING_VECTORS_ENABLED', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
     # Compose (Propt-authored articles and signals): model and spending limits (B1, B2)
     NEWSROOM_COMPOSE_MODEL: str = os.getenv('NEWSROOM_COMPOSE_MODEL', 'gpt-4o-mini')
     # Compose temperatures, separate from MODEL_TEMPERATURE (the normal pipeline steps).

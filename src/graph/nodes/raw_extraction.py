@@ -1,5 +1,6 @@
 import traceback
 import json
+import re
 from pprint import pprint
 from newspaper import Article
 from lxml.html import tostring
@@ -17,6 +18,46 @@ BLOCKED_URL_PATTERNS = [
     "analytics", "facebook", "twitter", "outbrain", "taboola", 
     "adsrvr", "rubicon", "criteo", "amazon-adsystem"
 ]
+
+# --- CONFIG: COOKIE / CONSENT POP-UPS ---
+# A page read before anyone accepts cookies often carries a consent pop-up; Newspaper4k can mistake it for the
+# article (zawya, 2026-10-29: the whole body and summary became the cookie policy). Pop-ups are removed with the
+# other clutter, and text that still reads like a consent notice is never used as the article.
+CONSENT_SELECTORS = [
+    "#onetrust-consent-sdk", "#onetrust-banner-sdk", "#onetrust-pc-sdk", "#CybotCookiebotDialog",
+    "#didomi-host", ".qc-cmp2-container", ".fc-consent-root", "#usercentrics-root",
+    "[id*='cookie' i]", "[class*='cookie' i]", "[id*='consent' i]", "[class*='consent' i]",
+    "[aria-label*='cookie' i]", "[aria-label*='consent' i]",
+]
+# A wrapper whose name happens to contain "cookie"/"consent" must not take the article with it
+CONSENT_ELEMENT_MAX_CHARS = 6000
+CONSENT_WORDS = re.compile(r"\bcookies?\b|\bconsent\b|tracking technolog|\bopt[- ]out\b|privacy (?:preferences|choices|settings)",
+                           re.IGNORECASE)
+CONSENT_NOTICE_MESSAGE = "The page returned a cookie/consent notice instead of the article"
+
+
+def remove_consent_elements(soup: BeautifulSoup) -> int:
+    """Removes cookie / consent pop-ups from the page before it is read. Returns how many were removed."""
+    removed = 0
+    for tag in soup.select(", ".join(CONSENT_SELECTORS)):
+        if tag.decomposed:
+            continue
+        if len(tag.get_text(" ", strip=True)) <= CONSENT_ELEMENT_MAX_CHARS:
+            tag.decompose()
+            removed += 1
+    return removed
+
+
+def is_consent_text(text: str) -> bool:
+    """True when the text is mostly a cookie / consent notice: at least half of its paragraphs are about cookies or
+    consent, and they say so several times. An article that only mentions cookies in passing is kept."""
+    paragraphs = [p for p in re.split(r"\n+", text or "") if len(p.strip()) >= 20]
+    if not paragraphs:
+        return False
+    about_consent = [p for p in paragraphs if CONSENT_WORDS.search(p)]
+    mentions = sum(len(CONSENT_WORDS.findall(p)) for p in paragraphs)
+    return len(about_consent) / len(paragraphs) >= 0.5 and mentions >= 3
+
 
 async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
     """
@@ -121,6 +162,8 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             ]
             for tag in soup.select(", ".join(noise_selectors)):
                 tag.decompose()
+            if remove_consent_elements(soup):
+                print("[NODE: RAW EXTRACTION] 🍪 Removed cookie/consent pop-up(s) before reading.")
                 
             cleaned_html_for_parsing = str(soup)
             # --- REPLACEMENT END ---
@@ -155,6 +198,12 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                 print(f"[NODE: RAW EXTRACTION] ⚠️ Newspaper4k failed ({parse_error}). Falling back...")
                 pass
 
+            # A consent notice is never the article: try the other ways instead
+            consent_seen = is_consent_text(extracted_text)
+            if consent_seen:
+                print("[NODE: RAW EXTRACTION] 🍪 Newspaper4k text is a cookie/consent notice. Trying the other ways...")
+                extracted_text = ""
+
             # --- 4. STRATEGY B: JSON-LD (Structured Data) ---
             # This is highly effective for Gulf News and modern sites
             if not extracted_text or len(extracted_text) < 200:
@@ -177,6 +226,9 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                                 clean_body = item['articleBody']
                                 # Basic cleaning of HTML entities if present
                                 clean_body = BeautifulSoup(clean_body, "lxml").get_text()
+                                if is_consent_text(clean_body):
+                                    consent_seen = True
+                                    continue
                                 
                                 if len(clean_body) > 200:
                                     extracted_text = clean_body
@@ -191,6 +243,7 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
             if not extracted_text or len(extracted_text) < 200:
                 print(f"[NODE: RAW EXTRACTION] ⚠️ JSON-LD failed. Attempting Manual Selectors...")
                 soup = BeautifulSoup(html_content, "lxml")
+                remove_consent_elements(soup)
                 
                 # Selectors specific to Gulf News and general fallbacks
                 selectors = [
@@ -211,6 +264,9 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                         # Join all found elements (Gulf News splits text into multiple divs)
                         text_parts = [e.get_text(separator=" ", strip=True) for e in elements]
                         full_text = "\n\n".join(text_parts)
+                        if is_consent_text(full_text):
+                            consent_seen = True
+                            continue
                         
                         if len(full_text) > 200:
                             extracted_text = full_text
@@ -219,6 +275,13 @@ async def raw_extraction(state: MainWorkflowState) -> MainWorkflowState:
                             break
 
             # --- 6. FINAL QUALITY CHECK ---
+            if consent_seen and (not extracted_text or len(extracted_text) < 50):
+                # Only the consent notice was found: stop here rather than write an article about cookies
+                print(f"[NODE: RAW EXTRACTION] 🍪 {CONSENT_NOTICE_MESSAGE}: {url}")
+                return state.model_copy(update={
+                    "error_message": f"{CONSENT_NOTICE_MESSAGE}. Page Title: '{page_title}'"
+                })
+
             if not extracted_text or len(extracted_text) < 50:
                 print(f"\n--- ❌ EXTRACTION FAILED DEBUG INFO ---")
                 print(f"URL: {url}")

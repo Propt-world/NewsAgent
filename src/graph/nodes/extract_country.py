@@ -2,7 +2,7 @@ import traceback
 from pprint import pprint
 from langchain_core.prompts import PromptTemplate
 from src.models.MainWorkflowState import MainWorkflowState
-from src.models.CountryExtractionModel import CountryExtractionModel
+from src.models.CountryExtractionModel import CountryAndNamesExtractionModel, CountryExtractionModel
 from src.configs.settings import settings
 
 async def extract_country(state: MainWorkflowState) -> MainWorkflowState:
@@ -26,8 +26,10 @@ async def extract_country(state: MainWorkflowState) -> MainWorkflowState:
         prompts = state.active_prompts
 
         # 2. Get LLM with structured output
+        # With the Newsroom on, the same call also returns company/project/place names.
+        output_model = CountryAndNamesExtractionModel if settings.newsroom_enabled else CountryExtractionModel
         model = settings.get_model()
-        structured_llm = model.with_structured_output(CountryExtractionModel)
+        structured_llm = model.with_structured_output(output_model)
 
         # 3. Format the prompt
         prompt = PromptTemplate.from_template(prompts.country_extraction_user)
@@ -54,8 +56,16 @@ async def extract_country(state: MainWorkflowState) -> MainWorkflowState:
         updated_article = state.news_article.model_copy(update={
             "countries": extracted_countries
         })
+        update = {"news_article": updated_article}
+        if isinstance(response, CountryAndNamesExtractionModel):
+            update["newsroom_names"] = {
+                "companies": response.companies,
+                "projects": response.projects,
+                "places": response.places,
+            }
+            pprint(f"[NODE: EXTRACT COUNTRY] Newsroom names: {update['newsroom_names']}")
 
-        return state.model_copy(update={"news_article": updated_article})
+        return state.model_copy(update=update)
 
     except Exception as e:
         pprint(f"[NODE: EXTRACT COUNTRY] Error: {e}")

@@ -10,15 +10,105 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from src.configs.settings import settings
 from src.graph.graph import MainWorkflow
+from src.graph.nodes.check_real_estate import is_skipped
 from src.graph.nodes.load_agent_configuration import close_async_config_client
 from src.models.MainWorkflowState import MainWorkflowState
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
+from src.utils import tracing
 
-# Spot grace period execution budget (seconds)
-# Fargate Spot gives 120s from SIGTERM to SIGKILL. We limit workflow execution to 110s
-# to leave 10s for DB/Redis status updates, re-queueing, and clean resource teardown.
-WORKFLOW_TIMEOUT_SECONDS = 110.0
+# Fargate Spot gives 120s from SIGTERM to SIGKILL. An article is only cut short when that notice arrives:
+# it then has SHUTDOWN_GRACE_SECONDS to finish, or it is handed back to the queue (not a failed attempt),
+# leaving 20s for DB/Redis status updates, re-queueing, and clean resource teardown.
+SHUTDOWN_GRACE_SECONDS = 100.0
+# Without a notice an article runs until it finishes; this only stops a stuck one (a site or browser that
+# never answers), which is then retried (max_retries attempts) as before.
+WORKFLOW_TIMEOUT_SECONDS = 180.0
+
+
+def _trace_article_outcome(span, final_state) -> None:
+    """How the article job ended, at the top of its trace (a logic failure is not an exception)."""
+    error_message = final_state.get("error_message")
+    article = final_state.get("news_article")
+    title = getattr(article, "title", None) if article is not None else None
+    if error_message:
+        tracing.set_output(span, {"outcome": "failed", "error": error_message})
+        tracing.mark_failed(span, error_message)
+    elif is_skipped(final_state):
+        tracing.set_output(span, {"outcome": "skipped: not real estate", "check": final_state.get("real_estate_check")})
+    else:
+        tracing.set_output(span, {"outcome": "completed", "title": title})
+
+
+def _trace_timeout(span, attempt: int, max_retries: int) -> None:
+    """An attempt that ran out of time, at the top of its trace. Only the last attempt is a failure; an
+    earlier one is tried again (it usually succeeds), so it is not counted as a failed job."""
+    note = f"Took longer than {WORKFLOW_TIMEOUT_SECONDS:g} s (attempt {attempt} of {max_retries})"
+    if attempt >= max_retries:
+        note += "; moved to the failed list"
+        tracing.set_output(span, {"outcome": "failed", "error": note})
+        tracing.mark_failed(span, note)
+    else:
+        tracing.set_output(span, {"outcome": "retried", "note": note + "; tried again"})
+
+
+STUCK, HANDED_BACK = "stuck", "handed back"
+
+
+async def _workflow_until_deadline(work_coro, shutdown_requested: asyncio.Event):
+    """Runs the workflow until it finishes, (final_state, None); or until WORKFLOW_TIMEOUT_SECONDS, (None, STUCK);
+    or, once the shutdown notice arrives, for at most SHUTDOWN_GRACE_SECONDS more, (None, HANDED_BACK)."""
+    loop = asyncio.get_running_loop()
+    stuck_at = loop.time() + WORKFLOW_TIMEOUT_SECONDS
+    work = asyncio.ensure_future(work_coro)
+    notice = asyncio.ensure_future(shutdown_requested.wait())
+    try:
+        await asyncio.wait({work, notice}, timeout=WORKFLOW_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        if not work.done() and notice.done():
+            print(f"[WORKER] Shutdown notice during an article: up to {SHUTDOWN_GRACE_SECONDS:g}s to finish it...")
+            deadline = min(stuck_at, loop.time() + SHUTDOWN_GRACE_SECONDS)
+            await asyncio.wait({work}, timeout=max(0.0, deadline - loop.time()))
+            if not work.done():
+                return None, HANDED_BACK
+        if not work.done():
+            return None, STUCK
+        return work.result(), None
+    finally:
+        notice.cancel()
+        if not work.done():
+            work.cancel()
+            await asyncio.wait({work})
+
+
+async def _run_article_job(app_graph, initial_state, run_config, job_id, source_url, job_data, max_retries,
+                           shutdown_requested: asyncio.Event):
+    """
+    One attempt of the article workflow under its own trace (every step and AI call nests under it, with the
+    totals at the top). The trace says how it ended before the worker's own handling takes over:
+    - stuck (WORKFLOW_TIMEOUT_SECONDS): raises asyncio.TimeoutError; the worker retries it or moves it to the
+      failed list.
+    - not finished within SHUTDOWN_GRACE_SECONDS of the shutdown notice: raises asyncio.CancelledError, so the
+      worker's shutdown handling puts the job back in the queue unchanged (no attempt used) and stops.
+    """
+    attempt = job_data.get("attempt", 0) + 1
+    with tracing.job_span("article_pipeline", input_value=source_url, tags=["article"],
+                          metadata={"job_id": job_id, "source_url": source_url,
+                                    "attempt": job_data.get("attempt", 0)}) as job_trace:
+        final_state, cut_short = await _workflow_until_deadline(
+            app_graph.ainvoke(initial_state, config=run_config), shutdown_requested)
+        if cut_short == STUCK:
+            _trace_timeout(job_trace, attempt, max_retries)
+        elif cut_short == HANDED_BACK:
+            tracing.set_output(job_trace, {"outcome": "handed back", "note": (
+                f"Shutdown notice (Fargate Spot): not finished within {SHUTDOWN_GRACE_SECONDS:g} s, "
+                "put back in the queue for the next worker")})
+        else:
+            _trace_article_outcome(job_trace, final_state)
+    if cut_short == STUCK:
+        raise asyncio.TimeoutError()
+    if cut_short == HANDED_BACK:
+        raise asyncio.CancelledError()
+    return final_state
 
 
 async def update_job_status(r, job_id, status, result=None, error=None):
@@ -37,6 +127,89 @@ async def update_job_status(r, job_id, status, result=None, error=None):
         pprint(f"[REDIS] Job {job_id} -> {status}")
     except Exception as e:
         print(f"[ERROR] Failed to update Redis status: {e}")
+
+
+COMPOSE_POLL_SECONDS = 5
+
+
+async def compose_loop(shutdown_requested: asyncio.Event) -> None:
+    """
+    Newsroom compose jobs: their own queue and listener, so they never wait behind article jobs.
+    A job is taken from Redis only when a slot is free (waiting jobs stay in Redis). It follows the
+    worker's shutdown signal: after SIGTERM no new compose job is taken and running ones are handed
+    back to the front of the queue at once (they take minutes, longer than the Spot notice).
+    Uses its own Redis connection so the hand-back never depends on the article loop's teardown.
+    """
+    from src.newsroom.compose_worker import REQUEUE, run_compose_job
+    from src.newsroom.status import heartbeat_loop
+
+    queue = settings.NEWSROOM_COMPOSE_QUEUE
+    slots = asyncio.Semaphore(max(1, settings.NEWSROOM_COMPOSE_CONCURRENT))
+    running: dict = {}  # task -> raw job
+    r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    print(f"--- Listening on Queue: {queue} (Newsroom compose, {settings.NEWSROOM_COMPOSE_CONCURRENT} at once) ---")
+    # Reports in every 30 s, so the backoffice and CloudWatch notice a missing compose worker.
+    heartbeat = asyncio.create_task(heartbeat_loop(r, shutdown_requested))
+
+    def finished(task: asyncio.Task) -> None:
+        running.pop(task, None)
+        slots.release()
+
+    try:
+        while not shutdown_requested.is_set():
+            held = False  # a slot this loop holds that no job has taken over yet
+            try:
+                # Wait for a free slot, but keep watching for the shutdown signal.
+                while slots.locked() and not shutdown_requested.is_set():
+                    await asyncio.sleep(0.2)
+                if shutdown_requested.is_set():
+                    break
+                await slots.acquire()
+                held = True
+                # A short wait, never cancelled midway, so a job Redis hands over cannot be lost;
+                # the shutdown signal is checked at least every COMPOSE_POLL_SECONDS.
+                result = await r.blpop(queue, timeout=COMPOSE_POLL_SECONDS)
+                if not result:
+                    continue
+                _, job_data_raw = result
+                if shutdown_requested.is_set():
+                    await r.lpush(queue, job_data_raw)  # taken just as the signal arrived: hand it back
+                    break
+                run_id = json.loads(job_data_raw).get("run_id")
+                task = asyncio.create_task(run_compose_job(run_id))
+                running[task] = job_data_raw
+                task.add_done_callback(finished)
+                held = False  # the job releases it when done
+            except RedisConnectionError:
+                print("[ERROR] Compose: lost connection to Redis. Retrying in 5s...")
+                await asyncio.sleep(5)
+            except Exception as e:
+                print(f"[ERROR] Compose loop error: {e}")
+                traceback.print_exc()
+                await asyncio.sleep(1)
+            finally:
+                if held:
+                    slots.release()
+    finally:
+        heartbeat.cancel()
+        # Shutdown (or the worker's final cancellation): hand back every compose job still running.
+        for task in list(running):
+            task.cancel()
+        for task, job_data_raw in list(running.items()):
+            try:
+                outcome = await task
+            except BaseException:
+                outcome = None
+            if outcome == REQUEUE:
+                try:
+                    await r.lpush(queue, job_data_raw)
+                    print(f"[NEWSROOM] Compose job handed back to the queue: {job_data_raw}")
+                except Exception as e:
+                    print(f"[NEWSROOM] Could not hand back compose job {job_data_raw}: {e}")
+        try:
+            await r.aclose()
+        except Exception:
+            pass
 
 
 async def run_worker():
@@ -75,8 +248,12 @@ async def run_worker():
         return
 
     try:
+        tracing.init_tracing()  # Phoenix, beside Opik while both run (off unless PHOENIX_COLLECTOR_ENDPOINT is set)
         workflow_builder = MainWorkflow()
         app_graph = workflow_builder.create_workflow()
+
+        # Newsroom compose jobs run beside article jobs and stop with the same shutdown signal.
+        compose_listener = asyncio.create_task(compose_loop(shutdown_requested)) if settings.newsroom_enabled else None
 
         opik_tracer = None
         if settings.OPIK_API_KEY:
@@ -136,6 +313,7 @@ async def run_worker():
                 initial_state = MainWorkflowState(
                     source_url=source_url,
                     max_retries=max_retries,
+                    check_real_estate=bool(job_data.get("check_real_estate", False)),
                 )
 
                 try:
@@ -143,14 +321,8 @@ async def run_worker():
                     if opik_tracer:
                         run_config["callbacks"] = [opik_tracer]
 
-                    # Execute workflow with timeout to guarantee room for graceful Spot teardown
-                    final_state = await asyncio.wait_for(
-                        app_graph.ainvoke(
-                            initial_state,
-                            config=run_config,
-                        ),
-                        timeout=WORKFLOW_TIMEOUT_SECONDS,
-                    )
+                    final_state = await _run_article_job(app_graph, initial_state, run_config, job_id,
+                                                         source_url, job_data, max_retries, shutdown_requested)
 
                     error_message = final_state.get("error_message")
 
@@ -166,6 +338,10 @@ async def run_worker():
                             source_url=source_url,
                             error_details=error_message,
                         )
+                    elif is_skipped(final_state):
+                        # Not a failure: the article was judged not to be real estate (no email, no dead-letter queue).
+                        pprint(f"[JOB {job_id}] Skipped: not real estate.")
+                        await update_job_status(r, job_id, "skipped", result=final_state.get("real_estate_check"))
                     else:
                         pprint(f"[JOB {job_id}] Finished successfully.")
                         article_data = final_state.get("news_article").dict()
@@ -250,6 +426,7 @@ async def run_worker():
         await close_async_governance_clients()
         if r is not None:
             await r.aclose()
+        tracing.flush_tracing()  # the last traces, before the container stops
         print("[WORKER] Worker shutdown complete.")
 
 

@@ -8,10 +8,12 @@ class SeoLLMOutput(BaseModel):
         ...,
         description="Original SEO-compatible display title for the article, max 75 chars"
     )
+    h1: str = Field(..., description="Natural H1 headline, 40-80 characters")
     meta_title: str = Field(..., description="SEO optimized title, max 60 chars")
     meta_description: str = Field(..., description="SEO optimized description, max 160 chars")
     slug: str = Field(..., description="URL-friendly slug")
-    primary_keywords: List[str] = Field(..., description="3-5 focus keywords")
+    primary_keyword: str = Field(..., description="The single main search term for the article")
+    primary_keywords: List[str] = Field(..., description="3-5 focus keywords, including the primary keyword")
 
     # Social Meta Tags
     og_title: str = Field(..., description="Open Graph Title")

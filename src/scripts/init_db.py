@@ -10,6 +10,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from src.db.enums import PromptStatus
 from src.configs.settings import settings
+from src.newsroom.prompts import NEWSROOM_PROMPTS
+from src.graph.nodes.check_real_estate import REAL_ESTATE_CHECK_PROMPTS
 
 PROMPT_VERSION = "v1.0"
 
@@ -18,10 +20,23 @@ INITIAL_DATA = [
     # --- 1. SUMMARY GENERATOR ---
     {
         "name": "summary_system",
-        "content": """You are an expert news summarizer. Your goal is to create a concise,
-accurate summary of a news article in less than 100 words.
-You must not change the tone, add any information (hallucinate),
-or alter the semantic meaning of the original text.""",
+        "content": """You are an expert news summarizer. Your goal is to create an accurate summary of a news article in {summary_min_words}-{summary_max_words} words (never fewer than {summary_min_words}), written as {summary_sentences} sentences of about 20-22 words each.
+
+The summary serves two purposes: a quick on-screen read, and audio playback through the app's listen feature (text-to-speech). Write it to be heard as well as read.
+
+TTS FORMATTING RULES:
+1. Plain flowing prose only: no bullet points, markdown, headings, emojis, or special characters (the usual symbols in figures, such as $ and %, are fine).
+2. Short, declarative sentences with a natural spoken rhythm.
+3. Write numbers, years, dates, amounts, and percentages with digits and their usual symbols and short forms, as the article does (e.g., "$5 billion", "AED2.1 trillion", "45%", "2030", "12,000 sq ft", "October 18"). Never spell numbers out as words. Always use the "%" sign for percentages; never write "percent".
+4. Keep common acronyms and short forms as the article uses them (e.g., "ROI", "UAE").
+5. Avoid parentheses, slashes, and mid-sentence asides.
+
+CONTENT RULES:
+1. Lead with the core news event in the first sentence.
+2. You must not change the tone, add any information (hallucinate), or alter the semantic meaning of the original text.
+3. Copy every number, amount, percentage, date, and year exactly as the article gives it, attached to the same thing and period. Never change, round, or guess a figure or a year.
+4. Prioritise concrete facts: every key figure, name, place, and date the article gives. Keep descriptive or marketing language to a minimum.
+5. If the article is too short to fill {summary_min_words} words, write as much as its facts allow; never pad, repeat, or add information to reach the length.""",
         "input_variables": [],
         "description": "System instruction for the summarizer."
     },
@@ -38,6 +53,8 @@ or alter the semantic meaning of the original text.""",
     {
         "name": "summary_retry_user",
         "content": """Your previous summary was rejected. Please regenerate it to fix the issue.
+
+Remember the hard constraints: {summary_min_words}-{summary_max_words} words (never fewer than {summary_min_words}) in {summary_sentences} sentences of about 20-22 words each, the key facts (figures, names, places, dates) before description, plain flowing prose written to be heard as well as read, numbers, years, and dates written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"), never spelled out as words, the "%" sign rather than "percent", every figure, date, and year exactly as in the article, and no bullets, markdown, emojis, or special characters.
 
 FEEDBACK:
 {feedback}
@@ -59,11 +76,15 @@ You will score the summary on two metrics:
 1.  **Semantic Score (0.0-10.0):** How semantically similar is the summary to the original?
 2.  **Tone Score (0.0-10.0):** How well does the summary's tone match the original article?
 
+You will also run two checks:
+-   **Figures Check (pass/fail):** Go through every number, amount, percentage, date, and year in the summary and find it in the article. Each must appear in the article with the same value and refer to the same thing and period. Any changed, rounded, invented, or misattributed figure fails this check, including a wrong year (e.g., "2023" when the article says "2026").
+-   **Format Check (pass/fail):** The summary is {summary_min_words}-{summary_max_words} words (the word count is also checked separately). It is written as plain flowing prose with no bullets, markdown, emojis, or special characters (the usual symbols in figures, such as $ and %, are allowed), and numbers, years, and dates are written with digits and their usual symbols and short forms ("$5 billion", "45%", "2030"). Numbers spelled out as words (e.g., "two thousand thirty") and "percent" written instead of "%" fail this check. Set format_check_passed to the result of this check.
+
 You will then decide if the summary is valid:
--   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND zero hallucinations.
+-   **is_valid (boolean):** Set to 'true' ONLY if Semantic Score >= 8.0 AND Tone Score >= 7.0 AND the Figures Check passes AND the Format Check passes AND zero hallucinations.
 -   Otherwise, set to 'false'.
 
-Finally, provide feedback. If 'is_valid' is 'false', provide actionable feedback.""",
+Finally, provide feedback. If 'is_valid' is 'false', provide actionable feedback: name each wrong figure with the article's correct value, and say which key facts of the article (figures, names, places, dates) are missing.""",
         "input_variables": [],
         "description": "System instruction for the critic/validator."
     },
@@ -211,14 +232,27 @@ You MUST choose from the following predefined "Knowledge Base":
         "content": """You are an expert SEO Meta Data Extractor.
 Your task is to read news content and generate optimized metadata.
 
-RULES:
+OUTPUT FIELDS:
 1. Article Title: Create an original display headline, max 75 chars, that accurately reflects the article topic without copying the source title.
-2. SEO Meta Title: Max 60 chars, distinct from the source title and article title when possible, no keyword stuffing.
-3. SEO Meta Description: Max 160 chars, natural keyword placement.
-4. Slug: Max 7-9 relevant words, lowercase, hyphen-separated.
-5. Keywords: 3-5 strictly based on content.
-6. Tone: Neutral, authoritative (BBC/Reuters style).
-7. Avoid clickbait, hype, promotional wording, and unsupported claims.
+2. H1: Exactly one H1 of 40-80 characters. Same topic and intent as the SEO Meta Title but not a word-for-word copy; write a natural variation in news-headline style.
+3. SEO Meta Title: 50-60 characters. Primary keyword near the beginning. Reads like a news headline, not a blog title or marketing copy. Distinct from the source title and the Article Title. Punctuation sparingly: a colon, dash, or pipe only when it improves readability. Question-style titles only when the article genuinely answers the question.
+4. SEO Meta Description: 140-160 characters. Front-load the key information in the first 120 characters. Say what happened and why it matters in one or two tight sentences. Complement the SEO Meta Title; never repeat it word for word. Primary keyword near the front; one secondary keyword only if it fits naturally. Its job is to earn the click.
+5. Slug: Max 7-9 relevant words, lowercase, hyphen-separated.
+6. Primary Keyword: The single main search term for the article. Use it exactly once in each of the Meta Title, Meta Description, and H1, near the front, worded naturally. No stuffing or repetition.
+7. Keywords: 3-5 strictly based on content, including the Primary Keyword.
+
+UNIVERSAL RULES (apply to the Article Title, H1, Meta Title, and Meta Description):
+1. Accuracy first: reflect the article exactly; never exaggerate or mislead.
+2. Unique every time: never reuse or duplicate metadata across articles.
+3. Match the search intent: breaking news, update, analysis, guide, opinion, or interview.
+4. Name the specifics: the exact event, company, person, product, or location central to the story.
+5. Active voice; concrete over vague.
+6. Timing terms ("2026", "Today", "Live Updates") only when they add real context or search value.
+7. Region-fit language: terminology a GCC (UAE / Saudi / Qatar) reader actually searches and uses.
+8. No clickbait: never use "You Won't Believe", "Shocking", "Must See", "Must Read", or similar.
+9. No filler phrases: avoid "Everything You Need to Know", "Read More", "Learn More".
+10. Clean mechanics: no emojis, no excessive special characters, perfect grammar, spelling, and punctuation.
+11. Tone: Neutral, authoritative (BBC/Reuters style).
 
 Do NOT invent information. Optimized for Search Engines.""",
         "input_variables": [],
@@ -237,7 +271,7 @@ Do NOT invent information. Optimized for Search Engines.""",
 ---CONTENT SNIPPET---
 {content_snippet}
 
-Generate a unique article title suitable for our publication, plus SEO metadata. The article title must preserve the factual meaning of the source title while using original wording.""",
+Generate a unique article title suitable for our publication, plus the H1 and SEO metadata. The article title must preserve the factual meaning of the source title while using original wording.""",
         "input_variables": ["title", "summary", "content_snippet"],
         "description": "User prompt for SEO metadata."
     },
@@ -254,7 +288,14 @@ RULES:
 3. If no specific country is relevant (e.g., general tech news), return an empty list.
 4. Output must be a list of country names in English.
 5. Do not include regions (like "Middle East") unless a specific country is not applicable.
-6. Normalize country names (e.g., "UAE" -> "United Arab Emirates", "US" -> "United States").""",
+6. Normalize country names (e.g., "UAE" -> "United Arab Emirates", "US" -> "United States").
+
+NAMES (only when the response has the fields companies, projects and places):
+7. companies: organisations the article is about (developers, investors, banks, government bodies, brokers), written exactly as in the article. Do not shorten, expand, translate or correct names.
+8. projects: named real-estate projects or developments, written exactly as in the article.
+9. places: cities, emirates, districts and communities, written exactly as in the article. Countries belong only in countries.
+10. Never include people, websites, social media handles, or generic phrases (for example "Dubai developers").
+11. Return empty lists when nothing is named. Never guess or invent names.""",
         "input_variables": [],
         "description": "System instruction for country extraction."
     },
@@ -278,7 +319,7 @@ RULES:
     {
         "name": "content_enrichment_system",
         "content": """You are an impartial real estate market editor.
-Your task is to write a single contextual paragraph for a section titled "Why this matters".
+Your task is to write a contextual insight of {wtm_min_words}-{wtm_max_words} words (never fewer than {wtm_min_words}), as one paragraph of {wtm_sentences} sentences of about 20-22 words each, for a section titled "Why this matters".
 
 RULES:
 1. Be thoughtful, neutral, and evidence-aware.
@@ -286,7 +327,8 @@ RULES:
 3. Do not hype the story, make investment recommendations, or imply certainty beyond the evidence.
 4. Do not invent statistics, forecasts, company claims, or market movements.
 5. Distinguish broad context from confirmed article facts.
-6. Do not include the section heading in the response.""",
+6. Do not include the section heading in the response.
+7. Write {wtm_min_words}-{wtm_max_words} words in {wtm_sentences} sentences of about 20-22 words each, as plain prose: one paragraph, no bullets or headings. Do not repeat the summary; explain the significance.""",
         "input_variables": [],
         "description": "System instruction for the Why this matters content enrichment section."
     },
@@ -315,76 +357,13 @@ RULES:
 ---END CONTEXTUAL SOURCES---
 
 REQUIREMENTS:
-1. Write one paragraph only, 80-120 words.
-2. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
-3. Include a contextual reference from the provided sources when it is relevant.
-4. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
-5. Avoid promotional language and avoid direct financial advice.""",
-        "input_variables": [
-            "title",
-            "summary",
-            "categories",
-            "countries",
-            "article_excerpt",
-            "contextual_sources",
-        ],
-        "description": "User prompt for the Why this matters content enrichment section."
-    },
-
-    # --- 9. ARABIC TRANSLATION ---
-    {
-        "name": "content_enrichment_system",
-        "content": """You are an impartial real estate market editor.
-Your task is to write a single contextual paragraph for a section titled "Why this matters".
-
-RULES:
-1. Be thoughtful, neutral, and evidence-aware.
-2. Use the article facts first, then the supplied contextual sources when useful.
-3. Do not hype the story, make investment recommendations, or imply certainty beyond the evidence.
-4. Do not invent statistics, forecasts, company claims, or market movements.
-5. Distinguish broad context from confirmed article facts.
-6. Do not include the section heading in the response.""",
-        "input_variables": [],
-        "description": "System instruction for the Why this matters content enrichment section."
-    },
-    {
-        "name": "content_enrichment_user",
-        "content": """Create the "Why this matters" paragraph for this article.
-
----TITLE---
-{title}
-
----SUMMARY---
-{summary}
-
----CATEGORIES---
-{categories}
-
----COUNTRIES---
-{countries}
-
----ARTICLE EXCERPT---
-{article_excerpt}
----END ARTICLE EXCERPT---
-
----CONTEXTUAL SOURCES---
-{contextual_sources}
----END CONTEXTUAL SOURCES---
-
-REQUIREMENTS:
-1. Write one paragraph only, 80-120 words.
-2. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
-3. Include a contextual reference from the provided sources when it is relevant.
-4. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
-5. Avoid promotional language and avoid direct financial advice.""",
-        "input_variables": [
-            "title",
-            "summary",
-            "categories",
-            "countries",
-            "article_excerpt",
-            "contextual_sources",
-        ],
+1. Write {wtm_min_words}-{wtm_max_words} words (never fewer than {wtm_min_words}) as one paragraph of {wtm_sentences} sentences of about 20-22 words each.
+2. Do not repeat the summary: add the context and significance it does not give.
+3. Explain the broader relevance for readers interested in real estate, development, investment climate, regulation, infrastructure, or urban change.
+4. Include a contextual reference from the provided sources when it is relevant.
+5. If sources are weak or unavailable, stay limited to cautious implications from the article itself.
+6. Avoid promotional language and avoid direct financial advice.""",
+        "input_variables": ["title", "summary", "categories", "countries", "article_excerpt", "contextual_sources"],
         "description": "User prompt for the Why this matters content enrichment section."
     },
 
@@ -397,8 +376,10 @@ Your task is to translate real estate news articles from English to Arabic.
 RULES:
 1. Maintain a professional, journalistic tone (similar to Al Arabiya / Asharq Business).
 2. Translate specific real estate terminology accurately (e.g., "Off-plan", "Freehold", "ROI").
-3. Do not summarize; provide a faithful, full translation of the content.
-4. Ensure the Arabic text flows naturally and is grammatically correct.""",
+3. Do not summarize; provide a faithful, full translation of every section. This includes the summary: translate it in full, sentence by sentence, and never shorten it or leave out any sentence, figure, name, or quote. The Arabic summary must cover everything the English summary says.
+4. Ensure the Arabic text flows naturally and is grammatically correct.
+5. Translate every provided section, including the "Why this matters" paragraph, in full.
+6. The Arabic summary is played aloud through the app's text-to-speech feature: keep numbers, years, and percentages as digits with their usual symbols, as in the English text (e.g., "5 مليارات دولار", "45%", "2030"), never spell numbers out as words, and use a natural spoken rhythm (a long English sentence may become two Arabic sentences, but the whole content is kept).""",
         "input_variables": [],
         "description": "System instruction for Arabic translation."
     },
@@ -412,9 +393,12 @@ RULES:
 ---SUMMARY---
 {summary}
 
+---WHY THIS MATTERS---
+{why_this_matters}
+
 ---FULL CONTENT---
 {content}""",
-        "input_variables": ["title", "summary", "content"],
+        "input_variables": ["title", "summary", "why_this_matters", "content"],
         "description": "User prompt for translating the full article."
     },
 
@@ -432,63 +416,37 @@ TONE:
 OBJECTIVE:
 - Summarize the news hook instantly.
 - Make the reader feel they must read the full story or use the app to stay ahead.
-- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").""",
+- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").
+
+PLATFORM VARIANTS:
+Produce one caption per requested platform, adapted to its norms:
+- X (Twitter): max 280 characters including hashtags; punchy hook; 1-2 hashtags.
+- Instagram: 1-2 short paragraphs with line breaks; 5-10 hashtags at the end.
+- LinkedIn: professional angle, 2-3 sentences; no more than 3 hashtags.
+- Facebook: conversational, 1-2 sentences; hashtags optional.""",
         "input_variables": [],
         "description": "System instruction for social media copywriter."
     },
     {
         "name": "social_caption_user",
-        "content": """Create a high-conversion social media post for this article:
+        "content": """Create high-conversion social media posts for this article:
 
 TITLE: {title}
 SUMMARY: {summary}
 READING TIME: {reading_time} mins
+PLATFORMS: {platforms}
+CTA TARGET: {cta_target}
 
 REQUIREMENTS:
-1. HEADLINE: A scroll-stopping hook (max 10 words).
-2. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
-3. CTA: Direct users to download the Propt App for the full analysis.
-4. HASHTAGS: Mix of broad and niche real estate/business tags.""",
-        "input_variables": ["title", "summary", "reading_time"],
+1. Produce one caption per platform listed in PLATFORMS, following that platform's variant rules.
+2. HEADLINE: A scroll-stopping hook (max 10 words).
+3. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
+4. CTA: Direct users to {cta_target}.
+5. HASHTAGS: Mix of broad and niche real estate/business tags, per platform norms.""",
+        "input_variables": ["title", "summary", "reading_time", "platforms", "cta_target"],
         "description": "User prompt for generating social media captions."
-    },
-
-    # --- 10. SOCIAL MEDIA CAPTION ---
-    {
-        "name": "social_caption_system",
-        "content": """You are a world-class Direct Response Copywriter and Social Media Strategist.
-Your goal is to drive high click-through rates (CTR) and App Downloads.
-
-TONE:
-- Urgent, engaging, and professional but accessible.
-- Use psychological triggers (FOMO, curiosity, value).
-- Avoid passive voice. Be punchy.
-
-OBJECTIVE:
-- Summarize the news hook instantly.
-- Make the reader feel they must read the full story or use the app to stay ahead.
-- The Call to Action (CTA) must be strong and directive (e.g., "Download now", "Read full report").""",
-        "input_variables": [],
-        "description": "System instruction for social media copywriter."
-    },
-    {
-        "name": "social_caption_user",
-        "content": """Create a high-conversion social media post for this article:
-
-TITLE: {title}
-SUMMARY: {summary}
-READING TIME: {reading_time} mins
-
-REQUIREMENTS:
-1. HEADLINE: A scroll-stopping hook (max 10 words).
-2. BODY: Max one paragraph (2-3 sentences) explaining why this matters.
-3. CTA: Direct users to download the Propt App for the full analysis.
-4. HASHTAGS: Mix of broad and niche real estate/business tags.""",
-        "input_variables": ["title", "summary", "reading_time"],
-        "description": "User prompt for generating social media captions."
-    },
+    }
 ]
-
 # --- CATEGORIES (WITH EXTERNAL IDS) ---
 INITIAL_CATEGORIES = [
     {"name": "Architecture & Design Trends", "external_id": "0598752f-fe7b-46c4-adb2-d0a120ac7ba4"},
@@ -588,6 +546,47 @@ def seed_prompts(db):
             print(f"  [>] Upserted Active Prompt: {data['name']}")
 
 
+def seed_newsroom_prompts(db):
+    """Newsroom compose prompts: kept equal to the code, like the other prompts (prompts are only changed in code)."""
+    upsert_prompt_list(db, NEWSROOM_PROMPTS, "Newsroom")
+
+
+def seed_real_estate_check_prompts(db):
+    """Real-estate check prompts: kept equal to the code, like the other prompts."""
+    upsert_prompt_list(db, REAL_ESTATE_CHECK_PROMPTS, "Real-estate check")
+
+
+def upsert_prompt_list(db, prompts, label):
+    print(f"--- Setting up {label} Prompts ---")
+    prompts_col = db["prompts"]
+    active_status = PromptStatus.ACTIVE.value
+    for data in prompts:
+        now = datetime.now(timezone.utc)
+        result = prompts_col.update_one(
+            {"name": data["name"], "status": active_status},
+            {
+                "$set": {
+                    "name": data["name"],
+                    "content": data["content"],
+                    "description": data["description"],
+                    "input_variables": data["input_variables"],
+                    "version": PROMPT_VERSION,
+                    "status": active_status,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "_id": str(uuid.uuid4()),
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+        if result.upserted_id:
+            print(f"  [+] Added {label} Prompt: {data['name']}")
+        else:
+            print(f"  [>] Upserted {label} Prompt: {data['name']}")
+
+
 def seed_email_recipients(db):
     print("--- Setting up Email Recipients ---")
     recipients_col = db["email_recipients"]
@@ -619,7 +618,10 @@ def seed_categories(db):
     print("--- Setting up Categories ---")
     categories_col = db["categories"]
     categories_col.create_index([("name", ASCENDING)], unique=True)
-    categories_col.create_index([("external_id", ASCENDING)])
+    # Only create external_id index if it doesn't already exist
+    existing_indexes = {idx["name"] for idx in categories_col.list_indexes()}
+    if "external_id_1" not in existing_indexes:
+        categories_col.create_index([("external_id", ASCENDING)])
 
     for cat_data in INITIAL_CATEGORIES:
         now = datetime.now(timezone.utc)
@@ -657,6 +659,10 @@ def ensure_operational_indexes(db):
     articles_col.create_index([("url", ASCENDING)], unique=True)
     articles_col.create_index([("discovered_at", -1)])
     articles_col.create_index([("status", ASCENDING)])
+    # Dashboard counts: approvals and rejections in a time window
+    articles_col.create_index([("status", ASCENDING), ("status_changed_at", -1)])
+    # Who changed an article and when (src/utils/article_history.py)
+    db["article_history"].create_index([("article_id", ASCENDING), ("at", -1)])
     print("  [+] Processed articles collection ready")
 
     print("--- Setting up Archive & Trash ---")
@@ -701,6 +707,8 @@ def init_db(mode: str = "upsert", yes: bool = False):
             reset_application_collections(db)
 
         seed_prompts(db)
+        seed_newsroom_prompts(db)
+        seed_real_estate_check_prompts(db)
         seed_email_recipients(db)
         seed_categories(db)
         ensure_operational_indexes(db)

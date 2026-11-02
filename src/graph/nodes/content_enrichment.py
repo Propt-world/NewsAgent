@@ -4,6 +4,8 @@ from typing import Dict, List
 
 from langchain_core.prompts import PromptTemplate
 
+from src.utils.prompt_lengths import fill_lengths
+
 from src.configs.settings import settings
 from src.models.MainWorkflowState import MainWorkflowState
 from src.models.WhyThisMattersModel import (
@@ -41,7 +43,7 @@ async def enrich_content(state: MainWorkflowState) -> MainWorkflowState:
         context_block = _format_context_results(context_results)
 
         model = settings.get_model().with_structured_output(WhyThisMattersLLMOutput)
-        prompt = PromptTemplate.from_template(prompts.content_enrichment_user)
+        prompt = PromptTemplate.from_template(fill_lengths(prompts.content_enrichment_user, state))
         formatted_prompt = prompt.format(
             title=state.news_article.title,
             summary=state.news_article.summary,
@@ -52,7 +54,7 @@ async def enrich_content(state: MainWorkflowState) -> MainWorkflowState:
         )
 
         messages = [
-            ("system", prompts.content_enrichment_system),
+            ("system", fill_lengths(prompts.content_enrichment_system, state)),
             ("user", formatted_prompt),
         ]
 

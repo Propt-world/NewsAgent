@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import traceback
 import uuid
@@ -25,9 +26,11 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pymongo.errors import DuplicateKeyError
 import httpx
+from pydantic import BaseModel, Field
 import redis.asyncio as aioredis
 
 from src.configs.settings import settings
@@ -42,6 +45,13 @@ from src.scheduler.link_discovery import fetch_listing_page, extract_valid_urls
 from src.utils.email_utils import close_async_email_client, send_error_email_async
 from src.utils.governance import close_async_governance_clients
 from src.utils.security import verify_api_key, verify_webhook_secret
+from src.newsroom.compose import approval_blocked_reason
+from src.newsroom.db import ensure_newsroom_indexes
+from src.newsroom.signal_options import REAL_ESTATE_CATEGORIES
+from src.newsroom.pipeline import article_edited, article_moved, article_status_changed, article_stored, newsroom_composed
+from src.newsroom.resync import nightly_repair
+from src.newsroom.router import mount_newsroom
+from src.newsroom.status import log_alerts
 from src.models.Responses import (
     GenericResponse,
     SchedulerDatabaseHealthResponse,
@@ -52,6 +62,7 @@ from src.utils.image_compressor import compress_image
 from src.utils.mongo_store import get_mongo_store
 from src.utils.chunker import Chunker
 from src.utils.loader import normalize_document
+from src.utils import article_edit, article_history, observability, tracing
 import tempfile
 import shutil
 
@@ -197,8 +208,35 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
+TOPIC_QUERY_HELP = "Only articles with this category (one of the 30 real-estate topics), e.g. Off-Plan & New Launches"
+
+
+def _known_topic(topic: str) -> str:
+    """One of the 30 real-estate topics (articles' categories), or 422."""
+    if topic not in REAL_ESTATE_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"Unknown topic: {topic}")
+    return topic
+
+
 async def cursor_to_list(cursor):
     return [doc async for doc in cursor]
+
+
+async def submit_article_job(http_client: httpx.AsyncClient, link: str, check_real_estate: bool) -> bool:
+    """Sends one article to the worker queue through the main API's /submit-job. True if accepted."""
+    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
+    headers = {}
+    if settings.NEWSAGENT_API_KEY:
+        headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
+    payload = {"source_url": link, "max_retries": 3, "check_real_estate": check_real_estate}
+    try:
+        resp = await http_client.post(f"{api_base}/submit-job", json=payload, headers=headers)
+        resp.raise_for_status()
+        logger.info(f"🚀 Submitted: {link}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to submit {link}: {e}")
+        return False
 
 
 async def check_single_source(source: dict):
@@ -250,25 +288,8 @@ async def check_single_source(source: dict):
                     except Exception:
                         continue
 
-                    # PREPARE API REQUEST
-                    api_base = getattr(settings, 'MAIN_API_URL', "http://api:8003")
-                    api_url = f"{api_base}/submit-job"
-
-                    # [FIX] ADD SECURITY HEADERS
-                    headers = {}
-                    if settings.NEWSAGENT_API_KEY:
-                        headers["X-API-Key"] = settings.NEWSAGENT_API_KEY
-                    # ----------------------------------
-
-                    payload = {"source_url": link, "max_retries": 3}
-
-                    try:
-                        # [FIX] PASS HEADERS HERE
-                        resp = await http_client.post(api_url, json=payload, headers=headers)
-                        resp.raise_for_status()
-                        logger.info(f"🚀 Submitted: {link}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to submit {link}: {e}")
+                    # Articles found by the scheduler get the real-estate check (when it is switched on)
+                    if not await submit_article_job(http_client, link, check_real_estate=True):
                         await collections.processed_articles.update_one(
                             {"_id": new_article["_id"]},
                             {"$set": {"status": "submission_failed"}}
@@ -325,6 +346,7 @@ async def run_scheduler_cycle():
 # FASTAPI APP
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    tracing.init_tracing()  # Phoenix: article edits, embeddings, Similar Articles (off unless PHOENIX_COLLECTOR_ENDPOINT is set)
     logger.info("Pinging MongoDB Atlas...")
     db_status = await check_database_dependency()
     if db_status == "connected":
@@ -333,6 +355,16 @@ async def lifespan(app: FastAPI):
         logger.error(f"MongoDB connection check failed: {db_status}")
         # Do not block startup. /health stays ALB-safe and /health/db or
         # /health/full exposes the live dependency state.
+
+    if settings.newsroom_enabled:
+        # Runs in the background so startup never waits on it; failures are only logged.
+        app.state.newsroom_index_task = asyncio.create_task(ensure_newsroom_indexes())
+        # Every night the Newsroom repairs link details that missed an update (logged; never raises).
+        scheduler.add_job(nightly_repair, CronTrigger(hour=3, minute=0, timezone=settings.NEWSROOM_BUDGET_TIMEZONE),
+                          id="newsroom_nightly_repair", replace_existing=True)
+        # Alerts for CloudWatch: one "NEWSROOM_ALERT <code>: ..." log line per problem (never raises).
+        scheduler.add_job(log_alerts, IntervalTrigger(minutes=settings.NEWSROOM_ALERT_CHECK_MINUTES),
+                          id="newsroom_alerts", replace_existing=True)
 
     scheduler.add_job(run_scheduler_cycle, IntervalTrigger(minutes=1))
     scheduler.start()
@@ -345,6 +377,7 @@ async def lifespan(app: FastAPI):
         done, pending = await asyncio.wait(_active_crawler_tasks, timeout=10.0)
         for t in pending:
             t.cancel()
+    tracing.flush_tracing()
     await close_async_governance_clients()
     await close_async_email_client()
     await close_async_mongo_client()
@@ -362,6 +395,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Newsroom API: mounted only when NEWSROOM_ENABLED is true (unset = scheduler unchanged)
+if mount_newsroom(app, settings.newsroom_enabled):
+    logger.info("Newsroom API mounted at /newsroom")
 
 @app.get(
     "/health",
@@ -470,9 +507,12 @@ async def full_health_check(response: Response):
     },
     dependencies=[Depends(verify_webhook_secret)],
 )
-async def store_result(payload: Dict[str, Any]):
+async def store_result(payload: Dict[str, Any], background_tasks: BackgroundTasks):
     url = payload.get("source_url")
     data = payload.get("data")
+
+    if url and payload.get("status") == NOT_REAL_ESTATE:
+        return await store_not_real_estate(url, payload)
 
     if not url or not data:
         raise HTTPException(status_code=400, detail="Invalid Payload")
@@ -493,19 +533,58 @@ async def store_result(payload: Dict[str, Any]):
 
     if result.matched_count == 0:
         logger.info("[WEBHOOK] URL not in scheduler DB. Creating new record.")
-        await collections.processed_articles.insert_one(
-            {
-                "_id": str(uuid.uuid4()),
-                "source_id": "manual_submission",
-                "url": url,
-                "status": "processed",
-                "discovered_at": datetime.now(timezone.utc),
-                "processed_at": datetime.now(timezone.utc),
-                "final_output": data,
-            }
-        )
+        record = {
+            "_id": str(uuid.uuid4()),
+            "source_id": "manual_submission",
+            "url": url,
+            "status": "processed",
+            "discovered_at": datetime.now(timezone.utc),
+            "processed_at": datetime.now(timezone.utc),
+            "final_output": data,
+        }
+        # Newsroom: a composed article (Propt Newsroom) keeps its own source id and the compose run it came from
+        if settings.newsroom_enabled and newsroom_composed(url, payload.get("newsroom")):
+            record["source_id"] = payload["newsroom"]["source_id"]
+            record["generated_from"] = payload["newsroom"]["generated_from"]
+            record["author"] = payload["newsroom"]["author"]
+        await collections.processed_articles.insert_one(record)
+
+    # Newsroom: suggestions from the names the pipeline found, and refreshed links (after the response; failures only logged)
+    if settings.newsroom_enabled:
+        background_tasks.add_task(article_stored, url, payload.get("newsroom_names"))
 
     return {"status": "ok", "message": "Result stored"}
+
+
+NOT_REAL_ESTATE = "not_real_estate"
+# Only an article still waiting for its result can be marked; a processed or reviewed one is never changed.
+FILTERABLE_STATUSES = ["queued", "submission_failed", NOT_REAL_ESTATE]
+
+
+async def store_not_real_estate(url: str, payload: Dict[str, Any]) -> Dict[str, str]:
+    """The worker's real-estate check skipped this article: mark it so it is never processed again
+    (the scheduler already knows the url) and show it in the backoffice's Filtered out list."""
+    check = payload.get("real_estate_check") if isinstance(payload.get("real_estate_check"), dict) else {}
+    title = payload.get("title")
+    record = {
+        "status": NOT_REAL_ESTATE,
+        "filtered_at": datetime.now(timezone.utc),
+        "real_estate_check": {
+            "is_real_estate": False,
+            "reason": str(check.get("reason") or "")[:500],
+            "model": str(check.get("model") or "")[:100],
+            "checked_at": str(check.get("checked_at") or "")[:40],
+            "title": str(title)[:300] if title else None,
+        },
+    }
+    collections = get_async_scheduler_collections()
+    result = await collections.processed_articles.update_one(
+        {"url": url, "status": {"$in": FILTERABLE_STATUSES}}, {"$set": record})
+    if result.matched_count == 0:
+        logger.warning(f"[WEBHOOK] Not-real-estate result for {url} ignored: no article waiting for a result.")
+        return {"status": "ignored", "message": "No article waiting for a result"}
+    logger.info(f"[WEBHOOK] 🚫 Not real estate: {url}")
+    return {"status": "ok", "message": "Marked not real estate"}
 
 
 # 2. SOURCE MANAGEMENT ENDPOINTS
@@ -764,15 +843,28 @@ async def trigger_source_run(source_id: str, background_tasks: BackgroundTasks):
 async def list_articles(
     page: int = Query(1, ge=1, description="Page number (starts at 1)"),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    discovered_before: Optional[datetime] = Query(
+        None, description="Only articles discovered at or before this time (for 'load more' that new arrivals "
+                          "cannot shift; use with page=1). The total still counts every article of the status."),
+    filtered_since: Optional[datetime] = Query(
+        None, description="Only articles the real-estate check filtered out at or after this time (the Filtered "
+                          "Out screen shows the last 30 days; older records stay so they are never processed again)."),
+    topic: Optional[str] = Query(None, max_length=100, description=TOPIC_QUERY_HELP),
 ):
     collections = get_async_scheduler_collections()
     query = {}
     if status:
         query["status"] = status
+    if filtered_since is not None:
+        query["filtered_at"] = {"$gte": filtered_since}
+    if topic:
+        query["final_output.category"] = _known_topic(topic)
 
     # 1. Get Total Count
     total_count = await collections.processed_articles.count_documents(query)
+    if discovered_before is not None:
+        query["discovered_at"] = {"$lte": discovered_before}
 
     # 2. Calculate Skip
     skip = (page - 1) * limit
@@ -841,7 +933,7 @@ async def get_article(article_id: str):
     dependencies=[Depends(verify_api_key)],
 )
 async def update_article_status(
-    article_id: str, status_update: Dict[str, str] = Body(...)
+    article_id: str, status_update: Dict[str, str] = Body(...), by: str = Depends(article_history.editor)
 ):
     collections = get_async_scheduler_collections()
     new_status = status_update.get("status")
@@ -852,6 +944,13 @@ async def update_article_status(
             status_code=400,
             detail=f"Invalid status. Must be one of: {allowed_statuses}",
         )
+
+    if new_status == "approved":
+        # Propt Newsroom articles need an image first (checked here so no screen can skip it).
+        blocked = approval_blocked_reason(await collections.processed_articles.find_one(
+            {"_id": article_id}, {"source_id": 1, "final_output.top_image": 1}))
+        if blocked:
+            raise HTTPException(status_code=422, detail=blocked)
 
     # Trigger embedding generation if approved
     if new_status == "approved":
@@ -897,7 +996,10 @@ async def update_article_status(
             # 3. Store in Vector DB
             if docs_to_ingest:
                 mongo_store = get_mongo_store()
-                await mongo_store.add_documents(docs_to_ingest)
+                # One trace per approval: an embedding call per piece of the article
+                with tracing.job_span("article_vectorize", tags=["embeddings"],
+                                      metadata={"article_id": article_id, "pieces": len(docs_to_ingest)}):
+                    await mongo_store.add_documents(docs_to_ingest)
                 # Note: mongo_store connection is managed globally/singleton, so strict close per request isn't typical here 
                 # unless we want to force cleanup, but get_mongo_store reuses the client.
                 logger.info(f"✅ Embeddings stored for {article_id} ({len(docs_to_ingest)} chunks)")
@@ -913,12 +1015,20 @@ async def update_article_status(
             # However, if we fail here, status isn't updated. 
             # I will allow status update to proceed but log error strongly.
 
+    before = await collections.processed_articles.find_one({"_id": article_id}, {"status": 1})
+    # status_changed_at / _by: the dashboard counts approvals and rejections from them
     result = await collections.processed_articles.update_one(
-        {"_id": article_id}, {"$set": {"status": new_status}}
+        {"_id": article_id},
+        {"$set": {"status": new_status, "status_changed_at": article_history.now(), "status_changed_by": by}}
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Article not found")
+    await article_history.record(article_id, by, "status", {"status": (before or {}).get("status")}, {"status": new_status})
+
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the status change itself has already succeeded.
+        await article_status_changed(article_id, new_status)
 
     return {"status": "updated", "message": f"Article status updated to {new_status}", "id": article_id, "new_status": new_status}
 
@@ -949,7 +1059,8 @@ async def update_article_status(
 )
 async def update_article_image(
     article_id: str, 
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    by: str = Depends(article_history.editor),
 ):
     """
     Updates the 'top_image' and the SEO 'mainEntityOfPage' URL.
@@ -1072,6 +1183,10 @@ async def update_article_image(
                 {"_id": article_id}, 
                 update_op
             )
+            if result.matched_count:
+                await article_history.record(
+                    article_id, by, "image", {"image": (article.get("final_output") or {}).get("top_image")},
+                    {"image": new_image_url})
 
             return {
                 "status": "updated",
@@ -1109,37 +1224,199 @@ async def update_article_image(
     "/articles/{article_id}/title",
     dependencies=[Depends(verify_api_key)]
 )
-async def update_article_title(article_id: str, title_update: Dict[str, str] = Body(...)):
+async def update_article_title(article_id: str, title_update: Dict[str, Any] = Body(...),
+                               by: str = Depends(article_history.editor)):
     """
     Updates the title of a processed article.
-    Expects a JSON payload: {"title": "New Updated Title"}
+    Expects a JSON payload: {"title": "New Updated Title"}, optionally with "expected_version" (the article's
+    version when the screen opened it: refused with 409 if it was edited since).
     """
-    new_title = title_update.get("title")
-
-    if not new_title or not new_title.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Title cannot be empty."
-        )
-
-    # Sanitize Title for Slug
-    clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', new_title.lower())
-    new_slug = re.sub(r'[-\s]+', '-', clean_title).strip('-')
+    try:
+        fields = article_edit.title_fields(title_update.get("title"))
+    except article_edit.EditError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    expected = title_update.get("expected_version")
+    expected = int(expected) if expected is not None else None
 
     # The title is stored inside the 'final_output' object
     collections = get_async_scheduler_collections()
+    before = await collections.processed_articles.find_one({"_id": article_id}, {"final_output.title": 1})
+    if before is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    stamp = article_history.edit_stamp(by)
     result = await collections.processed_articles.update_one(
-        {"_id": article_id},
-        {"$set": {
-            "final_output.title": new_title.strip(),
-            "final_output.seo.slug": new_slug
-        }}
-    )
+        article_history.version_query(article_id, expected), {"$set": {**fields, **stamp["$set"]}, "$inc": stamp["$inc"]})
 
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Article not found")
+        latest = await collections.processed_articles.find_one({"_id": article_id}, {"edited_by": 1, "edited_at": 1})
+        raise HTTPException(status_code=409, detail=article_history.conflict_message(latest))
+    await article_history.record(article_id, by, "title", {"title": (before.get("final_output") or {}).get("title")},
+                                 {"title": fields["final_output.title"]})
 
-    return {"status": "updated", "id": article_id, "new_title": new_title.strip(), "new_slug": new_slug}
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the title change itself has already succeeded.
+        await article_edited(article_id)
+
+    return {"status": "updated", "id": article_id, "new_title": fields["final_output.title"],
+            "new_slug": fields["final_output.seo.slug"]}
+
+
+class ArticleTextParts(BaseModel):
+    title: Optional[str] = Field(None, max_length=500)
+    summary: Optional[str] = Field(None, max_length=5000)
+    why_this_matters: Optional[str] = Field(None, max_length=5000)
+
+
+class ArticleTextUpdate(ArticleTextParts):
+    title_ar: Optional[str] = Field(None, max_length=500)
+    summary_ar: Optional[str] = Field(None, max_length=5000)
+    why_this_matters_ar: Optional[str] = Field(None, max_length=5000)
+    expected_version: Optional[int] = Field(None, ge=0, description="The article's version when the screen opened "
+                                            "it: the save is refused (409) if it was edited since")
+
+
+async def _article_for_edit(article_id: str) -> dict:
+    doc = await get_async_scheduler_collections().processed_articles.find_one({"_id": article_id})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    if not doc.get("final_output"):
+        raise HTTPException(status_code=422, detail="This article has no processed text to edit")
+    return doc
+
+
+@app.post(
+    "/articles/{article_id}/translate",
+    dependencies=[Depends(verify_api_key)],
+    description="Arabic for an edited English title, summary or why this matters, with the article pipeline's "
+                "translation prompts (one AI call; nothing is saved).",
+)
+async def translate_article_text(article_id: str, parts: ArticleTextParts):
+    doc = await _article_for_edit(article_id)
+    try:
+        # One trace per Translate click
+        with tracing.job_span("article_translate", tags=["article_edit"], metadata={"article_id": article_id},
+                              input_value=json.dumps(parts.model_dump(exclude_none=True), ensure_ascii=False)) as span:
+            arabic = await article_edit.translate(doc, parts.model_dump())
+            tracing.set_output(span, arabic)
+        return arabic
+    except article_edit.EditError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except article_edit.ConfigurationError:
+        # The full error is in the log ("Critical Configuration Error"); the reviewer gets a short message
+        raise HTTPException(status_code=500, detail=article_edit.CONFIGURATION_MESSAGE)
+
+
+@app.patch(
+    "/articles/{article_id}/text",
+    dependencies=[Depends(verify_api_key)],
+    description="Saves an edited title, summary and/or why this matters with their Arabic (an English part that "
+                "changed needs its Arabic too). A changed title or summary also writes the SEO metadata and the "
+                "social captions again with the pipeline's own steps.",
+)
+async def update_article_text(article_id: str, edit: ArticleTextUpdate, by: str = Depends(article_history.editor)):
+    doc = await _article_for_edit(article_id)
+    articles = get_async_scheduler_collections().processed_articles
+    try:
+        # Before any AI step: an article edited since the screen opened it is not overwritten
+        await article_history.check_version(articles, article_id, edit.expected_version)
+        # One trace per Save: the SEO and social-caption steps it runs again nest under it
+        with tracing.job_span("article_edit", tags=["article_edit"], metadata={"article_id": article_id, "edited_by": by},
+                              input_value=json.dumps(edit.model_dump(exclude={"expected_version"}, exclude_none=True),
+                                                     ensure_ascii=False)) as span:
+            fields, regenerated = await article_edit.save(doc, edit.model_dump(exclude={"expected_version"}))
+            tracing.set_output(span, {"updated": sorted(fields), "regenerated": regenerated})
+    except article_history.EditConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except article_edit.EditError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except article_edit.ConfigurationError:
+        # The full error is in the log ("Critical Configuration Error"); the reviewer gets a short message
+        raise HTTPException(status_code=500, detail=article_edit.CONFIGURATION_MESSAGE)
+    stamp = article_history.edit_stamp(by)
+    result = await articles.update_one(article_history.version_query(article_id, edit.expected_version),
+                                       {"$set": {**fields, **stamp["$set"]}, "$inc": stamp["$inc"]})
+    if result.matched_count == 0:  # edited by someone else while the AI steps ran
+        latest = await articles.find_one({"_id": article_id}, {"edited_by": 1, "edited_at": 1})
+        raise HTTPException(status_code=409, detail=article_history.conflict_message(latest))
+    before, after = article_edit.history_values(doc, fields)
+    await article_history.record(article_id, by, "text", before, {**after, "regenerated": regenerated})
+    if settings.newsroom_enabled:
+        # Errors are logged inside; the edit itself has already been saved.
+        await article_edited(article_id)
+    return {"status": "updated", "id": article_id, "updated": sorted(fields), "regenerated": regenerated}
+
+@app.get(
+    "/articles/{article_id}/history",
+    dependencies=[Depends(verify_api_key)],
+    description="Who changed the article and when (title, text, image, status), with the values before and after; "
+                "newest first.",
+)
+async def article_change_history(article_id: str):
+    return {"items": await article_history.list_history(article_id)}
+
+
+@app.get(
+    "/stats/articles",
+    dependencies=[Depends(verify_api_key)],
+    description="Dashboard counts: articles pending review and approved in all, and approved / rejected between "
+                "since and until (when their status last changed; recorded from 23 Oct 2026).",
+)
+async def article_stats(since: datetime = Query(...), until: datetime = Query(...)):
+    if since.tzinfo is None or until.tzinfo is None:
+        raise HTTPException(status_code=422, detail="since and until need a time zone (e.g. 2026-10-23T05:00:00Z)")
+    if until <= since:
+        raise HTTPException(status_code=422, detail="until must be after since")
+    articles = get_async_scheduler_collections().processed_articles
+    window = {"$gte": since, "$lt": until}
+    return {
+        "since": since,
+        "until": until,
+        "pending": await articles.count_documents({"status": "processed"}),
+        "total_approved": await articles.count_documents({"status": "approved"}),
+        "approved": await articles.count_documents({"status": "approved", "status_changed_at": window}),
+        "rejected": await articles.count_documents({"status": "rejected", "status_changed_at": window}),
+    }
+
+
+@app.get(
+    "/observability/summary",
+    dependencies=[Depends(verify_api_key)],
+    description="The backoffice's LLM Observability page: AI calls, tokens, cost, time and failures from Phoenix, "
+                "per service, model and kind of job, for the last `days` days. Totals and error messages only "
+                "(never prompts or answers); no AI call; cached for a minute.",
+)
+async def observability_summary(days: int = Query(1, ge=1, le=30, description="1, 7 or 30")):
+    return await observability.summary(days)
+
+
+@app.get(
+    "/observability/jobs/{job}/runs",
+    dependencies=[Depends(verify_api_key)],
+    description="A kind of job's latest runs from Phoenix (newest first): time, cost, tokens, status, outcome and "
+                "number of steps. Called only when a reviewer opens the job on the LLM Observability page. "
+                "No prompts or answers; no AI call; cached for a minute.",
+)
+async def observability_job_runs(job: str, days: int = Query(1, ge=1, le=30),
+                                 limit: int = Query(observability.RUNS_SHOWN, ge=1, le=50)):
+    try:
+        return await observability.job_runs(job, days, limit)
+    except observability.NotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get(
+    "/observability/traces/{trace_id}",
+    dependencies=[Depends(verify_api_key)],
+    description="One run's steps from Phoenix: name, start, time, status, error, model, tokens and cost of each step "
+                "inside it. Called only when a reviewer opens a run. No prompts or answers (they stay in Phoenix); "
+                "no AI call; cached for a minute.",
+)
+async def observability_trace(trace_id: str):
+    try:
+        return await observability.trace_steps(trace_id)
+    except observability.NotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
 
 @app.get(
     "/articles/search/text",
@@ -1161,16 +1438,21 @@ async def search_articles_text(
     q: str = Query(..., min_length=1, description="The text/keyword to search for"),
     page: int = Query(1, ge=1, description="Page number (starts at 1)"),
     limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status")
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
+    topic: Optional[str] = Query(None, max_length=100, description=TOPIC_QUERY_HELP),
 ):
     """
     Standard Regex Search. Looks for the keyword in the URL, Title, Summary, and Full Content.
     """
+    if topic:
+        _known_topic(topic)
     try:
         collections = get_async_scheduler_collections()
         query = {}
         if status_filter:
             query["status"] = status_filter
+        if topic:
+            query["final_output.category"] = topic
 
         # Case-insensitive search across title, summary, url, and full content
         query["$or"] = [
@@ -1205,6 +1487,11 @@ async def search_articles_text(
         logger.error(f"Text search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Each article is stored as several pieces: ask for this many pieces per article wanted, keep each article's best
+SIMILARITY_PIECES_PER_ARTICLE = 4
+
+
 @app.get(
     "/articles/search/similarity",
     description="Dedicated API for semantic/AI search to find similar articles or duplicates.",
@@ -1220,46 +1507,89 @@ async def search_articles_text(
     dependencies=[Depends(verify_api_key)],
 )
 async def search_articles_similarity(
-    q: str = Query(..., min_length=5, description="The semantic query or paragraph to match against"),
-    limit: int = Query(5, ge=1, le=50, description="Max similar results to return"),
+    q: str = Query(..., min_length=5, max_length=5000, description="The semantic query or paragraph to match against"),
+    limit: int = Query(5, ge=1, le=50, description="Max similar articles to return"),
     min_score: float = Query(0.7, ge=0.0, le=1.0, description="Minimum relevance score (cosine similarity)")
 ):
     """
-    Vector Search / AI Similarity. Takes a text snippet, embeds it using OpenAI, 
-    and finds contextually similar article chunks in the database.
+    Vector Search / AI Similarity. Embeds the text (one small OpenAI call) and finds approved articles whose
+    stored pieces are closest in meaning. Each article is stored as several pieces, so the best piece per article
+    counts and each article is returned once, with its title and status.
+    Matches compare meaning, not words: one word such as "Dubai" scores low against whole articles; a title or a
+    paragraph scores high. best_below_min tells the reviewer when weaker matches were left out.
     """
     try:
         mongo_store = get_mongo_store()
-        
-        # Execute vector search via MongoStore
-        # Note: Your MongoStore query method returns chunks, not full articles
-        results = await mongo_store.query(query_text=q, limit=limit)
-        
-        formatted_results = []
-        for res in results:
-            score = res.get("score", 0.0)
-            
-            # Optionally filter out weak matches
-            if score >= min_score:
-                formatted_results.append({
-                    "source_article_id": res.get("source_id"),
-                    "matching_chunk": res.get("chunk_text"),
-                    "relevance_score": score,
-                    "metadata": res.get("metadata", {})
-                })
-                
-        return {
-            "status": "success",
-            "query": q,
-            "total_matches": len(formatted_results),
-            "results": formatted_results
-        }
+        with tracing.job_span("similarity_search", tags=["embeddings"], input_value=q,
+                              metadata={"limit": limit, "min_score": min_score}):
+            hits = await mongo_store.query(query_text=q, limit=min(limit * SIMILARITY_PIECES_PER_ARTICLE, 200))
     except Exception as e:
         logger.error(f"Similarity search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+    best: dict = {}  # article URL -> (score, matching piece)
+    for hit in hits:
+        url = (hit.get("metadata") or {}).get("url")
+        score = hit.get("score") or 0.0
+        if url and score > best.get(url, (-1.0, None))[0]:
+            best[url] = (score, hit.get("chunk_text"))
+    strong = {url: v for url, v in best.items() if v[0] >= min_score}
+    weaker = [v[0] for url, v in best.items() if v[0] < min_score]
+
+    docs = await get_async_scheduler_collections().processed_articles.find(
+        {"url": {"$in": list(strong)}},
+        {"source_id": 1, "url": 1, "status": 1, "discovered_at": 1, "processed_at": 1,
+         "final_output.title": 1, "final_output.summary": 1, "final_output.top_image": 1,
+         "final_output.published_date": 1},
+    ).to_list(length=None) if strong else []
+    docs.sort(key=lambda d: strong[d["url"]][0], reverse=True)
+    items = [{"article": d,
+              "similarity_score": strong[d["url"]][0],
+              "matching_chunk": strong[d["url"]][1]} for d in docs[:limit]]
+    return {
+        "status": "success",
+        "query": q,
+        "total_matches": len(items),
+        "items": items,
+        "best_below_min": max(weaker) if weaker else None,
+    }
+
 
 # 4. ARTICLE LIFECYCLE MANAGEMENT
+@app.post(
+    "/articles/{article_id}/process-anyway",
+    response_model=GenericResponse,
+    description="Sends an article the real-estate check filtered out through the normal pipeline, without the check.",
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": GenericResponse, "description": "Article not found"},
+        status.HTTP_409_CONFLICT: {"model": GenericResponse, "description": "Article is not filtered out"},
+        status.HTTP_502_BAD_GATEWAY: {"model": GenericResponse, "description": "Could not queue the article"},
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+async def process_anyway(article_id: str):
+    collections = get_async_scheduler_collections()
+    article = await collections.processed_articles.find_one({"_id": article_id}, {"url": 1, "status": 1})
+    if article is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    # Only from "not_real_estate", in one step, so a double click cannot queue it twice.
+    claimed = await collections.processed_articles.update_one(
+        {"_id": article_id, "status": NOT_REAL_ESTATE},
+        {"$set": {"status": "queued", "real_estate_check.overridden_at": datetime.now(timezone.utc)}},
+    )
+    if claimed.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Only articles filtered out as not real estate can be processed this way")
+    async with httpx.AsyncClient() as http_client:
+        queued = await submit_article_job(http_client, article["url"], check_real_estate=False)
+    if not queued:
+        # Back to the Filtered out list, so the reviewer can try again
+        await collections.processed_articles.update_one(
+            {"_id": article_id, "status": "queued"},
+            {"$set": {"status": NOT_REAL_ESTATE}, "$unset": {"real_estate_check.overridden_at": ""}})
+        raise HTTPException(status_code=502, detail="Could not send the article for processing; try again later")
+    return {"status": "queued", "message": "Sent for processing without the real-estate check", "id": article_id}
+
+
 @app.post(
     "/articles/{article_id}/archive",
     response_model=GenericResponse,
@@ -1304,6 +1634,10 @@ async def archive_article(article_id: str):
 
     # 3. Delete from Active
     await collections.processed_articles.delete_one({"_id": article_id})
+
+    if settings.newsroom_enabled:
+        # Archived articles stay linked in the Newsroom, shown as archived (errors are logged inside).
+        await article_moved(article_id)
 
     return {"status": "archived", "message": "Article archived successfully", "id": article_id}
 
@@ -1351,6 +1685,10 @@ async def soft_delete_article(article_id: str):
 
     # 3. Delete from Active
     await collections.processed_articles.delete_one({"_id": article_id})
+
+    if settings.newsroom_enabled:
+        # Deleted articles disappear from the Newsroom's related items, history and filters.
+        await article_moved(article_id)
 
     return {"status": "soft_deleted", "message": "Article soft deleted successfully", "id": article_id}
 

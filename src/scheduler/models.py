@@ -46,6 +46,21 @@ class ProcessedArticle(BaseModel):
     # The final output from the AI Worker (Summary, Translation, SEO, etc.)
     final_output: Optional[Dict[str, Any]] = None
 
+    # Propt Newsroom articles only: the compose job that wrote it (None for everything else)
+    generated_from: Optional[str] = None
+
+    # Articles the real-estate check filtered out (status "not_real_estate"): its reason, title and time
+    real_estate_check: Optional[Dict[str, Any]] = None
+    filtered_at: Optional[datetime] = None
+
+    # Edits (src/utils/article_history.py): the version a screen sends back so two reviewers cannot overwrite
+    # each other, who edited last, and when the status last changed (the dashboard counts use it)
+    version: int = 0
+    edited_at: Optional[datetime] = None
+    edited_by: Optional[str] = None
+    status_changed_at: Optional[datetime] = None
+    status_changed_by: Optional[str] = None
+
     class Config:
         populate_by_name = True
 

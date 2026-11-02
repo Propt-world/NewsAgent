@@ -88,6 +88,7 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
+    networks: [default, tracing]
 
   # --- 7. The Worker (Consumer) ---
   worker:
@@ -127,6 +128,7 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
+    networks: [default, tracing]
 
   # --- 8. The Scheduler Service ---
   scheduler:
@@ -165,6 +167,13 @@ services:
         condition: service_started
       browserless:
         condition: service_healthy
+    networks: [default, tracing]
+
+# Phoenix tracing (deploy/phoenix): any service on this network sends to http://phoenix:6006/v1/traces
+networks:
+  tracing:
+    name: propt-tracing
+    external: true
 
 volumes:
   redis_data:

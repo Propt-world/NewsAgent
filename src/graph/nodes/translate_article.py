@@ -27,10 +27,15 @@ async def translate_article(state: MainWorkflowState) -> MainWorkflowState:
         model = settings.get_model().with_structured_output(TranslationModel)
 
         # 3. Format Prompt
+        why_this_matters = ""
+        if state.news_article.why_this_matters:
+            why_this_matters = state.news_article.why_this_matters.content or ""
+
         user_prompt_template = PromptTemplate.from_template(prompts.translation_user)
         formatted_prompt = user_prompt_template.format(
             title=state.news_article.title,
             summary=state.news_article.summary or "",
+            why_this_matters=why_this_matters,
             content=state.news_article.content
         )
 
@@ -47,11 +52,20 @@ async def translate_article(state: MainWorkflowState) -> MainWorkflowState:
         pprint(f"[NODE: TRANSLATE] Translation complete. Title: {translation_result.title_ar}")
 
         # 5. Update Article Model
-        updated_article = state.news_article.model_copy(update={
+        article_updates = {
             "title_ar": translation_result.title_ar,
             "summary_ar": translation_result.summary_ar,
             "content_ar": translation_result.content_ar
-        })
+        }
+
+        if state.news_article.why_this_matters and translation_result.why_this_matters_ar:
+            article_updates["why_this_matters"] = (
+                state.news_article.why_this_matters.model_copy(
+                    update={"content_ar": translation_result.why_this_matters_ar}
+                )
+            )
+
+        updated_article = state.news_article.model_copy(update=article_updates)
 
         return state.model_copy(update={
             "news_article": updated_article

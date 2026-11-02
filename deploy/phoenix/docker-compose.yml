@@ -1,0 +1,30 @@
+# Phoenix: traces of every AI call made by Propt's services (NewsAgent, social_scrapper and any other service).
+# Its own compose project, so NewsAgent deploys never restart it. Any service on this server reaches it at
+# http://phoenix:6006/v1/traces by joining the shared "propt-tracing" network (see README.md).
+name: phoenix
+
+services:
+  phoenix:
+    # Pinned: upgrade on purpose, not by accident
+    image: arizephoenix/phoenix:version-20.26.1
+    container_name: phoenix
+    restart: unless-stopped
+    environment:
+      - PHOENIX_WORKING_DIR=/mnt/data
+      # Traces older than this are deleted (0 would keep them forever)
+      - PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=${PHOENIX_RETENTION_DAYS:-30}
+    volumes:
+      - phoenix_data:/mnt/data
+    ports:
+      # Only on the server itself: open the screens through an SSH tunnel, never from the internet
+      - "127.0.0.1:6006:6006"
+    networks:
+      - tracing
+
+networks:
+  tracing:
+    name: propt-tracing
+    external: true
+
+volumes:
+  phoenix_data:

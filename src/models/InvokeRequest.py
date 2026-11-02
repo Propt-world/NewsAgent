@@ -11,3 +11,9 @@ class InvokeRequest(BaseModel):
         default=3,
         description="Optional: Max attempts for the summary loop."
     )
+
+    check_real_estate: bool = Field(
+        default=False,
+        description="Set by the scheduler: run the real-estate check first (when REAL_ESTATE_CHECK_ENABLED). "
+                    "Manual submissions leave it off."
+    )

@@ -1,6 +1,8 @@
 import json
 from typing import List, Dict, Any
 
+from src.newsroom.public_links import COMPOSED_SOURCE_ID, shown_url
+
 
 def clean_text(text: str) -> str:
     """
@@ -26,6 +28,9 @@ def normalize_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     
     # URL might be at top level or inside final_output, usually top level in this dataset
     url = doc.get("url") or data_source.get("url") or ""
+    if doc.get("source_id") == COMPOSED_SOURCE_ID:
+        # Propt Newsroom articles: show their public Propt link (e.g. in chatbot citations), never newsroom://
+        url = shown_url(doc) or url
     
     # Date handling
     date = doc.get("published_date") or data_source.get("published_date") or ""

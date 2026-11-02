@@ -69,6 +69,12 @@ The system is composed of seven Dockerized services:
     * `NEWSAGENT_API_KEY`: A secure key you generate to protect your internal API endpoints.
     * `BROWSERLESS_TOKEN`: Secure token for the browserless service.
     * `WEBHOOK_SECRET`: Shared secret for verifying webhook payloads.
+    * How the Newsroom code is organised (and why it differs from the rest of NewsAgent in places): [`src/newsroom/README.md`](src/newsroom/README.md).
+    * `NEWSROOM_ENABLED`: `true` mounts the Newsroom API on the scheduler (`/newscheduler/newsroom/*`) and creates its indexes at startup; in the worker, the country step also returns company, project and place names, which become entity suggestions when the result is stored. Set it on the worker and the scheduler together. Unset or `false` leaves both unchanged.
+    * `NEWSROOM_SIGNALS_DB_NAME`: social_scrapper's database, where the Newsroom reads signals (default `newsroom`). The Newsroom's own collections (companies and places, links, suggestions, compose jobs) are kept in `MONGO_DB_NAME` with the articles.
+    * `NEWSROOM_SIMILARITY_MIN_SCORE`: Minimum score (default `0.8`) for "similar articles". Shown only for approved articles with no links, using their stored embeddings and the `MONGO_VECTOR_INDEX_NAME` Atlas index; no new AI call is made.
+    * `NEWSROOM_ALERT_*`: Newsroom alerts. `GET /newsroom/status` lists current problems for the backoffice banner (database, compose queue, compose worker not reporting in, waiting or failed compose jobs, daily AI budget near or reached, real-estate filter rate). The scheduler checks every `NEWSROOM_ALERT_CHECK_MINUTES` (10) and logs each problem as `NEWSROOM_ALERT <code>: <message>`; social_scrapper logs failed calls to the Newsroom the same way. In CloudWatch, a metric filter on `NEWSROOM_ALERT` for each service's log group plus an alarm (for example 1 or more in 10 minutes) gives the alerts.
+    * `NEWSROOM_COMPOSE_*` / `NEWSROOM_DAILY_BUDGET_USD`: Compose (Propt Newsroom articles and signals). Model (default `gpt-4o-mini`), at most 10 jobs per hour and 2 at once, and new jobs stop once the day's spend (UAE day, from real token usage) reaches the budget (default 10 USD). Compose jobs run in the worker from their own Redis queue; prompts `newsroom_*` are written by `init_db.py --mode upsert` like every other prompt.
 
 ---
 
@@ -126,6 +132,28 @@ If you need to run the Python code locally while keeping infrastructure (Redis/M
     * **API**: `uvicorn src.main:api --port 8003 --reload`
     * **Scheduler**: `uvicorn src.scheduler.main:app --port 8001 --reload`
     * **Worker**: `python src/worker.py`
+
+### Running Tests
+
+Use Python 3.11 (the version in the Docker image):
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+Tests that need MongoDB are skipped unless `TEST_MONGO_URL` points at a throwaway server (each test creates and drops its own `newsroom_test_*` database). Never point it at a shared or production cluster:
+```bash
+docker run -d -p 27017:27017 mongo:8
+TEST_MONGO_URL=mongodb://localhost:27017 pytest
+```
+
+### Newsroom Starting Lists
+
+`src/newsroom/seed/` holds the starting entity, location and ignore lists. The loader is a dry run by default (checks the lists and compares them with the database, writes nothing); `--apply` inserts only what is missing and never changes existing records:
+```bash
+python src/scripts/newsroom_seed.py
+python src/scripts/newsroom_seed.py --apply
+```
 
 ---
 

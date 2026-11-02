@@ -4,8 +4,8 @@ from src.models.MainWorkflowState import MainWorkflowState
 
 def select_best_summary(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Selects the best summary from the 'summary_attempts' list
-    based on the highest 'semantic_score'.
+    Selects the best summary from the 'summary_attempts' list:
+    a valid attempt first, then the highest 'semantic_score'.
 
     This node runs *after* the validation loop is complete.
     """
@@ -24,11 +24,12 @@ def select_best_summary(state: MainWorkflowState) -> MainWorkflowState:
                 "error_message": "No summaries to select from."
             })
 
-        # 1. Find the best attempt
+        # 1. Find the best attempt: one the critic passed first (a rejected attempt may have a
+        # wrong figure or year), then the highest semantic score.
         # We use 'semantic_score or 0.0' to handle None values
         best_attempt = max(
             all_attempts,
-            key=lambda attempt: attempt.validation.semantic_score or 0.0
+            key=lambda attempt: (attempt.validation.is_valid, attempt.validation.semantic_score or 0.0)
         )
 
         best_summary = best_attempt.summary
